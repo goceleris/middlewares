@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/goceleris/celeris"
+
 	"github.com/goceleris/middlewares/internal/testutil"
 )
 
@@ -36,7 +37,7 @@ func TestTimeoutExceeded(t *testing.T) {
 func TestSkipBypassesTimeout(t *testing.T) {
 	mw := New(Config{
 		Timeout: 1 * time.Millisecond,
-		Skip:    func(c *celeris.Context) bool { return true },
+		Skip:    func(_ *celeris.Context) bool { return true },
 	})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "skipped")
@@ -51,7 +52,7 @@ func TestSkipBypassesTimeout(t *testing.T) {
 func TestCustomErrorHandler(t *testing.T) {
 	mw := New(Config{
 		Timeout: 1 * time.Millisecond,
-		ErrorHandler: func(c *celeris.Context) error {
+		ErrorHandler: func(_ *celeris.Context) error {
 			return celeris.NewHTTPError(504, "Gateway Timeout")
 		},
 	})
@@ -132,7 +133,7 @@ func TestContextCancelCalled(t *testing.T) {
 
 func TestHandlerErrorPassesThroughWithoutTimeout(t *testing.T) {
 	mw := New(Config{Timeout: 1 * time.Second})
-	handler := func(c *celeris.Context) error {
+	handler := func(_ *celeris.Context) error {
 		return celeris.NewHTTPError(400, "bad request")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
@@ -142,7 +143,7 @@ func TestHandlerErrorPassesThroughWithoutTimeout(t *testing.T) {
 
 func TestHandlerBareErrorPassesThrough(t *testing.T) {
 	mw := New(Config{Timeout: 1 * time.Second})
-	handler := func(c *celeris.Context) error {
+	handler := func(_ *celeris.Context) error {
 		return errors.New("something went wrong")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}

@@ -86,7 +86,7 @@ func TestCustomMaxBytes(t *testing.T) {
 func TestSkipBypassesCheck(t *testing.T) {
 	mw := New(Config{
 		MaxBytes: 100,
-		Skip:     func(c *celeris.Context) bool { return true },
+		Skip:     func(_ *celeris.Context) bool { return true },
 	})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "skipped")

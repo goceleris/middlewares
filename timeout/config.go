@@ -38,7 +38,7 @@ func applyDefaults(cfg Config) Config {
 
 var errServiceUnavailable = celeris.NewHTTPError(503, "Service Unavailable")
 
-func defaultErrorHandler(c *celeris.Context) error {
+func defaultErrorHandler(_ *celeris.Context) error {
 	return errServiceUnavailable
 }
 

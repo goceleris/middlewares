@@ -461,13 +461,13 @@ func TestDuration_FormatDivergence(t *testing.T) {
 
 func TestFastHandler_Enabled(t *testing.T) {
 	h := NewFastHandler(nil, &FastHandlerOptions{Level: slog.LevelWarn})
-	if h.Enabled(nil, slog.LevelInfo) {
+	if h.Enabled(context.TODO(), slog.LevelInfo) {
 		t.Error("should not be enabled for INFO when level is WARN")
 	}
-	if !h.Enabled(nil, slog.LevelWarn) {
+	if !h.Enabled(context.TODO(), slog.LevelWarn) {
 		t.Error("should be enabled for WARN")
 	}
-	if !h.Enabled(nil, slog.LevelError) {
+	if !h.Enabled(context.TODO(), slog.LevelError) {
 		t.Error("should be enabled for ERROR")
 	}
 }

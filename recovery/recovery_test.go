@@ -8,12 +8,13 @@ import (
 	"testing"
 
 	"github.com/goceleris/celeris"
+
 	"github.com/goceleris/middlewares/internal/testutil"
 )
 
 func TestRecoveryFromPanic(t *testing.T) {
 	mw := New()
-	handler := func(c *celeris.Context) error {
+	handler := func(_ *celeris.Context) error {
 		panic("test panic")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
@@ -25,7 +26,7 @@ func TestRecoveryFromPanic(t *testing.T) {
 
 func TestRecoveryFromErrorPanic(t *testing.T) {
 	mw := New()
-	handler := func(c *celeris.Context) error {
+	handler := func(_ *celeris.Context) error {
 		panic(errors.New("error panic"))
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
@@ -36,7 +37,7 @@ func TestRecoveryFromErrorPanic(t *testing.T) {
 
 func TestRecoveryFromIntPanic(t *testing.T) {
 	mw := New()
-	handler := func(c *celeris.Context) error {
+	handler := func(_ *celeris.Context) error {
 		panic(42)
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
@@ -59,9 +60,9 @@ func TestRecoveryNoPanic(t *testing.T) {
 
 func TestRecoverySkip(t *testing.T) {
 	mw := New(Config{
-		Skip: func(c *celeris.Context) bool { return true },
+		Skip: func(_ *celeris.Context) bool { return true },
 	})
-	handler := func(c *celeris.Context) error {
+	handler := func(_ *celeris.Context) error {
 		panic("should not be caught")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
@@ -70,7 +71,7 @@ func TestRecoverySkip(t *testing.T) {
 			t.Fatal("expected panic to propagate when skip=true")
 		}
 	}()
-	testutil.RunChain(t, chain, "GET", "/skip")
+	_, _ = testutil.RunChain(t, chain, "GET", "/skip")
 }
 
 func TestRecoveryCustomHandler(t *testing.T) {
@@ -79,7 +80,7 @@ func TestRecoveryCustomHandler(t *testing.T) {
 			return c.String(503, "custom: %v", err)
 		},
 	})
-	handler := func(c *celeris.Context) error {
+	handler := func(_ *celeris.Context) error {
 		panic("boom")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
@@ -93,11 +94,11 @@ func TestRecoveryLogsStack(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
 	mw := New(Config{Logger: log, StackSize: 4096, LogStack: true})
-	handler := func(c *celeris.Context) error {
+	handler := func(_ *celeris.Context) error {
 		panic("stack test")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
-	testutil.RunChain(t, chain, "GET", "/stack")
+	_, _ = testutil.RunChain(t, chain, "GET", "/stack")
 	if !strings.Contains(buf.String(), "stack test") {
 		t.Fatalf("expected panic value in log: %s", buf.String())
 	}
@@ -110,11 +111,11 @@ func TestRecoveryNoStack(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
 	mw := New(Config{Logger: log, LogStack: false})
-	handler := func(c *celeris.Context) error {
+	handler := func(_ *celeris.Context) error {
 		panic("no stack")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
-	testutil.RunChain(t, chain, "GET", "/nostack")
+	_, _ = testutil.RunChain(t, chain, "GET", "/nostack")
 	if strings.Contains(buf.String(), "goroutine") {
 		t.Fatalf("expected no stack trace: %s", buf.String())
 	}
@@ -122,7 +123,7 @@ func TestRecoveryNoStack(t *testing.T) {
 
 func TestRecoveryPassesError(t *testing.T) {
 	mw := New()
-	handler := func(c *celeris.Context) error {
+	handler := func(_ *celeris.Context) error {
 		return celeris.NewHTTPError(400, "bad request")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
@@ -135,7 +136,7 @@ func FuzzRecoveryPanicValues(f *testing.F) {
 	f.Add("")
 	f.Fuzz(func(t *testing.T, val string) {
 		mw := New(Config{LogStack: false})
-		handler := func(c *celeris.Context) error {
+		handler := func(_ *celeris.Context) error {
 			panic(val)
 		}
 		chain := []celeris.HandlerFunc{mw, handler}

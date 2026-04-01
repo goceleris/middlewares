@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/goceleris/celeris"
+
 	"github.com/goceleris/middlewares/internal/testutil"
 )
 

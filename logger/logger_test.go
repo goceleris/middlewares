@@ -9,6 +9,7 @@ import (
 
 	"github.com/goceleris/celeris"
 	"github.com/goceleris/celeris/celeristest"
+
 	"github.com/goceleris/middlewares/internal/testutil"
 )
 
@@ -107,7 +108,7 @@ func TestLoggerCustomFields(t *testing.T) {
 	log, buf := newTestLogger()
 	mw := New(Config{
 		Output: log,
-		Fields: func(c *celeris.Context, _ time.Duration) []slog.Attr {
+		Fields: func(_ *celeris.Context, _ time.Duration) []slog.Attr {
 			return []slog.Attr{slog.String("custom", "value")}
 		},
 	})
@@ -131,7 +132,7 @@ func TestLoggerClientIP(t *testing.T) {
 func TestLoggerHandlerError(t *testing.T) {
 	log, buf := newTestLogger()
 	mw := New(Config{Output: log})
-	handler := func(c *celeris.Context) error {
+	handler := func(_ *celeris.Context) error {
 		return celeris.NewHTTPError(503, "service unavailable")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}

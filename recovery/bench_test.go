@@ -9,7 +9,7 @@ import (
 
 func BenchmarkRecoveryNoPanic(b *testing.B) {
 	mw := New(Config{LogStack: false})
-	noop := func(c *celeris.Context) error { return nil }
+	noop := func(_ *celeris.Context) error { return nil }
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
@@ -21,7 +21,7 @@ func BenchmarkRecoveryNoPanic(b *testing.B) {
 
 func BenchmarkRecoveryWithPanic(b *testing.B) {
 	mw := New(Config{LogStack: false})
-	panicker := func(c *celeris.Context) error { panic("bench") }
+	panicker := func(_ *celeris.Context) error { panic("bench") }
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
