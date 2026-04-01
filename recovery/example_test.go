@@ -2,6 +2,7 @@ package recovery_test
 
 import (
 	"github.com/goceleris/celeris"
+
 	"github.com/goceleris/middlewares/recovery"
 )
 
