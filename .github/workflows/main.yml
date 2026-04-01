@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        celeris-version: [v1.2.1]
+        celeris-version: [v1.2.2]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        celeris-version: [v1.2.1]
+        celeris-version: [v1.2.2]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
