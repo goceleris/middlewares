@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/go-chi/chi/v5 v5.2.1
-	github.com/goceleris/celeris v1.2.2
+	github.com/goceleris/celeris v1.2.1
 	github.com/goceleris/middlewares v0.0.0
 	github.com/gofiber/fiber/v3 v3.0.0
 	github.com/labstack/echo/v4 v4.13.3
