@@ -63,8 +63,11 @@ func (l *shardedLimiter) allow(key string, now int64) (bool, int, int64) {
 		return true, l.burst - 1, reset
 	}
 
-	// Refill tokens.
+	// Refill tokens. Clamp elapsed to zero to handle clock step-backs (NTP).
 	elapsed := float64(now-b.lastFill) / float64(time.Second)
+	if elapsed < 0 {
+		elapsed = 0
+	}
 	b.tokens += elapsed * l.rps
 	if b.tokens > float64(l.burst) {
 		b.tokens = float64(l.burst)

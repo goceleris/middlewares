@@ -379,6 +379,195 @@ func TestFormatResetSeconds(t *testing.T) {
 	}
 }
 
+func TestDisableHeaders(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{RPS: 100, Burst: 10, DisableHeaders: true, CleanupInterval: time.Hour, CleanupContext: ctx})
+
+	c, _ := celeristest.NewContextT(t, "GET", "/", celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	err := mw(c)
+	testutil.AssertNoError(t, err)
+
+	if got := contextHeader(c, "x-ratelimit-limit"); got != "" {
+		t.Fatalf("expected no x-ratelimit-limit with DisableHeaders, got %q", got)
+	}
+	if got := contextHeader(c, "x-ratelimit-remaining"); got != "" {
+		t.Fatalf("expected no x-ratelimit-remaining with DisableHeaders, got %q", got)
+	}
+	if got := contextHeader(c, "x-ratelimit-reset"); got != "" {
+		t.Fatalf("expected no x-ratelimit-reset with DisableHeaders, got %q", got)
+	}
+}
+
+func TestDisableHeadersOnDeny(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{RPS: 0.001, Burst: 1, DisableHeaders: true, CleanupInterval: time.Hour, CleanupContext: ctx})
+
+	c, _ := celeristest.NewContextT(t, "GET", "/", celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	_ = mw(c)
+
+	c2, _ := celeristest.NewContextT(t, "GET", "/", celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	err := mw(c2)
+	testutil.AssertHTTPError(t, err, 429)
+
+	if got := contextHeader(c2, "retry-after"); got != "" {
+		t.Fatalf("expected no retry-after with DisableHeaders, got %q", got)
+	}
+}
+
+func TestLimitReachedCallback(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	called := false
+	mw := New(Config{
+		RPS:   0.001,
+		Burst: 1,
+		LimitReached: func(c *celeris.Context) error {
+			called = true
+			return c.String(429, "custom rate limit response")
+		},
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+	})
+
+	_, _ = testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/", celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	testutil.AssertNoError(t, err)
+	if !called {
+		t.Fatal("expected LimitReached callback to be called")
+	}
+	testutil.AssertStatus(t, rec, 429)
+	testutil.AssertBodyContains(t, rec, "custom rate limit response")
+}
+
+func TestLimitReachedNilUsesDefault(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{RPS: 0.001, Burst: 1, CleanupInterval: time.Hour, CleanupContext: ctx})
+
+	_, _ = testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	_, err := testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	testutil.AssertHTTPError(t, err, 429)
+}
+
+func TestRetryAfterHeaderOnDeny(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{RPS: 0.001, Burst: 1, CleanupInterval: time.Hour, CleanupContext: ctx})
+
+	c, _ := celeristest.NewContextT(t, "GET", "/", celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	_ = mw(c)
+
+	c2, _ := celeristest.NewContextT(t, "GET", "/", celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	err := mw(c2)
+	testutil.AssertHTTPError(t, err, 429)
+
+	retryAfter := contextHeader(c2, "retry-after")
+	if retryAfter == "" {
+		t.Fatal("expected retry-after header on denied request")
+	}
+}
+
+func TestRetryAfterNotSetOnAllowed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{RPS: 100, Burst: 10, CleanupInterval: time.Hour, CleanupContext: ctx})
+
+	c, _ := celeristest.NewContextT(t, "GET", "/", celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	err := mw(c)
+	testutil.AssertNoError(t, err)
+
+	if got := contextHeader(c, "retry-after"); got != "" {
+		t.Fatalf("expected no retry-after on allowed request, got %q", got)
+	}
+}
+
+func TestLimitReachedHeadersStillSet(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var retryAfter string
+	var limitHeader string
+	mw := New(Config{
+		RPS:   0.001,
+		Burst: 1,
+		LimitReached: func(c *celeris.Context) error {
+			retryAfter = contextHeader(c, "retry-after")
+			limitHeader = contextHeader(c, "x-ratelimit-limit")
+			return celeris.NewHTTPError(429, "custom")
+		},
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+	})
+
+	c, _ := celeristest.NewContextT(t, "GET", "/", celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	_ = mw(c) // consume token
+
+	c2, _ := celeristest.NewContextT(t, "GET", "/", celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	err := mw(c2)
+	testutil.AssertHTTPError(t, err, 429)
+
+	if limitHeader != "1" {
+		t.Fatalf("expected x-ratelimit-limit=1 before LimitReached, got %q", limitHeader)
+	}
+	if retryAfter == "" {
+		t.Fatal("expected retry-after header before LimitReached")
+	}
+}
+
+func TestParseRate(t *testing.T) {
+	tests := []struct {
+		input string
+		rps   float64
+		burst int
+	}{
+		{"5-S", 5, 5},
+		{"100-M", 100.0 / 60, 100},
+		{"1000-H", 1000.0 / 3600, 1000},
+		{"86400-D", 1, 86400},
+		{"10-s", 10, 10}, // case insensitive
+	}
+	for _, tc := range tests {
+		rps, burst := ParseRate(tc.input)
+		if burst != tc.burst {
+			t.Errorf("ParseRate(%q): burst=%d, want %d", tc.input, burst, tc.burst)
+		}
+		diff := rps - tc.rps
+		if diff < -0.001 || diff > 0.001 {
+			t.Errorf("ParseRate(%q): rps=%f, want %f", tc.input, rps, tc.rps)
+		}
+	}
+}
+
+func TestParseRateInvalidPanics(t *testing.T) {
+	invalids := []string{"", "100", "abc-M", "-5-S", "100-X", "0-M"}
+	for _, s := range invalids {
+		func() {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Errorf("ParseRate(%q): expected panic", s)
+				}
+			}()
+			ParseRate(s)
+		}()
+	}
+}
+
+func TestRateConfigField(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{Rate: "5-S", CleanupInterval: time.Hour, CleanupContext: ctx})
+	// Should allow 5 requests (burst=5).
+	for range 5 {
+		_, err := testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+		testutil.AssertNoError(t, err)
+	}
+	// 6th should be blocked.
+	_, err := testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	testutil.AssertHTTPError(t, err, 429)
+}
+
 func FuzzKeyExtraction(f *testing.F) {
 	f.Add("192.168.1.1")
 	f.Add("")
