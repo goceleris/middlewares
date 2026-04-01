@@ -200,9 +200,8 @@ func TestCallsNext(t *testing.T) {
 func FuzzHeaderPropagation(f *testing.F) {
 	f.Add("abc-123")
 	f.Add("")
-	f.Add("unicode-\u00e9\u00e8")
-	f.Add("very-long-" + strings.Repeat("x", 200))
 	f.Add("spaces in id")
+	f.Add(strings.Repeat("x", 128))
 	f.Fuzz(func(t *testing.T, headerVal string) {
 		mw := New()
 		var opts []celeristest.Option
@@ -219,7 +218,7 @@ func FuzzHeaderPropagation(f *testing.F) {
 		if id == "" {
 			t.Fatal("expected x-request-id to always be set")
 		}
-		if headerVal != "" && id != headerVal {
+		if validID(headerVal) && id != headerVal {
 			t.Fatalf("expected propagated value %q, got %q", headerVal, id)
 		}
 	})
@@ -236,4 +235,104 @@ func FuzzGeneratorOutputFormat(f *testing.F) {
 			t.Fatalf("invalid UUID format: %q", id)
 		}
 	})
+}
+
+func TestFromContextReturnsID(t *testing.T) {
+	mw := New()
+	var id string
+	handler := func(c *celeris.Context) error {
+		id = FromContext(c)
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	if id == "" {
+		t.Fatal("FromContext returned empty string")
+	}
+}
+
+func TestFromContextNoMiddleware(t *testing.T) {
+	ctx, _ := celeristest.NewContextT(t, "GET", "/")
+	if got := FromContext(ctx); got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+}
+
+func TestContextKeyConstant(t *testing.T) {
+	if ContextKey != "request_id" {
+		t.Fatalf("ContextKey: got %q, want %q", ContextKey, "request_id")
+	}
+}
+
+func TestRejectsNonPrintableASCII(t *testing.T) {
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-request-id", "bad\x00id"))
+	testutil.AssertNoError(t, err)
+	id := rec.Header("x-request-id")
+	if id == "bad\x00id" {
+		t.Fatal("expected invalid ID to be replaced")
+	}
+	if !uuidRe.MatchString(id) {
+		t.Fatalf("expected fresh UUID, got %q", id)
+	}
+}
+
+func TestRejectsControlChars(t *testing.T) {
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-request-id", "bad\nid"))
+	testutil.AssertNoError(t, err)
+	id := rec.Header("x-request-id")
+	if id == "bad\nid" {
+		t.Fatal("expected invalid ID to be replaced")
+	}
+}
+
+func TestRejectsTooLongID(t *testing.T) {
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	longID := strings.Repeat("a", 129)
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-request-id", longID))
+	testutil.AssertNoError(t, err)
+	id := rec.Header("x-request-id")
+	if id == longID {
+		t.Fatal("expected too-long ID to be replaced")
+	}
+}
+
+func TestAcceptsMaxLengthID(t *testing.T) {
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	maxID := strings.Repeat("a", 128)
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-request-id", maxID))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "x-request-id", maxID)
+}
+
+func TestAcceptsPrintableASCII(t *testing.T) {
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	validChars := "abc-123_XYZ!@#$%^&*() ~"
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-request-id", validChars))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "x-request-id", validChars)
+}
+
+func TestRejectsHighBytes(t *testing.T) {
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-request-id", "id\x7Fhigh"))
+	testutil.AssertNoError(t, err)
+	id := rec.Header("x-request-id")
+	if id == "id\x7Fhigh" {
+		t.Fatal("expected ID with DEL char to be replaced")
+	}
 }

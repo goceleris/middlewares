@@ -19,4 +19,24 @@
 //
 // Set [Config].StackSize to 0 to disable stack trace capture.
 // Set [Config].LogStack to false to suppress panic logging entirely.
+//
+// # Special Panic Types
+//
+// Panics with [http.ErrAbortHandler] (matched via errors.Is) are re-panicked
+// rather than recovered, preserving the standard library's abort semantics.
+//
+// Broken pipe and ECONNRESET errors are detected automatically and logged
+// at WARN level without a stack trace, since the client has disconnected.
+// Use [Config].BrokenPipeHandler to customize the response for these cases.
+//
+// # Nested Recovery
+//
+// If [Config].ErrorHandler itself panics, the middleware falls back to a
+// default 500 Internal Server Error response.
+//
+// # Stack Options
+//
+// Set [Config].StackAll to true to capture stack traces for all goroutines,
+// not just the current one. The method and path are included in the panic
+// log output for easier debugging.
 package recovery
