@@ -1,0 +1,74 @@
+name: CI
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.9
+
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.filter.outputs.packages }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: filter
+        run: |
+          CHANGED=$(git diff --name-only origin/main...HEAD | grep '\.go$' | xargs -I{} dirname {} | sort -u)
+          if echo "$CHANGED" | grep -qE '^(internal/|go\.mod|go\.sum)'; then
+            echo "packages=./..." >> "$GITHUB_OUTPUT"
+          else
+            PKGS=$(echo "$CHANGED" | grep -v '^internal/' | grep -v '^\.' | sed 's|$|/...|' | sed 's|^|./|' | paste -sd, -)
+            if [ -z "$PKGS" ]; then
+              echo "packages=" >> "$GITHUB_OUTPUT"
+            else
+              echo "packages=$PKGS" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  test:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.packages != ''
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        celeris-version: [v1.2.1]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - run: go test -race -count=1 -timeout=120s ${{ needs.detect-changes.outputs.packages }}
+
+  bench:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.packages != ''
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        celeris-version: [v1.2.1]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - name: Run benchmarks (affected packages)
+        run: go test -bench=. -benchmem -count=5 -run=^$ -timeout=300s ${{ needs.detect-changes.outputs.packages }} | tee bench-current.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-pr
+          path: bench-current.txt
