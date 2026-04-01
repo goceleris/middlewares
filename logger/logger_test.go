@@ -164,7 +164,7 @@ func FuzzLoggerStatus(f *testing.F) {
 	f.Add(500)
 	f.Add(0)
 	f.Add(-1)
-	f.Fuzz(func(t *testing.T, status int) {
+	f.Fuzz(func(_ *testing.T, status int) {
 		_ = defaultLevel(status)
 	})
 }

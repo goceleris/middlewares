@@ -15,7 +15,7 @@ func BenchmarkBasicAuthAllow(b *testing.B) {
 				subtle.ConstantTimeCompare([]byte(pass), []byte("secret")) == 1
 		},
 	})
-	noop := func(c *celeris.Context) error { return nil }
+	noop := func(_ *celeris.Context) error { return nil }
 	opts := []celeristest.Option{
 		celeristest.WithBasicAuth("admin", "secret"),
 		celeristest.WithHandlers(mw, noop),
@@ -24,14 +24,14 @@ func BenchmarkBasicAuthAllow(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		ctx, _ := celeristest.NewContext("GET", "/", opts...)
-		ctx.Next()
+		_ = ctx.Next()
 		celeristest.ReleaseContext(ctx)
 	}
 }
 
 func BenchmarkBasicAuthDeny(b *testing.B) {
 	mw := New(Config{
-		Validator: func(user, pass string) bool { return false },
+		Validator: func(_, _ string) bool { return false },
 	})
 	opts := []celeristest.Option{celeristest.WithBasicAuth("wrong", "creds")}
 	b.ReportAllocs()

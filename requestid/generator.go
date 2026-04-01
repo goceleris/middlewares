@@ -24,7 +24,7 @@ func newBufferedGenerator() *bufferedGenerator {
 func (g *bufferedGenerator) UUID() string {
 	g.mu.Lock()
 	if g.pos >= bufSize {
-		rand.Read(g.buf[:])
+		_, _ = rand.Read(g.buf[:])
 		g.pos = 0
 	}
 	var raw [uuidBytes]byte

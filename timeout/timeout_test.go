@@ -173,6 +173,6 @@ func FuzzTimeoutDurations(f *testing.F) {
 			return c.String(200, "ok")
 		}
 		chain := []celeris.HandlerFunc{mw, handler}
-		testutil.RunChain(t, chain, "GET", "/fuzz")
+		_, _ = testutil.RunChain(t, chain, "GET", "/fuzz")
 	})
 }

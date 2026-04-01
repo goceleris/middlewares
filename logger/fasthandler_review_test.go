@@ -2,6 +2,7 @@ package logger
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,10 +26,10 @@ func TestFastHandler_vs_TextHandler(t *testing.T) {
 	fastH := NewFastHandler(&fastBuf, nil)
 	textH := slog.NewTextHandler(&textBuf, &slog.HandlerOptions{})
 
-	if err := fastH.Handle(nil, rec); err != nil {
+	if err := fastH.Handle(context.TODO(), rec); err != nil {
 		t.Fatalf("FastHandler.Handle: %v", err)
 	}
-	if err := textH.Handle(nil, rec); err != nil {
+	if err := textH.Handle(context.TODO(), rec); err != nil {
 		t.Fatalf("TextHandler.Handle: %v", err)
 	}
 
@@ -109,11 +110,11 @@ func TestWithAttrs_Empty(t *testing.T) {
 func TestWithGroup_Nested(t *testing.T) {
 	var buf bytes.Buffer
 	base := NewFastHandler(&buf, nil)
-	var h slog.Handler = base.WithGroup("g1").WithGroup("g2")
+	h := base.WithGroup("g1").WithGroup("g2")
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	rec := slog.NewRecord(now, slog.LevelInfo, "test", 0)
 	rec.AddAttrs(slog.String("k", "v"))
-	if err := h.Handle(nil, rec); err != nil {
+	if err := h.Handle(context.TODO(), rec); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -131,7 +132,7 @@ func TestWithGroup_WithAttrs_Mixed(t *testing.T) {
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	rec := slog.NewRecord(now, slog.LevelInfo, "test", 0)
 	rec.AddAttrs(slog.String("k", "v"))
-	if err := h2.Handle(nil, rec); err != nil {
+	if err := h2.Handle(context.TODO(), rec); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -296,7 +297,7 @@ func TestBufferPool_ConcurrentSafety(t *testing.T) {
 			defer wg.Done()
 			rec := slog.NewRecord(now, slog.LevelInfo, fmt.Sprintf("msg-%d", idx), 0)
 			rec.AddAttrs(slog.Int("idx", idx))
-			_ = h.Handle(nil, rec)
+			_ = h.Handle(context.TODO(), rec)
 		}(i)
 	}
 	wg.Wait()
@@ -318,8 +319,8 @@ func TestBufferPool_NoLeakAcrossHandlers(t *testing.T) {
 	for range 50 {
 		rec1 := slog.NewRecord(now, slog.LevelInfo, "handler1", 0)
 		rec2 := slog.NewRecord(now, slog.LevelWarn, "handler2", 0)
-		_ = h1.Handle(nil, rec1)
-		_ = h2.Handle(nil, rec2)
+		_ = h1.Handle(context.TODO(), rec1)
+		_ = h2.Handle(context.TODO(), rec2)
 	}
 
 	// h1 output must never contain "handler2" and vice versa.
@@ -383,7 +384,7 @@ func TestFastHandler_FormatCompat_AllTypes(t *testing.T) {
 
 	var fastBuf bytes.Buffer
 	h := NewFastHandler(&fastBuf, nil)
-	if err := h.Handle(nil, rec); err != nil {
+	if err := h.Handle(context.TODO(), rec); err != nil {
 		t.Fatal(err)
 	}
 	out := fastBuf.String()
@@ -442,8 +443,8 @@ func TestDuration_FormatDivergence(t *testing.T) {
 		var fastBuf, textBuf bytes.Buffer
 		fastH := NewFastHandler(&fastBuf, nil)
 		textH := slog.NewTextHandler(&textBuf, &slog.HandlerOptions{})
-		_ = fastH.Handle(nil, rec)
-		_ = textH.Handle(nil, rec)
+		_ = fastH.Handle(context.TODO(), rec)
+		_ = textH.Handle(context.TODO(), rec)
 
 		fastKV := parseKV(strings.TrimSpace(fastBuf.String()))
 		textKV := parseKV(strings.TrimSpace(textBuf.String()))

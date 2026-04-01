@@ -22,7 +22,7 @@ func New(config ...Config) celeris.HandlerFunc {
 		skipMap[p] = struct{}{}
 	}
 
-	limiter := newShardedLimiter(cfg.Shards, cfg.RPS, cfg.Burst, cfg.CleanupInterval, cfg.CleanupContext)
+	limiter := newShardedLimiter(cfg.CleanupContext, cfg.Shards, cfg.RPS, cfg.Burst, cfg.CleanupInterval)
 	keyFunc := cfg.KeyFunc
 	limitStr := formatInt(cfg.Burst)
 

@@ -147,7 +147,7 @@ func (g *groupHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return g.parent.Enabled(ctx, level)
 }
 
-func (g *groupHandler) Handle(ctx context.Context, r slog.Record) error {
+func (g *groupHandler) Handle(_ context.Context, r slog.Record) error {
 	bp := fastBufPool.Get().(*[]byte)
 	buf := (*bp)[:0]
 
@@ -284,7 +284,7 @@ func appendTextValue(buf []byte, s string) []byte {
 // Avoids time.Format which allocates.
 func appendTime(buf []byte, t time.Time) []byte {
 	year, month, day := t.Date()
-	hour, min, sec := t.Clock()
+	hour, mn, sec := t.Clock()
 	nsec := t.Nanosecond()
 
 	buf = appendInt(buf, year, 4)
@@ -295,7 +295,7 @@ func appendTime(buf []byte, t time.Time) []byte {
 	buf = append(buf, 'T')
 	buf = appendInt(buf, hour, 2)
 	buf = append(buf, ':')
-	buf = appendInt(buf, min, 2)
+	buf = appendInt(buf, mn, 2)
 	buf = append(buf, ':')
 	buf = appendInt(buf, sec, 2)
 	buf = append(buf, '.')
@@ -358,4 +358,3 @@ func appendInt(buf []byte, n, width int) []byte {
 
 // Verify interface compliance.
 var _ slog.Handler = (*FastHandler)(nil)
-

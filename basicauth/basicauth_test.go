@@ -6,6 +6,7 @@ import (
 
 	"github.com/goceleris/celeris"
 	"github.com/goceleris/celeris/celeristest"
+
 	"github.com/goceleris/middlewares/internal/testutil"
 )
 
@@ -100,7 +101,7 @@ func TestCustomRealm(t *testing.T) {
 func TestCustomErrorHandler(t *testing.T) {
 	mw := New(Config{
 		Validator: validatorFor("admin", "secret"),
-		ErrorHandler: func(c *celeris.Context) error {
+		ErrorHandler: func(_ *celeris.Context) error {
 			return celeris.NewHTTPError(403, "Forbidden")
 		},
 	})
@@ -117,7 +118,7 @@ func TestCustomErrorHandler(t *testing.T) {
 func TestSkipBypassesAuth(t *testing.T) {
 	mw := New(Config{
 		Validator: validatorFor("admin", "secret"),
-		Skip:      func(c *celeris.Context) bool { return true },
+		Skip:      func(_ *celeris.Context) bool { return true },
 	})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "skipped")
@@ -222,6 +223,6 @@ func FuzzBasicAuthHeader(f *testing.F) {
 			opts = append(opts, celeristest.WithHeader("authorization", header))
 		}
 		// Must not panic regardless of header value.
-		testutil.RunChain(t, chain, "GET", "/fuzz", opts...)
+		_, _ = testutil.RunChain(t, chain, "GET", "/fuzz", opts...)
 	})
 }

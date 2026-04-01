@@ -14,7 +14,7 @@ func BenchmarkRecoveryNoPanic(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		ctx, _ := celeristest.NewContext("GET", "/bench", celeristest.WithHandlers(mw, noop))
-		ctx.Next()
+		_ = ctx.Next()
 		celeristest.ReleaseContext(ctx)
 	}
 }
@@ -26,7 +26,7 @@ func BenchmarkRecoveryWithPanic(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		ctx, _ := celeristest.NewContext("GET", "/bench", celeristest.WithHandlers(mw, panicker))
-		ctx.Next()
+		_ = ctx.Next()
 		celeristest.ReleaseContext(ctx)
 	}
 }

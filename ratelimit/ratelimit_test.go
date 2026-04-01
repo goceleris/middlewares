@@ -388,7 +388,7 @@ func FuzzKeyExtraction(f *testing.F) {
 	f.Cleanup(cancel)
 	mw := New(Config{RPS: 1e9, Burst: 1e9, CleanupInterval: time.Hour, CleanupContext: ctx})
 
-	f.Fuzz(func(t *testing.T, ip string) {
+	f.Fuzz(func(_ *testing.T, ip string) {
 		c, _ := celeristest.NewContext("GET", "/", celeristest.WithHeader("x-forwarded-for", ip))
 		_ = mw(c)
 		celeristest.ReleaseContext(c)
@@ -402,9 +402,9 @@ func FuzzConcurrentAccess(f *testing.F) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	f.Cleanup(cancel)
-	l := newShardedLimiter(4, 1e6, 1e6, time.Hour, ctx)
+	l := newShardedLimiter(ctx, 4, 1e6, 1e6, time.Hour)
 
-	f.Fuzz(func(t *testing.T, key string, n int) {
+	f.Fuzz(func(_ *testing.T, key string, n int) {
 		if n < 1 || n > 100 {
 			return
 		}

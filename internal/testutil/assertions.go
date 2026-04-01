@@ -1,3 +1,4 @@
+// Package testutil provides test helpers and assertions for middleware tests.
 package testutil
 
 import (

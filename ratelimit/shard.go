@@ -24,7 +24,7 @@ type bucket struct {
 	lastFill int64 // UnixNano
 }
 
-func newShardedLimiter(shardCount int, rps float64, burst int, cleanupInterval time.Duration, ctx context.Context) *shardedLimiter {
+func newShardedLimiter(ctx context.Context, shardCount int, rps float64, burst int, cleanupInterval time.Duration) *shardedLimiter {
 	n := nextPow2(shardCount)
 	l := &shardedLimiter{
 		shards: make([]shard, n),

@@ -5,6 +5,7 @@ import (
 
 	"github.com/goceleris/celeris"
 	"github.com/goceleris/celeris/celeristest"
+
 	"github.com/goceleris/middlewares/internal/testutil"
 )
 
@@ -174,7 +175,7 @@ func FuzzBodyLimitContentLength(f *testing.F) {
 			opts = append(opts, celeristest.WithHeader("content-length", cl))
 		}
 		// Must not panic regardless of Content-Length value.
-		testutil.RunChain(t, chain, "POST", "/fuzz", opts...)
+		_, _ = testutil.RunChain(t, chain, "POST", "/fuzz", opts...)
 	})
 }
 

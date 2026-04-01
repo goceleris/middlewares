@@ -43,7 +43,7 @@ func BenchmarkRateLimitDeny(b *testing.B) {
 func BenchmarkShardedLimiter(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	l := newShardedLimiter(16, 1e9, 1e9, time.Minute, ctx)
+	l := newShardedLimiter(ctx, 16, 1e9, 1e9, time.Minute)
 	now := time.Now().UnixNano()
 	b.ReportAllocs()
 	b.ResetTimer()
