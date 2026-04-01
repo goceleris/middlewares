@@ -25,9 +25,24 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 
 		// Check if origin is allowed.
+		// Order: allowAll → exactMap → wildcardPatterns → AllowOriginsFunc → AllowOriginRequestFunc
 		allowed := p.allowAllOrigins
 		if !allowed {
 			_, allowed = p.originSet[origin]
+		}
+		if !allowed {
+			for _, wp := range p.wildcardPatterns {
+				if wp.match(origin) {
+					allowed = true
+					break
+				}
+			}
+		}
+		if !allowed && p.allowOriginsFunc != nil {
+			allowed = p.allowOriginsFunc(origin)
+		}
+		if !allowed && p.allowOriginRequestFunc != nil {
+			allowed = p.allowOriginRequestFunc(c, origin)
 		}
 		if !allowed {
 			return c.Next()
@@ -49,12 +64,16 @@ func New(config ...Config) celeris.HandlerFunc {
 			c.SetHeader("access-control-expose-headers", p.exposeHeaders)
 		}
 
-		// Preflight request.
-		if c.Method() == "OPTIONS" {
+		// Preflight: OPTIONS with Access-Control-Request-Method header.
+		if c.Method() == "OPTIONS" && c.Header("access-control-request-method") != "" {
 			c.SetHeader("access-control-allow-methods", p.allowMethods)
 			c.SetHeader("access-control-allow-headers", p.allowHeaders)
 			if p.maxAge != "" {
 				c.SetHeader("access-control-max-age", p.maxAge)
+			}
+			c.SetHeader("vary", p.preflightVary)
+			if p.allowPrivateNetwork && c.Header("access-control-request-private-network") == "true" {
+				c.SetHeader("access-control-allow-private-network", "true")
 			}
 			return c.NoContent(204)
 		}

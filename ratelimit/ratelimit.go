@@ -6,7 +6,8 @@ import (
 	"github.com/goceleris/celeris"
 )
 
-var errTooManyRequests = celeris.NewHTTPError(429, "Too Many Requests")
+// ErrTooManyRequests is returned when the rate limit is exceeded.
+var ErrTooManyRequests = celeris.NewHTTPError(429, "Too Many Requests")
 
 // New creates a rate limit middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
@@ -25,6 +26,8 @@ func New(config ...Config) celeris.HandlerFunc {
 	limiter := newShardedLimiter(cfg.CleanupContext, cfg.Shards, cfg.RPS, cfg.Burst, cfg.CleanupInterval)
 	keyFunc := cfg.KeyFunc
 	limitStr := formatInt(cfg.Burst)
+	disableHeaders := cfg.DisableHeaders
+	limitReached := cfg.LimitReached
 
 	return func(c *celeris.Context) error {
 		if cfg.Skip != nil && cfg.Skip(c) {
@@ -39,12 +42,20 @@ func New(config ...Config) celeris.HandlerFunc {
 		now := time.Now().UnixNano()
 		allowed, remaining, resetNano := limiter.allow(key, now)
 
-		c.SetHeader("x-ratelimit-limit", limitStr)
-		c.SetHeader("x-ratelimit-remaining", formatInt(remaining))
-		c.SetHeader("x-ratelimit-reset", formatResetSeconds(resetNano, now))
+		if !disableHeaders {
+			c.SetHeader("x-ratelimit-limit", limitStr)
+			c.SetHeader("x-ratelimit-remaining", formatInt(remaining))
+			c.SetHeader("x-ratelimit-reset", formatResetSeconds(resetNano, now))
+		}
 
 		if !allowed {
-			return errTooManyRequests
+			if !disableHeaders {
+				c.SetHeader("retry-after", formatResetSeconds(resetNano, now))
+			}
+			if limitReached != nil {
+				return limitReached(c)
+			}
+			return ErrTooManyRequests
 		}
 
 		return c.Next()

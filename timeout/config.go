@@ -19,6 +19,14 @@ type Config struct {
 
 	// SkipPaths lists paths to skip (exact match).
 	SkipPaths []string
+
+	// Preemptive enables preemptive timeout mode. When true, the handler
+	// runs in a goroutine and the response is buffered. If the handler
+	// does not complete within the timeout, the middleware waits for the
+	// goroutine to finish, discards the buffered response, and returns
+	// the error handler result. Handlers MUST respect context cancellation
+	// (select on c.Context().Done()) to avoid blocking the response.
+	Preemptive bool
 }
 
 // DefaultConfig is the default timeout configuration.
@@ -36,10 +44,11 @@ func applyDefaults(cfg Config) Config {
 	return cfg
 }
 
-var errServiceUnavailable = celeris.NewHTTPError(503, "Service Unavailable")
+// ErrServiceUnavailable is returned when the request timeout is exceeded.
+var ErrServiceUnavailable = celeris.NewHTTPError(503, "Service Unavailable")
 
 func defaultErrorHandler(_ *celeris.Context) error {
-	return errServiceUnavailable
+	return ErrServiceUnavailable
 }
 
 func (cfg Config) validate() {}

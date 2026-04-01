@@ -2,7 +2,8 @@ package basicauth
 
 import "github.com/goceleris/celeris"
 
-var errUnauthorized = celeris.NewHTTPError(401, "Unauthorized")
+// ErrUnauthorized is returned when authentication fails.
+var ErrUnauthorized = celeris.NewHTTPError(401, "Unauthorized")
 
 // New creates a basic auth middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
@@ -20,12 +21,13 @@ func New(config ...Config) celeris.HandlerFunc {
 
 	realmHeader := `Basic realm="` + cfg.Realm + `"`
 	validator := cfg.Validator
+	validatorCtx := cfg.ValidatorWithContext
 	errorHandler := cfg.ErrorHandler
 
 	if errorHandler == nil {
 		errorHandler = func(c *celeris.Context) error {
 			c.SetHeader("www-authenticate", realmHeader)
-			return errUnauthorized
+			return ErrUnauthorized
 		}
 	}
 
@@ -39,11 +41,30 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 
 		user, pass, ok := c.BasicAuth()
-		if !ok || !validator(user, pass) {
+		var valid bool
+		if ok {
+			if validatorCtx != nil {
+				valid = validatorCtx(c, user, pass)
+			} else {
+				valid = validator(user, pass)
+			}
+		}
+		if !ok || !valid {
 			return errorHandler(c)
 		}
 
-		c.Set("user", user)
+		c.Set(UsernameKey, user)
 		return c.Next()
 	}
+}
+
+// UsernameFromContext returns the authenticated username from the context store.
+// Returns an empty string if no username was stored (e.g., no auth or skipped).
+func UsernameFromContext(c *celeris.Context) string {
+	v, ok := c.Get(UsernameKey)
+	if !ok {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
 }

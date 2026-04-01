@@ -1,7 +1,8 @@
 // Package cors provides Cross-Origin Resource Sharing (CORS) middleware
 // for celeris.
 //
-// The middleware handles preflight OPTIONS requests and sets the
+// The middleware handles preflight OPTIONS requests (detected via
+// OPTIONS method + Access-Control-Request-Method header) and sets the
 // appropriate Access-Control-* response headers. Header values are
 // pre-joined at initialization for zero-alloc responses on the hot path.
 //
@@ -16,6 +17,30 @@
 //	    AllowCredentials: true,
 //	    MaxAge:           3600,
 //	}))
+//
+// # Dynamic Origin Validation
+//
+// [Config].AllowOriginsFunc validates origins with a custom function.
+// [Config].AllowOriginRequestFunc provides the full request context for
+// tenant-based or header-dependent origin checks. Neither may be combined
+// with a wildcard ("*") AllowOrigins entry.
+//
+//	server.Use(cors.New(cors.Config{
+//	    AllowOriginsFunc: func(origin string) bool {
+//	        return strings.HasSuffix(origin, ".example.com")
+//	    },
+//	}))
+//
+// # Subdomain Wildcards
+//
+// Origins may contain a single wildcard for subdomain matching
+// (e.g., "https://*.example.com"). Patterns with more than one wildcard
+// panic at initialization.
+//
+// # Private Network Access
+//
+// Set [Config].AllowPrivateNetwork to true to enable the Private Network
+// Access spec (Access-Control-Allow-Private-Network header on preflight).
 //
 // Using AllowCredentials with a wildcard origin ("*") panics at
 // initialization, as this combination is forbidden by the CORS spec.

@@ -8,18 +8,38 @@
 //
 //	server.Use(logger.New())
 //
-// Using the zero-alloc FastHandler for high-throughput servers:
+// Using the zero-alloc FastHandler with color output:
 //
 //	mw := logger.New(logger.Config{
-//	    Output: slog.New(logger.NewFastHandler(os.Stderr, nil)),
+//	    Output: slog.New(logger.NewFastHandler(os.Stderr, &logger.FastHandlerOptions{
+//	        Color: true,
+//	    })),
 //	})
 //	server.Use(mw)
 //
 // [NewFastHandler] creates a [FastHandler] that formats log records
 // directly into a pooled byte buffer, producing output compatible with
-// slog.TextHandler. Configure its minimum level via [FastHandlerOptions].
+// slog.TextHandler. When [FastHandlerOptions].Color is true, status codes,
+// HTTP methods, and latency values are colored with ANSI escape codes
+// (e.g., green for 2xx, red for 5xx). Configure its minimum level via
+// [FastHandlerOptions].
 //
-// The middleware automatically includes client_ip, request_id (from the
-// x-request-id header), and error fields when present. Additional fields
-// can be added via [Config].Fields.
+// # Body Capture
+//
+// Set [Config].CaptureRequestBody and/or [Config].CaptureResponseBody to
+// log request and response bodies. Bodies are truncated to
+// [Config].MaxCaptureBytes (default 4096).
+//
+//	server.Use(logger.New(logger.Config{
+//	    CaptureRequestBody:  true,
+//	    CaptureResponseBody: true,
+//	    MaxCaptureBytes:     2048,
+//	}))
+//
+// # Request ID Integration
+//
+// The middleware automatically reads the request ID from the context store
+// (key "request_id") first, falling back to the x-request-id header.
+// This integrates seamlessly with the requestid middleware when both are
+// installed. Additional fields can be added via [Config].Fields.
 package logger

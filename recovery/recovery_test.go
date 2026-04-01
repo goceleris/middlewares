@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"log/slog"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -129,6 +130,73 @@ func TestRecoveryPassesError(t *testing.T) {
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, err := testutil.RunChain(t, chain, "GET", "/error")
 	testutil.AssertHTTPError(t, err, 400)
+}
+
+func TestErrAbortHandlerRepanics(t *testing.T) {
+	mw := New(Config{LogStack: false})
+	handler := func(_ *celeris.Context) error {
+		panic(http.ErrAbortHandler)
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	defer func() {
+		r := recover()
+		if r != http.ErrAbortHandler {
+			t.Fatalf("expected http.ErrAbortHandler re-panic, got %v", r)
+		}
+	}()
+	_, _ = testutil.RunChain(t, chain, "GET", "/abort")
+	t.Fatal("expected panic, not normal return")
+}
+
+func TestRecoveryLogsMethodAndPath(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, nil))
+	mw := New(Config{Logger: log, StackSize: 4096, LogStack: true})
+	handler := func(_ *celeris.Context) error {
+		panic("method path test")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "POST", "/test-path")
+	output := buf.String()
+	if !strings.Contains(output, `"method":"POST"`) {
+		t.Fatalf("expected method in log: %s", output)
+	}
+	if !strings.Contains(output, `"path":"/test-path"`) {
+		t.Fatalf("expected path in log: %s", output)
+	}
+}
+
+func TestRecoveryLogsMethodAndPathNoStack(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, nil))
+	mw := New(Config{Logger: log, LogStack: true, StackSize: 0})
+	handler := func(_ *celeris.Context) error {
+		panic("no stack method path")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "DELETE", "/delete-path")
+	output := buf.String()
+	if !strings.Contains(output, `"method":"DELETE"`) {
+		t.Fatalf("expected method in log: %s", output)
+	}
+	if !strings.Contains(output, `"path":"/delete-path"`) {
+		t.Fatalf("expected path in log: %s", output)
+	}
+}
+
+func TestStackAllCapturesAllGoroutines(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, nil))
+	mw := New(Config{Logger: log, StackSize: 8192, LogStack: true, StackAll: true})
+	handler := func(_ *celeris.Context) error {
+		panic("stack all test")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "GET", "/stackall")
+	output := buf.String()
+	if !strings.Contains(output, "goroutine") {
+		t.Fatalf("expected goroutine in stack: %s", output)
+	}
 }
 
 func FuzzRecoveryPanicValues(f *testing.F) {

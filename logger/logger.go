@@ -30,6 +30,9 @@ func New(config ...Config) celeris.HandlerFunc {
 	handler := cfg.Output.Handler()
 	levelFn := cfg.Level
 	fieldsFn := cfg.Fields
+	captureReqBody := cfg.CaptureRequestBody
+	captureRespBody := cfg.CaptureResponseBody
+	maxCapture := cfg.MaxCaptureBytes
 
 	return func(c *celeris.Context) error {
 		if cfg.Skip != nil && cfg.Skip(c) {
@@ -39,6 +42,10 @@ func New(config ...Config) celeris.HandlerFunc {
 		path := c.Path()
 		if _, ok := skipMap[path]; ok {
 			return c.Next()
+		}
+
+		if captureRespBody {
+			c.CaptureResponse()
 		}
 
 		start := time.Now()
@@ -67,7 +74,11 @@ func New(config ...Config) celeris.HandlerFunc {
 		if ip := c.ClientIP(); ip != "" {
 			attrs = append(attrs, slog.String("client_ip", ip))
 		}
-		if rid := c.Header("x-request-id"); rid != "" {
+		if rid, ok := c.Get("request_id"); ok {
+			if s, ok := rid.(string); ok && s != "" {
+				attrs = append(attrs, slog.String("request_id", s))
+			}
+		} else if rid := c.Header("x-request-id"); rid != "" {
 			attrs = append(attrs, slog.String("request_id", rid))
 		}
 		if err != nil {
@@ -75,6 +86,20 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 		if fieldsFn != nil {
 			attrs = append(attrs, fieldsFn(c, latency)...)
+		}
+		if captureReqBody {
+			body := c.Body()
+			if len(body) > maxCapture {
+				body = body[:maxCapture]
+			}
+			attrs = append(attrs, slog.String("request_body", string(body)))
+		}
+		if captureRespBody {
+			body := c.ResponseBody()
+			if len(body) > maxCapture {
+				body = body[:maxCapture]
+			}
+			attrs = append(attrs, slog.String("response_body", string(body)))
 		}
 
 		// Call handler directly instead of log.LogAttrs to skip
