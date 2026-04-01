@@ -1,0 +1,58 @@
+name: Main
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.9
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        celeris-version: [v1.2.1]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - run: go test -race -count=1 -timeout=120s ./...
+
+  bench:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        celeris-version: [v1.2.1]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - name: Run all benchmarks
+        run: go test -bench=. -benchmem -count=5 -run=^$ -timeout=300s ./... | tee bench-baseline.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-baseline
+          path: bench-baseline.txt
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...
