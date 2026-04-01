@@ -2,6 +2,7 @@ package ratelimit_test
 
 import (
 	"github.com/goceleris/celeris"
+
 	"github.com/goceleris/middlewares/ratelimit"
 )
 

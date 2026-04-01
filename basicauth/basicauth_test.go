@@ -350,7 +350,7 @@ func TestValidatorWithContext(t *testing.T) {
 func TestValidatorWithContextTakesPrecedence(t *testing.T) {
 	called := false
 	mw := New(Config{
-		Validator: func(u, p string) bool { return true },
+		Validator: func(_, _ string) bool { return true },
 		ValidatorWithContext: func(_ *celeris.Context, u, p string) bool {
 			called = true
 			return u == "ctx" && p == "pass"

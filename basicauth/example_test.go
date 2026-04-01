@@ -2,6 +2,7 @@ package basicauth_test
 
 import (
 	"github.com/goceleris/celeris"
+
 	"github.com/goceleris/middlewares/basicauth"
 )
 
@@ -28,7 +29,7 @@ func ExampleNew_validator() {
 func ExampleNew_contextValidator() {
 	// Context-aware validator for per-request auth decisions.
 	_ = basicauth.New(basicauth.Config{
-		ValidatorWithContext: func(c *celeris.Context, user, pass string) bool {
+		ValidatorWithContext: func(c *celeris.Context, user, _ string) bool {
 			tenant := c.Header("x-tenant")
 			return tenant == "acme" && user == "admin"
 		},

@@ -32,7 +32,7 @@ jobs:
           if echo "$CHANGED" | grep -qE '^(internal/|go\.mod|go\.sum)'; then
             echo "packages=./..." >> "$GITHUB_OUTPUT"
           else
-            PKGS=$(echo "$CHANGED" | grep -v '^internal/' | grep -v '^\.' | sed 's|$|/...|' | sed 's|^|./|' | paste -sd, -)
+            PKGS=$(echo "$CHANGED" | grep -v '^internal/' | grep -v '^\.' | sed 's|$|/...|' | sed 's|^|./|' | paste -sd' ' -)
             if [ -z "$PKGS" ]; then
               echo "packages=" >> "$GITHUB_OUTPUT"
             else

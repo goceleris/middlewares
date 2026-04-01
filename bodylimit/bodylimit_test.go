@@ -292,7 +292,7 @@ func TestLimitStringInvalidPanics(t *testing.T) {
 	New(Config{Limit: "notasize"})
 }
 
-func TestLimitStringEmptyPanics(t *testing.T) {
+func TestLimitStringEmptyPanics(_ *testing.T) {
 	// Empty Limit string should NOT panic — it means "use MaxBytes".
 	// This is different from a non-empty invalid string.
 	mw := New(Config{Limit: "", MaxBytes: 1024})

@@ -105,9 +105,9 @@ func (w wildcardPattern) match(origin string) bool {
 
 // precomputed holds pre-joined header values for zero-alloc responses.
 type precomputed struct {
-	allowAllOrigins     bool
-	originSet           map[string]struct{}
-	wildcardPatterns    []wildcardPattern
+	allowAllOrigins        bool
+	originSet              map[string]struct{}
+	wildcardPatterns       []wildcardPattern
 	allowOriginsFunc       func(string) bool
 	allowOriginRequestFunc func(*celeris.Context, string) bool
 	allowMethods           string
