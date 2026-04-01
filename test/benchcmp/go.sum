@@ -6,8 +6,8 @@ github.com/fxamacker/cbor/v2 v2.9.0 h1:NpKPmjDBgUfBms6tr6JZkTHtfFGcMKsw3eGcmD/sa
 github.com/fxamacker/cbor/v2 v2.9.0/go.mod h1:vM4b+DJCtHn+zz7h3FFp/hDAI9WNWCsZj23V5ytsSxQ=
 github.com/go-chi/chi/v5 v5.2.1 h1:KOIHODQj58PmL80G2Eak4WdvUzjSJSm0vG72crDCqb8=
 github.com/go-chi/chi/v5 v5.2.1/go.mod h1:L2yAIGWB3H+phAw1NxKwWM+7eUH/lU8pOMm5hHcoops=
-github.com/goceleris/celeris v1.2.1 h1:IDWlCbXIzmr5LSOznbBEVrSw1LrOvGSd1rCrC9iFS8w=
-github.com/goceleris/celeris v1.2.1/go.mod h1:ggmoCgYpizDXzmYZwoHT56P4bUSxRWCSS5B4NR8vQAg=
+github.com/goceleris/celeris v1.2.2 h1:H1WaWDoD5D8se0t1rKyX4cSq9rmhvSfFWI91wKHaYKM=
+github.com/goceleris/celeris v1.2.2/go.mod h1:ggmoCgYpizDXzmYZwoHT56P4bUSxRWCSS5B4NR8vQAg=
 github.com/gofiber/fiber/v3 v3.0.0 h1:GPeCG8X60L42wLKrzgeewDHBr6pE6veAvwaXsqD3Xjk=
 github.com/gofiber/fiber/v3 v3.0.0/go.mod h1:kVZiO/AwyT5Pq6PgC8qRCJ+j/BHrMy5jNw1O9yH38aY=
 github.com/gofiber/schema v1.6.0 h1:rAgVDFwhndtC+hgV7Vu5ItQCn7eC2mBA4Eu1/ZTiEYY=
