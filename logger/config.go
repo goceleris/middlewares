@@ -24,6 +24,17 @@ type Config struct {
 
 	// SkipPaths lists paths to skip (exact match).
 	SkipPaths []string
+
+	// CaptureRequestBody logs the request body (truncated to MaxCaptureBytes).
+	CaptureRequestBody bool
+
+	// CaptureResponseBody logs the response body (truncated to MaxCaptureBytes).
+	// Requires the response to be captured via c.CaptureResponse().
+	CaptureResponseBody bool
+
+	// MaxCaptureBytes is the maximum number of body bytes to log.
+	// Default: 4096. Prevents OOM on large request/response bodies.
+	MaxCaptureBytes int
 }
 
 // DefaultConfig is the default logger configuration.
@@ -35,6 +46,9 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.Level == nil {
 		cfg.Level = defaultLevel
+	}
+	if cfg.MaxCaptureBytes <= 0 && (cfg.CaptureRequestBody || cfg.CaptureResponseBody) {
+		cfg.MaxCaptureBytes = 4096
 	}
 	return cfg
 }

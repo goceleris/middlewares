@@ -2,6 +2,7 @@ package logger
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"strings"
 	"testing"
@@ -168,4 +169,206 @@ func FuzzLoggerStatus(f *testing.F) {
 	f.Fuzz(func(_ *testing.T, status int) {
 		_ = defaultLevel(status)
 	})
+}
+
+func TestLoggerCaptureRequestBody(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, nil))
+	mw := New(Config{Output: log, CaptureRequestBody: true})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "POST", "/body",
+		celeristest.WithBody([]byte("hello world")))
+	if !strings.Contains(buf.String(), "hello world") {
+		t.Fatalf("expected request body in log: %s", buf.String())
+	}
+}
+
+func TestLoggerCaptureResponseBody(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, nil))
+	mw := New(Config{Output: log, CaptureResponseBody: true})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "response data")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "GET", "/resp")
+	if !strings.Contains(buf.String(), "response data") {
+		t.Fatalf("expected response body in log: %s", buf.String())
+	}
+}
+
+func TestLoggerMaxCaptureBytes(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, nil))
+	mw := New(Config{Output: log, CaptureRequestBody: true, MaxCaptureBytes: 5})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "POST", "/trunc",
+		celeristest.WithBody([]byte("hello world long body")))
+	output := buf.String()
+	if !strings.Contains(output, "hello") {
+		t.Fatalf("expected truncated body in log: %s", output)
+	}
+	if strings.Contains(output, "hello world") {
+		t.Fatalf("body should be truncated to 5 bytes: %s", output)
+	}
+}
+
+func TestFastHandlerColorOutput(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewFastHandler(buf, &FastHandlerOptions{Color: true})
+	log := slog.New(h)
+	log.Info("test message")
+	output := buf.String()
+	if !strings.Contains(output, "\033[32m") {
+		t.Fatalf("expected green color code for INFO, got: %q", output)
+	}
+	if !strings.Contains(output, "\033[0m") {
+		t.Fatalf("expected color reset, got: %q", output)
+	}
+	if !strings.Contains(output, "INFO") {
+		t.Fatalf("expected INFO in output, got: %q", output)
+	}
+}
+
+func TestFastHandlerColorError(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewFastHandler(buf, &FastHandlerOptions{Color: true})
+	log := slog.New(h)
+	log.Error("error message")
+	output := buf.String()
+	if !strings.Contains(output, "\033[31m") {
+		t.Fatalf("expected red color code for ERROR, got: %q", output)
+	}
+}
+
+func TestFastHandlerColorWarn(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewFastHandler(buf, &FastHandlerOptions{Color: true})
+	log := slog.New(h)
+	log.Warn("warn message")
+	output := buf.String()
+	if !strings.Contains(output, "\033[33m") {
+		t.Fatalf("expected yellow color code for WARN, got: %q", output)
+	}
+}
+
+func TestFastHandlerColorDebug(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewFastHandler(buf, &FastHandlerOptions{Level: slog.LevelDebug, Color: true})
+	log := slog.New(h)
+	log.Debug("debug message")
+	output := buf.String()
+	if !strings.Contains(output, "\033[36m") {
+		t.Fatalf("expected cyan color code for DEBUG, got: %q", output)
+	}
+}
+
+func TestFastHandlerNoColorByDefault(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewFastHandler(buf, nil)
+	log := slog.New(h)
+	log.Info("test")
+	output := buf.String()
+	if strings.Contains(output, "\033[") {
+		t.Fatalf("expected no color codes with default options, got: %q", output)
+	}
+}
+
+func TestFastHandlerColorDisabled(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewFastHandler(buf, &FastHandlerOptions{Color: false})
+	log := slog.New(h)
+	log.Info("test")
+	output := buf.String()
+	if strings.Contains(output, "\033[") {
+		t.Fatalf("expected no color codes with Color=false, got: %q", output)
+	}
+}
+
+func TestFastHandlerColorWithAttrs(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewFastHandler(buf, &FastHandlerOptions{Color: true})
+	log := slog.New(h).With("key", "value")
+	log.Info("attrs test")
+	output := buf.String()
+	if !strings.Contains(output, "\033[32m") {
+		t.Fatalf("expected color preserved through WithAttrs, got: %q", output)
+	}
+}
+
+func TestFastHandlerColorWithGroup(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewFastHandler(buf, &FastHandlerOptions{Color: true})
+	log := slog.New(h).WithGroup("grp")
+	log.Info("group test", "k", "v")
+	output := buf.String()
+	if !strings.Contains(output, "\033[32m") {
+		t.Fatalf("expected color preserved through WithGroup, got: %q", output)
+	}
+}
+
+func TestFastHandlerColorStatus(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewFastHandler(buf, &FastHandlerOptions{Color: true})
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "request", 0)
+	r.AddAttrs(slog.Int("status", 200))
+	_ = h.Handle(context.Background(), r)
+	output := buf.String()
+	if !strings.Contains(output, "\033[32m") { // green for 2xx
+		t.Fatalf("expected green for 200 status, got: %q", output)
+	}
+}
+
+func TestFastHandlerColorStatus500(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewFastHandler(buf, &FastHandlerOptions{Color: true})
+	r := slog.NewRecord(time.Now(), slog.LevelError, "request", 0)
+	r.AddAttrs(slog.Int("status", 503))
+	_ = h.Handle(context.Background(), r)
+	output := buf.String()
+	if !strings.Contains(output, "\033[31m503") {
+		t.Fatalf("expected red for 503 status, got: %q", output)
+	}
+}
+
+func TestFastHandlerColorMethod(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewFastHandler(buf, &FastHandlerOptions{Color: true})
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "request", 0)
+	r.AddAttrs(slog.String("method", "GET"))
+	_ = h.Handle(context.Background(), r)
+	output := buf.String()
+	if !strings.Contains(output, "\033[34m") { // blue for GET
+		t.Fatalf("expected blue for GET method, got: %q", output)
+	}
+}
+
+func TestFastHandlerColorLatency(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewFastHandler(buf, &FastHandlerOptions{Color: true})
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "request", 0)
+	r.AddAttrs(slog.Duration("latency", 500*time.Microsecond))
+	_ = h.Handle(context.Background(), r)
+	output := buf.String()
+	if !strings.Contains(output, "\033[32m") { // green for <1ms
+		t.Fatalf("expected green for sub-ms latency, got: %q", output)
+	}
+}
+
+func TestFastHandlerNoColorOnValues(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewFastHandler(buf, &FastHandlerOptions{Color: false})
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "request", 0)
+	r.AddAttrs(slog.Int("status", 200), slog.String("method", "GET"))
+	_ = h.Handle(context.Background(), r)
+	output := buf.String()
+	if strings.Contains(output, "\033[") {
+		t.Fatalf("expected no color codes with Color=false, got: %q", output)
+	}
 }

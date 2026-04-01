@@ -168,7 +168,7 @@ func TestAppendTextValue_Edges(t *testing.T) {
 		{"unicode with space", "caf\u00e9 latt\u00e9", "\"caf\u00e9 latt\u00e9\""},
 		{"long string", strings.Repeat("x", 10000), strings.Repeat("x", 10000)},
 		{"only spaces", "   ", `"   "`},
-		{"null byte", "a\x00b", "\"a\x00b\""},
+		{"null byte", "a\x00b", `"a\x00b"`},
 	}
 
 	for _, tc := range tests {

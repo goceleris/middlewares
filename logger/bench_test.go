@@ -43,3 +43,15 @@ func BenchmarkLoggerSkipPath(b *testing.B) {
 		celeristest.ReleaseContext(ctx)
 	}
 }
+
+func BenchmarkLoggerFastHandlerColor(b *testing.B) {
+	log := slog.New(NewFastHandler(io.Discard, &FastHandlerOptions{Color: true}))
+	mw := New(Config{Output: log})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		ctx, _ := celeristest.NewContext("GET", "/bench")
+		_ = mw(ctx)
+		celeristest.ReleaseContext(ctx)
+	}
+}
