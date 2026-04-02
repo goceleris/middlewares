@@ -22,8 +22,10 @@
 //	    MaxBytes: 10 * 1024 * 1024, // 10 MB
 //	}))
 //
-// [Config].Limit accepts human-readable size strings with units B, KB, MB,
-// GB, and TB (e.g., "1.5GB"). When set, it takes precedence over MaxBytes.
+// [Config].Limit accepts human-readable size strings with decimal (SI-style)
+// and binary (IEC) units: B, KB, MB, GB, TB, PB, EB, KiB, MiB, GiB, TiB,
+// PiB, EiB (e.g., "1.5GB", "256MiB"). Fractional values are supported.
+// When set, Limit takes precedence over MaxBytes.
 //
 // # Dual-Check Enforcement
 //
@@ -45,6 +47,23 @@
 // Both checks must pass for the request to proceed. This defense-in-depth
 // approach ensures that the limit is enforced even when the
 // Content-Length header is absent, zero, or deliberately understated.
+//
+// # Streaming Limitation
+//
+// Celeris buffers the full request body before middleware executes. This
+// means oversized payloads without a Content-Length header will be buffered
+// into memory before this middleware can reject them. The framework's own
+// maxRequestBodySize (100 MB) provides the hard ceiling that prevents
+// unbounded memory growth.
+//
+// For strict enforcement, enable [Config].ContentLengthRequired to reject
+// requests that omit the Content-Length header with 411 Length Required,
+// forcing clients to declare body size up front:
+//
+//	server.Use(bodylimit.New(bodylimit.Config{
+//	    Limit:                 "10MB",
+//	    ContentLengthRequired: true,
+//	}))
 //
 // Bodyless HTTP methods (GET, HEAD, DELETE, OPTIONS) are auto-skipped
 // since they never carry a request body, avoiding unnecessary overhead.
@@ -68,5 +87,7 @@
 //
 // [ErrBodyTooLarge] is the exported sentinel error (413) returned when the
 // limit is exceeded, usable with errors.Is for error handling in upstream
-// middleware.
+// middleware. [ErrLengthRequired] is the sentinel error (411) returned when
+// [Config].ContentLengthRequired is enabled and the request omits a
+// Content-Length header.
 package bodylimit

@@ -522,3 +522,266 @@ func TestBodyLimitRejectNoExtraAlloc(t *testing.T) {
 			extra, baseline.AllocsPerOp(), withMW.AllocsPerOp())
 	}
 }
+
+// --- ContentLengthRequired tests ---
+
+func TestContentLengthRequiredRejectsAbsentCL(t *testing.T) {
+	mw := New(Config{
+		MaxBytes:              1024,
+		ContentLengthRequired: true,
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/upload")
+	testutil.AssertHTTPError(t, err, 411)
+}
+
+func TestContentLengthRequiredRejectsInvalidCL(t *testing.T) {
+	mw := New(Config{
+		MaxBytes:              1024,
+		ContentLengthRequired: true,
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/upload",
+		celeristest.WithHeader("content-length", "bogus"),
+	)
+	testutil.AssertHTTPError(t, err, 411)
+}
+
+func TestContentLengthRequiredAllowsValidCL(t *testing.T) {
+	mw := New(Config{
+		MaxBytes:              1024,
+		ContentLengthRequired: true,
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "POST", "/upload",
+		celeristest.WithHeader("content-length", "512"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestContentLengthRequiredSkipsBodylessMethods(t *testing.T) {
+	mw := New(Config{
+		MaxBytes:              10,
+		ContentLengthRequired: true,
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	for _, method := range []string{"GET", "HEAD", "DELETE", "OPTIONS"} {
+		t.Run(method, func(t *testing.T) {
+			chain := []celeris.HandlerFunc{mw, handler}
+			rec, err := testutil.RunChain(t, chain, method, "/")
+			testutil.AssertNoError(t, err)
+			testutil.AssertStatus(t, rec, 200)
+		})
+	}
+}
+
+func TestContentLengthRequiredErrorHandler(t *testing.T) {
+	var receivedErr error
+	mw := New(Config{
+		MaxBytes:              1024,
+		ContentLengthRequired: true,
+		ErrorHandler: func(_ *celeris.Context, err error) error {
+			receivedErr = err
+			return celeris.NewHTTPError(400, "provide content-length")
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/upload")
+	testutil.AssertHTTPError(t, err, 400)
+	if !errors.Is(receivedErr, ErrLengthRequired) {
+		t.Fatalf("expected ErrLengthRequired, got %v", receivedErr)
+	}
+}
+
+func TestContentLengthRequiredDisabledByDefault(t *testing.T) {
+	mw := New(Config{MaxBytes: 1024})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "POST", "/upload")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestContentLengthRequiredWithCLZero(t *testing.T) {
+	mw := New(Config{
+		MaxBytes:              1024,
+		ContentLengthRequired: true,
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "POST", "/upload",
+		celeristest.WithHeader("content-length", "0"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestContentLengthRequiredRespectSkipPaths(t *testing.T) {
+	mw := New(Config{
+		MaxBytes:              1024,
+		ContentLengthRequired: true,
+		SkipPaths:             []string{"/health"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "POST", "/health")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestContentLengthRequiredRespectSkipFunc(t *testing.T) {
+	mw := New(Config{
+		MaxBytes:              1024,
+		ContentLengthRequired: true,
+		Skip:                  func(_ *celeris.Context) bool { return true },
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "POST", "/upload")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+// --- parseSize PB/EB tests ---
+
+func TestPBParsing(t *testing.T) {
+	n := parseSize("1PB")
+	want := int64(1) << 50
+	if n != want {
+		t.Fatalf("1PB: got %d, want %d", n, want)
+	}
+}
+
+func TestEBParsing(t *testing.T) {
+	n := parseSize("1EB")
+	want := int64(1) << 60
+	if n != want {
+		t.Fatalf("1EB: got %d, want %d", n, want)
+	}
+}
+
+func TestPBLimitMiddleware(t *testing.T) {
+	mw := New(Config{Limit: "1PB"})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "POST", "/upload",
+		celeristest.WithHeader("content-length", "1073741824"), // 1GB, under 1PB
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+// --- parseSize IEC unit tests ---
+
+func TestKiBParsing(t *testing.T) {
+	n := parseSize("1KiB")
+	if n != 1024 {
+		t.Fatalf("1KiB: got %d, want 1024", n)
+	}
+}
+
+func TestMiBParsing(t *testing.T) {
+	n := parseSize("1MiB")
+	want := int64(1) << 20
+	if n != want {
+		t.Fatalf("1MiB: got %d, want %d", n, want)
+	}
+}
+
+func TestGiBParsing(t *testing.T) {
+	n := parseSize("1GiB")
+	want := int64(1) << 30
+	if n != want {
+		t.Fatalf("1GiB: got %d, want %d", n, want)
+	}
+}
+
+func TestTiBParsing(t *testing.T) {
+	n := parseSize("1TiB")
+	want := int64(1) << 40
+	if n != want {
+		t.Fatalf("1TiB: got %d, want %d", n, want)
+	}
+}
+
+func TestPiBParsing(t *testing.T) {
+	n := parseSize("1PiB")
+	want := int64(1) << 50
+	if n != want {
+		t.Fatalf("1PiB: got %d, want %d", n, want)
+	}
+}
+
+func TestEiBParsing(t *testing.T) {
+	n := parseSize("1EiB")
+	want := int64(1) << 60
+	if n != want {
+		t.Fatalf("1EiB: got %d, want %d", n, want)
+	}
+}
+
+func TestIECCaseInsensitive(t *testing.T) {
+	n := parseSize("10mib")
+	want := int64(10) << 20
+	if n != want {
+		t.Fatalf("10mib: got %d, want %d", n, want)
+	}
+}
+
+func TestIECFractional(t *testing.T) {
+	n := parseSize("1.5GiB")
+	want := int64(1.5 * float64(int64(1)<<30))
+	if n != want {
+		t.Fatalf("1.5GiB: got %d, want %d", n, want)
+	}
+}
+
+func TestIECLimitMiddleware(t *testing.T) {
+	mw := New(Config{Limit: "10KiB"})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/upload",
+		celeristest.WithHeader("content-length", "20480"), // 20KB > 10KiB
+	)
+	testutil.AssertHTTPError(t, err, 413)
+}
+
+func TestErrLengthRequiredSentinel(t *testing.T) {
+	if ErrLengthRequired == nil {
+		t.Fatal("ErrLengthRequired should not be nil")
+	}
+	var httpErr *celeris.HTTPError
+	if !errors.As(ErrLengthRequired, &httpErr) {
+		t.Fatal("ErrLengthRequired should be an HTTPError")
+	}
+	if httpErr.Code != 411 {
+		t.Fatalf("ErrLengthRequired code: got %d, want 411", httpErr.Code)
+	}
+}
