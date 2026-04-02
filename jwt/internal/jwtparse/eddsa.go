@@ -7,6 +7,7 @@ import (
 
 type signingMethodEdDSA struct{}
 
+// SigningMethodEdDSA is the EdDSA signing method singleton.
 var SigningMethodEdDSA *signingMethodEdDSA
 
 func init() {

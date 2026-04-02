@@ -2,6 +2,7 @@ package jwtparse
 
 import "errors"
 
+// Sentinel errors for JWT validation failures.
 var (
 	ErrTokenMalformed        = errors.New("token is malformed")
 	ErrTokenUnverifiable     = errors.New("token is unverifiable")

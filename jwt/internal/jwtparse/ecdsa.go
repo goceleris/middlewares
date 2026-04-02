@@ -16,6 +16,7 @@ type signingMethodECDSA struct {
 	curveBit int
 }
 
+// ECDSA signing method singletons.
 var (
 	SigningMethodES256 *signingMethodECDSA
 	SigningMethodES384 *signingMethodECDSA

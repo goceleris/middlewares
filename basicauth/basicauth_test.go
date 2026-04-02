@@ -580,7 +580,7 @@ func TestHeaderLimitCustomErrorHandler(t *testing.T) {
 	mw := New(Config{
 		Validator:   validatorFor("admin", "secret"),
 		HeaderLimit: 30,
-		ErrorHandler: func(c *celeris.Context, err error) error {
+		ErrorHandler: func(_ *celeris.Context, err error) error {
 			receivedErr = err
 			return celeris.NewHTTPError(413, "too big")
 		},

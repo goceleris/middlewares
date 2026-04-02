@@ -12,6 +12,7 @@ type signingMethodRSA struct {
 	hash crypto.Hash
 }
 
+// RSA PKCS#1 v1.5 signing method singletons.
 var (
 	SigningMethodRS256 *signingMethodRSA
 	SigningMethodRS384 *signingMethodRSA

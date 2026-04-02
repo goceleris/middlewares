@@ -21,6 +21,7 @@ type hmacEntry struct {
 	key []byte // key used to create this hasher
 }
 
+// HMAC-SHA signing method singletons.
 var (
 	SigningMethodHS256 *signingMethodHMAC
 	SigningMethodHS384 *signingMethodHMAC

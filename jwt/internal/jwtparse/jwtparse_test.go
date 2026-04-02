@@ -3,8 +3,8 @@ package jwtparse
 import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
-	"crypto/rsa"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"testing"
