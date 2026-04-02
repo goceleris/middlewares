@@ -1069,6 +1069,231 @@ func TestResponseBodySizeZeroNotRecorded(t *testing.T) {
 	}
 }
 
+func TestServerPortSpanAttribute(t *testing.T) {
+	tp, exp := newTestTP()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	mw := New(Config{TracerProvider: tp, ServerPort: 8080})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	err := runChain(t, []celeris.HandlerFunc{mw, handler}, "GET", "/port-test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+
+	attrMap := make(map[string]attribute.Value, len(spans[0].Attributes))
+	for _, a := range spans[0].Attributes {
+		attrMap[string(a.Key)] = a.Value
+	}
+	if got := attrMap["server.port"].AsInt64(); got != 8080 {
+		t.Fatalf("expected server.port=8080, got %d", got)
+	}
+}
+
+func TestServerPortZeroOmitted(t *testing.T) {
+	tp, exp := newTestTP()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	mw := New(Config{TracerProvider: tp})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	err := runChain(t, []celeris.HandlerFunc{mw, handler}, "GET", "/no-port")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+
+	for _, a := range spans[0].Attributes {
+		if string(a.Key) == "server.port" {
+			t.Fatal("server.port should be absent when ServerPort is 0")
+		}
+	}
+}
+
+func TestServerPortMetricAttribute(t *testing.T) {
+	tp, _, mp, reader := newTestMetrics(t)
+	defer func() {
+		_ = tp.Shutdown(context.Background())
+		_ = mp.Shutdown(context.Background())
+	}()
+
+	mw := New(Config{TracerProvider: tp, MeterProvider: mp, ServerPort: 9090})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	err := runChain(t, []celeris.HandlerFunc{mw, handler}, "GET", "/port-metric")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rm := collectMetrics(t, reader)
+	m := findMetric(rm, "http.server.request.duration")
+	if m == nil {
+		t.Fatal("http.server.request.duration metric not found")
+	}
+	hist, ok := m.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", m.Data)
+	}
+	if len(hist.DataPoints) != 1 {
+		t.Fatalf("expected 1 data point, got %d", len(hist.DataPoints))
+	}
+
+	if v, found := hist.DataPoints[0].Attributes.Value(semconv.ServerPortKey); !found {
+		t.Fatal("expected server.port metric attribute, not found")
+	} else if v.AsInt64() != 9090 {
+		t.Fatalf("expected server.port=9090, got %d", v.AsInt64())
+	}
+}
+
+func TestMethodNormalizationStandard(t *testing.T) {
+	tp, exp := newTestTP()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	for _, method := range []string{"GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "TRACE", "CONNECT"} {
+		exp.Reset()
+		mw := New(Config{TracerProvider: tp})
+		handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+		err := runChain(t, []celeris.HandlerFunc{mw, handler}, method, "/method-test")
+		if err != nil {
+			t.Fatalf("unexpected error for %s: %v", method, err)
+		}
+
+		spans := exp.GetSpans()
+		if len(spans) != 1 {
+			t.Fatalf("[%s] expected 1 span, got %d", method, len(spans))
+		}
+		attrMap := make(map[string]attribute.Value, len(spans[0].Attributes))
+		for _, a := range spans[0].Attributes {
+			attrMap[string(a.Key)] = a.Value
+		}
+		if got := attrMap["http.request.method"].AsString(); got != method {
+			t.Fatalf("[%s] expected http.request.method=%s, got %q", method, method, got)
+		}
+	}
+}
+
+func TestMethodNormalizationNonStandard(t *testing.T) {
+	tp, exp := newTestTP()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	mw := New(Config{TracerProvider: tp})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	err := runChain(t, []celeris.HandlerFunc{mw, handler}, "PURGE", "/purge-test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	attrMap := make(map[string]attribute.Value, len(spans[0].Attributes))
+	for _, a := range spans[0].Attributes {
+		attrMap[string(a.Key)] = a.Value
+	}
+	if got := attrMap["http.request.method"].AsString(); got != "_OTHER" {
+		t.Fatalf("expected http.request.method=_OTHER for PURGE, got %q", got)
+	}
+}
+
+func TestMethodNormalizationNonStandardMetric(t *testing.T) {
+	tp, _, mp, reader := newTestMetrics(t)
+	defer func() {
+		_ = tp.Shutdown(context.Background())
+		_ = mp.Shutdown(context.Background())
+	}()
+
+	mw := New(Config{TracerProvider: tp, MeterProvider: mp})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	err := runChain(t, []celeris.HandlerFunc{mw, handler}, "PURGE", "/purge-metric")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rm := collectMetrics(t, reader)
+	m := findMetric(rm, "http.server.request.duration")
+	if m == nil {
+		t.Fatal("http.server.request.duration metric not found")
+	}
+	hist, ok := m.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", m.Data)
+	}
+	if len(hist.DataPoints) != 1 {
+		t.Fatalf("expected 1 data point, got %d", len(hist.DataPoints))
+	}
+
+	if v, found := hist.DataPoints[0].Attributes.Value(semconv.HTTPRequestMethodKey); !found {
+		t.Fatal("expected http.request.method metric attribute, not found")
+	} else if v.AsString() != "_OTHER" {
+		t.Fatalf("expected http.request.method=_OTHER, got %q", v.AsString())
+	}
+}
+
+func TestSSEResponseBodySizeSkipped(t *testing.T) {
+	tp, _, mp, reader := newTestMetrics(t)
+	defer func() {
+		_ = tp.Shutdown(context.Background())
+		_ = mp.Shutdown(context.Background())
+	}()
+
+	mw := New(Config{TracerProvider: tp, MeterProvider: mp})
+	handler := func(c *celeris.Context) error {
+		c.SetHeader("content-type", "text/event-stream")
+		return c.Blob(200, "text/event-stream", []byte("data: hello\n\n"))
+	}
+	err := runChain(t, []celeris.HandlerFunc{mw, handler}, "GET", "/sse-test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rm := collectMetrics(t, reader)
+	m := findMetric(rm, "http.server.response.body.size")
+	if m != nil {
+		hist, ok := m.Data.(metricdata.Histogram[int64])
+		if ok && len(hist.DataPoints) > 0 && hist.DataPoints[0].Count > 0 {
+			t.Fatal("http.server.response.body.size should not be recorded for SSE responses")
+		}
+	}
+}
+
+func TestNonSSEResponseBodySizeRecorded(t *testing.T) {
+	tp, _, mp, reader := newTestMetrics(t)
+	defer func() {
+		_ = tp.Shutdown(context.Background())
+		_ = mp.Shutdown(context.Background())
+	}()
+
+	mw := New(Config{TracerProvider: tp, MeterProvider: mp})
+	handler := func(c *celeris.Context) error { return c.String(200, "hello") }
+	err := runChain(t, []celeris.HandlerFunc{mw, handler}, "GET", "/normal-resp")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rm := collectMetrics(t, reader)
+	m := findMetric(rm, "http.server.response.body.size")
+	if m == nil {
+		t.Fatal("http.server.response.body.size metric not found for non-SSE response")
+	}
+	hist, ok := m.Data.(metricdata.Histogram[int64])
+	if !ok {
+		t.Fatalf("expected Histogram[int64], got %T", m.Data)
+	}
+	if len(hist.DataPoints) != 1 {
+		t.Fatalf("expected 1 data point, got %d", len(hist.DataPoints))
+	}
+	if hist.DataPoints[0].Sum != 5 {
+		t.Fatalf("expected sum=5, got %d", hist.DataPoints[0].Sum)
+	}
+}
+
 func TestMetricAttributeKeys(t *testing.T) {
 	tp, _, mp, reader := newTestMetrics(t)
 	defer func() {
