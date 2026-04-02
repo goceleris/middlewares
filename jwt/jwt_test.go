@@ -325,7 +325,7 @@ func TestClaimsFromContextNoAuth(t *testing.T) {
 func TestTokenLookupQuery(t *testing.T) {
 	tokenStr := signToken(jwtparse.MapClaims{"sub": "q"})
 	mw := New(Config{
-		SigningKey:   testSecret,
+		SigningKey:  testSecret,
 		TokenLookup: "query:token",
 	})
 	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
@@ -340,7 +340,7 @@ func TestTokenLookupQuery(t *testing.T) {
 func TestTokenLookupCookie(t *testing.T) {
 	tokenStr := signToken(jwtparse.MapClaims{"sub": "ck"})
 	mw := New(Config{
-		SigningKey:   testSecret,
+		SigningKey:  testSecret,
 		TokenLookup: "cookie:jwt",
 	})
 	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
@@ -355,7 +355,7 @@ func TestTokenLookupCookie(t *testing.T) {
 func TestTokenLookupMultipleSources(t *testing.T) {
 	tokenStr := signToken(jwtparse.MapClaims{"sub": "multi"})
 	mw := New(Config{
-		SigningKey:   testSecret,
+		SigningKey:  testSecret,
 		TokenLookup: "header:Authorization:Bearer ,query:token,cookie:jwt",
 	})
 	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
@@ -379,7 +379,7 @@ func TestTokenLookupMultipleSources(t *testing.T) {
 func TestSkipBypassesAuth(t *testing.T) {
 	mw := New(Config{
 		SigningKey: testSecret,
-		Skip:      func(_ *celeris.Context) bool { return true },
+		Skip:       func(_ *celeris.Context) bool { return true },
 	})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "skipped")
@@ -394,7 +394,7 @@ func TestSkipBypassesAuth(t *testing.T) {
 func TestSkipPathsBypassesAuth(t *testing.T) {
 	mw := New(Config{
 		SigningKey: testSecret,
-		SkipPaths: []string{"/health", "/ready"},
+		SkipPaths:  []string{"/health", "/ready"},
 	})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
@@ -510,7 +510,7 @@ func TestInvalidTokenLookupPanics(t *testing.T) {
 		}
 	}()
 	New(Config{
-		SigningKey:   testSecret,
+		SigningKey:  testSecret,
 		TokenLookup: "bad",
 	})
 }
@@ -518,7 +518,7 @@ func TestInvalidTokenLookupPanics(t *testing.T) {
 func TestFormExtractorSupported(t *testing.T) {
 	tokenStr := signToken(jwtparse.MapClaims{"sub": "form-user"})
 	mw := New(Config{
-		SigningKey:   testSecret,
+		SigningKey:  testSecret,
 		TokenLookup: "form:access_token",
 	})
 	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
@@ -534,7 +534,7 @@ func TestFormExtractorSupported(t *testing.T) {
 func TestParamExtractorSupported(t *testing.T) {
 	tokenStr := signToken(jwtparse.MapClaims{"sub": "param-user"})
 	mw := New(Config{
-		SigningKey:   testSecret,
+		SigningKey:  testSecret,
 		TokenLookup: "param:token",
 	})
 	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
@@ -563,7 +563,7 @@ func TestSkipDoesNotStoreToken(t *testing.T) {
 	tokenStr := signToken(jwtparse.MapClaims{"sub": "1234"})
 	mw := New(Config{
 		SigningKey: testSecret,
-		Skip:      func(_ *celeris.Context) bool { return true },
+		Skip:       func(_ *celeris.Context) bool { return true },
 	})
 	var tok *jwtparse.Token
 	handler := func(c *celeris.Context) error {
@@ -622,7 +622,7 @@ func TestContextKeyConstants(t *testing.T) {
 func TestHeaderExtractorNoPrefix(t *testing.T) {
 	tokenStr := signToken(jwtparse.MapClaims{"sub": "raw"})
 	mw := New(Config{
-		SigningKey:   testSecret,
+		SigningKey:  testSecret,
 		TokenLookup: "header:X-Token",
 	})
 	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
@@ -790,7 +790,7 @@ func TestValidMethodsConfig(t *testing.T) {
 
 	// Allow both HS256 and HS384.
 	mw := New(Config{
-		SigningKey:    testSecret,
+		SigningKey:   testSecret,
 		ValidMethods: []string{"HS256", "HS384"},
 	})
 	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
@@ -808,7 +808,7 @@ func TestValidMethodsRejectsUnlisted(t *testing.T) {
 
 	// Only allow HS256.
 	mw := New(Config{
-		SigningKey:    testSecret,
+		SigningKey:   testSecret,
 		ValidMethods: []string{"HS256"},
 	})
 	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
@@ -1470,7 +1470,7 @@ func TestBeforeFuncNotCalledOnSkip(t *testing.T) {
 	var beforeCalled bool
 	mw := New(Config{
 		SigningKey: testSecret,
-		Skip:      func(_ *celeris.Context) bool { return true },
+		Skip:       func(_ *celeris.Context) bool { return true },
 		BeforeFunc: func(_ *celeris.Context) {
 			beforeCalled = true
 		},
@@ -1488,7 +1488,7 @@ func TestBeforeFuncNotCalledOnSkipPaths(t *testing.T) {
 	var beforeCalled bool
 	mw := New(Config{
 		SigningKey: testSecret,
-		SkipPaths: []string{"/health"},
+		SkipPaths:  []string{"/health"},
 		BeforeFunc: func(_ *celeris.Context) {
 			beforeCalled = true
 		},
@@ -1505,7 +1505,7 @@ func TestBeforeFuncNotCalledOnSkipPaths(t *testing.T) {
 func TestBeforeFuncNilIsHarmless(t *testing.T) {
 	tokenStr := signToken(jwtparse.MapClaims{"sub": "1234"})
 	mw := New(Config{
-		SigningKey:  testSecret,
+		SigningKey: testSecret,
 		BeforeFunc: nil,
 	})
 	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
@@ -1657,7 +1657,7 @@ func TestMinKeyLengthPanicsWhenTooShort(t *testing.T) {
 		}
 	}()
 	New(Config{
-		SigningKey:    []byte("short"),
+		SigningKey:   []byte("short"),
 		MinKeyLength: 32,
 	})
 }
@@ -1675,7 +1675,7 @@ func TestMinKeyLengthAcceptsAdequateKey(t *testing.T) {
 
 	tokenStr := signTokenWithMethod(jwtparse.SigningMethodHS256, jwtparse.MapClaims{"sub": "1"}, key)
 	mw := New(Config{
-		SigningKey:    key,
+		SigningKey:   key,
 		MinKeyLength: 32,
 	})
 	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
@@ -1696,7 +1696,7 @@ func TestMinKeyLengthZeroNoEnforcement(t *testing.T) {
 	shortKey := []byte("tiny")
 	tokenStr := signTokenWithMethod(jwtparse.SigningMethodHS256, jwtparse.MapClaims{"sub": "1"}, shortKey)
 	mw := New(Config{
-		SigningKey:    shortKey,
+		SigningKey:   shortKey,
 		MinKeyLength: 0, // no enforcement
 	})
 	handler := func(c *celeris.Context) error { return c.String(200, "ok") }

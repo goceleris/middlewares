@@ -136,7 +136,7 @@ func StaticKeys(keys ...string) func(*celeris.Context, string) (bool, error) {
 				kb[i] = 0
 			}
 		} else {
-			kb = padTo([]byte(key), maxLen)
+			kb = padTo([]byte(key), maxLen) //nolint:staticcheck // kb is used in the loop below
 		}
 		match := 0
 		for i, p := range padded {

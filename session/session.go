@@ -58,7 +58,7 @@ func (s *Session) GetBool(key string) bool {
 // GetFloat64 returns the value for key as a float64. Returns 0 if the key
 // is missing or the value is not a float64.
 func (s *Session) GetFloat64(key string) float64 {
-	v, _ := s.data[key]
+	v := s.data[key]
 	f, _ := v.(float64)
 	return f
 }

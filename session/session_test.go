@@ -933,7 +933,7 @@ func TestErrorHandlerCalledOnStoreFailure(t *testing.T) {
 	var handlerCalled bool
 	mw := New(Config{
 		Store: fs,
-		ErrorHandler: func(c *celeris.Context, err error) error {
+		ErrorHandler: func(_ *celeris.Context, err error) error {
 			handlerCalled = true
 			return celeris.NewHTTPError(503, err.Error())
 		},

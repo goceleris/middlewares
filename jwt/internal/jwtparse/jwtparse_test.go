@@ -79,7 +79,7 @@ func TestHS384RoundTrip(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodHS384, claims, key)
 
 	p := NewParser(WithValidMethods([]string{"HS384"}))
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}

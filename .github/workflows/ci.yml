@@ -51,7 +51,7 @@ jobs:
           fi
           CHANGED=$(git diff --name-only origin/main...HEAD | grep '\.go$' | xargs -I{} dirname {} | sort -u)
           # Filter out sub-module directories (tested separately)
-          ROOT_CHANGED=$(echo "$CHANGED" | grep -v '^metrics/' | grep -v '^otel/')
+          ROOT_CHANGED=$(echo "$CHANGED" | grep -Ev '^(metrics|otel)(/|$)')
           if echo "$ROOT_CHANGED" | grep -qE '^(internal/|go\.mod|go\.sum)'; then
             echo "packages=./..." >> "$GITHUB_OUTPUT"
           else

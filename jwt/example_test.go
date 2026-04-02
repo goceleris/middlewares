@@ -36,7 +36,7 @@ func ExampleNew_jwks() {
 func ExampleNew_queryParam() {
 	// Extract token from query parameter instead of header.
 	_ = jwt.New(jwt.Config{
-		SigningKey:   []byte("secret"),
+		SigningKey:  []byte("secret"),
 		TokenLookup: "query:token",
 	})
 }
@@ -44,7 +44,7 @@ func ExampleNew_queryParam() {
 func ExampleNew_cookie() {
 	// Extract token from a cookie.
 	_ = jwt.New(jwt.Config{
-		SigningKey:   []byte("secret"),
+		SigningKey:  []byte("secret"),
 		TokenLookup: "cookie:jwt",
 	})
 }
@@ -52,7 +52,7 @@ func ExampleNew_cookie() {
 func ExampleNew_multipleSources() {
 	// Try header first, then query, then cookie.
 	_ = jwt.New(jwt.Config{
-		SigningKey:   []byte("secret"),
+		SigningKey:  []byte("secret"),
 		TokenLookup: "header:Authorization:Bearer ,query:token,cookie:jwt",
 	})
 }

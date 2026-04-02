@@ -689,7 +689,7 @@ func TestStoreError(t *testing.T) {
 	store.allowErr = errors.New("connection refused")
 	mw := New(Config{
 		Store:   store,
-		KeyFunc: func(c *celeris.Context) string { return "test" },
+		KeyFunc: func(_ *celeris.Context) string { return "test" },
 	})
 
 	_, err := testutil.RunMiddleware(t, mw)
