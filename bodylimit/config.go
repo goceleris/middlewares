@@ -26,6 +26,13 @@ type Config struct {
 	// ErrorHandler handles body-too-large errors. When non-nil, it is
 	// called instead of returning ErrBodyTooLarge directly.
 	ErrorHandler func(c *celeris.Context, err error) error
+
+	// ContentLengthRequired rejects requests that lack a Content-Length
+	// header with 411 Length Required. Enable this to force clients to
+	// declare body size up front, preventing memory exhaustion from
+	// unbounded streaming when the framework buffers the full body
+	// before middleware runs.
+	ContentLengthRequired bool
 }
 
 // DefaultConfig is the default body limit configuration.
@@ -56,7 +63,17 @@ func parseSize(s string) int64 {
 		name string
 		mult float64
 	}
+	// Order matters: longer suffixes must be checked before shorter ones
+	// (e.g., "EIB" before "EB", "EB" before "B").
 	suffixes := [...]suffix{
+		{"EIB", 1 << 60},
+		{"PIB", 1 << 50},
+		{"TIB", 1 << 40},
+		{"GIB", 1 << 30},
+		{"MIB", 1 << 20},
+		{"KIB", 1 << 10},
+		{"EB", 1 << 60},
+		{"PB", 1 << 50},
 		{"TB", 1 << 40},
 		{"GB", 1 << 30},
 		{"MB", 1 << 20},
@@ -79,5 +96,5 @@ func parseSize(s string) int64 {
 			return n
 		}
 	}
-	panic("bodylimit: invalid Limit format (use B, KB, MB, GB, TB): " + s)
+	panic("bodylimit: invalid Limit format (use B, KB, MB, GB, TB, PB, EB or KiB, MiB, GiB, TiB, PiB, EiB): " + s)
 }
