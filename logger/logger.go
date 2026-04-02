@@ -10,7 +10,7 @@ import (
 )
 
 var attrPool = sync.Pool{New: func() any {
-	s := make([]slog.Attr, 0, 12)
+	s := make([]slog.Attr, 0, 20)
 	return &s
 }}
 
@@ -39,6 +39,11 @@ func New(config ...Config) celeris.HandlerFunc {
 	captureReqBody := cfg.CaptureRequestBody
 	captureRespBody := cfg.CaptureResponseBody
 	maxCapture := cfg.MaxCaptureBytes
+	logHost := cfg.LogHost
+	logUserAgent := cfg.LogUserAgent
+	logReferer := cfg.LogReferer
+	logProtocol := cfg.LogProtocol
+	logRoute := cfg.LogRoute
 
 	return func(c *celeris.Context) error {
 		if cfg.Skip != nil && cfg.Skip(c) {
@@ -89,6 +94,31 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 		if err != nil {
 			attrs = append(attrs, slog.String("error", err.Error()))
+		}
+		if logHost {
+			if h := c.Host(); h != "" {
+				attrs = append(attrs, slog.String("host", h))
+			}
+		}
+		if logUserAgent {
+			if ua := c.Header("user-agent"); ua != "" {
+				attrs = append(attrs, slog.String("user_agent", ua))
+			}
+		}
+		if logReferer {
+			if ref := c.Header("referer"); ref != "" {
+				attrs = append(attrs, slog.String("referer", ref))
+			}
+		}
+		if logProtocol {
+			if proto := c.Header(":protocol"); proto != "" {
+				attrs = append(attrs, slog.String("protocol", proto))
+			}
+		}
+		if logRoute {
+			if fp := c.FullPath(); fp != "" {
+				attrs = append(attrs, slog.String("route", fp))
+			}
 		}
 		if fieldsFn != nil {
 			attrs = append(attrs, fieldsFn(c, latency)...)

@@ -447,20 +447,21 @@ func appendTime(buf []byte, t time.Time) []byte {
 }
 
 // appendDuration formats a duration as a human-readable string (e.g. "1.234ms").
+// Negative values fall back to Duration.String() to avoid overflow when
+// negating math.MinInt64.
 func appendDuration(buf []byte, d time.Duration) []byte {
-	abs := d
-	if abs < 0 {
-		abs = -abs
+	if d < 0 {
+		return append(buf, d.String()...)
 	}
-	if abs < time.Microsecond {
+	if d < time.Microsecond {
 		buf = strconv.AppendFloat(buf, float64(d), 'f', 1, 64)
 		return append(buf, "ns"...)
 	}
-	if abs < time.Millisecond {
+	if d < time.Millisecond {
 		buf = strconv.AppendFloat(buf, float64(d)/float64(time.Microsecond), 'f', 1, 64)
 		return append(buf, "µs"...)
 	}
-	if abs < time.Second {
+	if d < time.Second {
 		buf = strconv.AppendFloat(buf, float64(d)/float64(time.Millisecond), 'f', 1, 64)
 		return append(buf, "ms"...)
 	}

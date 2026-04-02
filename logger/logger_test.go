@@ -463,3 +463,237 @@ func TestNoSensitiveHeadersNoRedaction(t *testing.T) {
 		t.Fatalf("expected no redaction without SensitiveHeaders, got: %s", out)
 	}
 }
+
+func TestLogHost(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, LogHost: true})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/host")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, `"host":"localhost"`) {
+		t.Fatalf("expected host field in log, got: %s", out)
+	}
+}
+
+func TestLogHostDisabledByDefault(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/no-host")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if strings.Contains(out, `"host"`) {
+		t.Fatalf("host should not be logged by default, got: %s", out)
+	}
+}
+
+func TestLogUserAgent(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, LogUserAgent: true})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/ua",
+		celeristest.WithHeader("user-agent", "TestAgent/1.0"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, `"user_agent":"TestAgent/1.0"`) {
+		t.Fatalf("expected user_agent field in log, got: %s", out)
+	}
+}
+
+func TestLogUserAgentDisabledByDefault(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/no-ua",
+		celeristest.WithHeader("user-agent", "TestAgent/1.0"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if strings.Contains(out, `"user_agent"`) {
+		t.Fatalf("user_agent should not be logged by default, got: %s", out)
+	}
+}
+
+func TestLogReferer(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, LogReferer: true})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/ref",
+		celeristest.WithHeader("referer", "https://example.com/page"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, `"referer":"https://example.com/page"`) {
+		t.Fatalf("expected referer field in log, got: %s", out)
+	}
+}
+
+func TestLogRefererDisabledByDefault(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/no-ref",
+		celeristest.WithHeader("referer", "https://example.com"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if strings.Contains(out, `"referer"`) {
+		t.Fatalf("referer should not be logged by default, got: %s", out)
+	}
+}
+
+func TestLogProtocol(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, LogProtocol: true})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/proto",
+		celeristest.WithHeader(":protocol", "HTTP/2"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, `"protocol":"HTTP/2"`) {
+		t.Fatalf("expected protocol field in log, got: %s", out)
+	}
+}
+
+func TestLogProtocolDisabledByDefault(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/no-proto",
+		celeristest.WithHeader(":protocol", "HTTP/2"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if strings.Contains(out, `"protocol"`) {
+		t.Fatalf("protocol should not be logged by default, got: %s", out)
+	}
+}
+
+func TestLogProtocolEmpty(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, LogProtocol: true})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/no-proto-hdr")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if strings.Contains(out, `"protocol"`) {
+		t.Fatalf("protocol should be omitted when header absent, got: %s", out)
+	}
+}
+
+func TestLogRouteDisabledByDefault(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/users/42")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if strings.Contains(out, `"route"`) {
+		t.Fatalf("route should not be logged by default, got: %s", out)
+	}
+}
+
+func TestLogRouteEmptyFullPath(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, LogRoute: true})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/no-route")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	// FullPath is only set by the router; test contexts have it empty,
+	// so the field should be omitted.
+	if strings.Contains(out, `"route"`) {
+		t.Fatalf("route should be omitted when FullPath empty, got: %s", out)
+	}
+}
+
+func TestAppendDurationNegative(t *testing.T) {
+	buf := appendDuration(nil, -500*time.Microsecond)
+	got := string(buf)
+	want := (-500 * time.Microsecond).String()
+	if got != want {
+		t.Fatalf("appendDuration(-500µs) = %q, want %q", got, want)
+	}
+}
+
+func TestAppendDurationNegativeMs(t *testing.T) {
+	buf := appendDuration(nil, -42*time.Millisecond)
+	got := string(buf)
+	want := (-42 * time.Millisecond).String()
+	if got != want {
+		t.Fatalf("appendDuration(-42ms) = %q, want %q", got, want)
+	}
+}
+
+func TestAppendDurationNegativeSeconds(t *testing.T) {
+	buf := appendDuration(nil, -3*time.Second)
+	got := string(buf)
+	want := (-3 * time.Second).String()
+	if got != want {
+		t.Fatalf("appendDuration(-3s) = %q, want %q", got, want)
+	}
+}
+
+func TestAllOptInFieldsTogether(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{
+		Output:       log,
+		LogHost:      true,
+		LogUserAgent: true,
+		LogReferer:   true,
+		LogProtocol:  true,
+		LogRoute:     true,
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/all",
+		celeristest.WithHeader("user-agent", "AllTest/1.0"),
+		celeristest.WithHeader("referer", "https://all.example.com"),
+		celeristest.WithHeader(":protocol", "HTTP/1.1"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	for _, field := range []string{`"host"`, `"user_agent"`, `"referer"`, `"protocol"`} {
+		if !strings.Contains(out, field) {
+			t.Fatalf("missing %s in log with all opt-in fields: %s", field, out)
+		}
+	}
+}
