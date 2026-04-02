@@ -2,6 +2,8 @@ package logger
 
 import (
 	"log/slog"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -10,9 +12,12 @@ import (
 )
 
 var attrPool = sync.Pool{New: func() any {
-	s := make([]slog.Attr, 0, 20)
+	s := make([]slog.Attr, 0, 28)
 	return &s
 }}
+
+// cachedPID is resolved once at init; the process ID never changes.
+var cachedPID = os.Getpid()
 
 // New creates a logger middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
@@ -28,14 +33,20 @@ func New(config ...Config) celeris.HandlerFunc {
 		skipMap[p] = struct{}{}
 	}
 
-	sensitiveMap := make(map[string]struct{}, len(cfg.SensitiveHeaders))
-	for _, h := range cfg.SensitiveHeaders {
+	// Resolve sensitive headers: nil → defaults, empty slice → disabled.
+	headers := cfg.SensitiveHeaders
+	if headers == nil {
+		headers = DefaultSensitiveHeaders
+	}
+	sensitiveMap := make(map[string]struct{}, len(headers))
+	for _, h := range headers {
 		sensitiveMap[strings.ToLower(h)] = struct{}{}
 	}
 
 	handler := cfg.Output.Handler()
 	levelFn := cfg.Level
 	fieldsFn := cfg.Fields
+	doneFn := cfg.Done
 	captureReqBody := cfg.CaptureRequestBody
 	captureRespBody := cfg.CaptureResponseBody
 	maxCapture := cfg.MaxCaptureBytes
@@ -44,6 +55,11 @@ func New(config ...Config) celeris.HandlerFunc {
 	logReferer := cfg.LogReferer
 	logProtocol := cfg.LogProtocol
 	logRoute := cfg.LogRoute
+	logPID := cfg.LogPID
+	logQuery := cfg.LogQueryParams
+	logForm := cfg.LogFormValues
+	logCookies := cfg.LogCookies
+	tz := cfg.TimeZone
 
 	return func(c *celeris.Context) error {
 		if cfg.Skip != nil && cfg.Skip(c) {
@@ -68,6 +84,9 @@ func New(config ...Config) celeris.HandlerFunc {
 
 		ctx := c.Context()
 		if !handler.Enabled(ctx, level) {
+			if doneFn != nil {
+				doneFn(c, latency, status)
+			}
 			return err
 		}
 
@@ -82,6 +101,9 @@ func New(config ...Config) celeris.HandlerFunc {
 			slog.Int("bytes", c.BytesWritten()),
 		)
 
+		if logPID {
+			attrs = append(attrs, slog.Int("pid", cachedPID))
+		}
 		if ip := c.ClientIP(); ip != "" {
 			attrs = append(attrs, slog.String("client_ip", ip))
 		}
@@ -120,6 +142,27 @@ func New(config ...Config) celeris.HandlerFunc {
 				attrs = append(attrs, slog.String("route", fp))
 			}
 		}
+		if logQuery {
+			if q := c.RawQuery(); q != "" {
+				attrs = append(attrs, slog.String("query", q))
+			}
+		}
+		if logForm {
+			ct := c.Header("content-type")
+			if strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
+				if vals, parseErr := url.ParseQuery(string(c.Body())); parseErr == nil && len(vals) > 0 {
+					attrs = append(attrs, slog.String("form", vals.Encode()))
+				}
+			}
+		}
+		if logCookies {
+			if raw := c.Header("cookie"); raw != "" {
+				names := parseCookieNames(raw)
+				if names != "" {
+					attrs = append(attrs, slog.String("cookies", names))
+				}
+			}
+		}
 		if fieldsFn != nil {
 			attrs = append(attrs, fieldsFn(c, latency)...)
 		}
@@ -146,17 +189,68 @@ func New(config ...Config) celeris.HandlerFunc {
 			}
 		}
 
-		// Call handler directly instead of log.LogAttrs to skip
-		// runtime.Callers (stack walk) and the redundant time.Now()
-		// inside slog.Logger.logAttrs. We reuse the middleware's
-		// start time as the record timestamp.
-		r := slog.NewRecord(start, level, "request", 0)
+		ts := start
+		if tz != nil {
+			ts = ts.In(tz)
+		}
+
+		r := slog.NewRecord(ts, level, "request", 0)
 		r.AddAttrs(attrs...)
 		_ = handler.Handle(ctx, r)
 
 		*attrsPtr = attrs
 		attrPool.Put(attrsPtr)
 
+		if doneFn != nil {
+			doneFn(c, latency, status)
+		}
+
 		return err
 	}
+}
+
+// parseCookieNames extracts cookie names from a raw Cookie header value,
+// returning them as a comma-separated string. Values are intentionally
+// omitted for security.
+func parseCookieNames(raw string) string {
+	var b strings.Builder
+	first := true
+	for len(raw) > 0 {
+		// Skip leading whitespace and semicolons.
+		i := 0
+		for i < len(raw) && (raw[i] == ' ' || raw[i] == ';') {
+			i++
+		}
+		raw = raw[i:]
+		if raw == "" {
+			break
+		}
+		// Find end of this cookie pair.
+		end := strings.IndexByte(raw, ';')
+		var pair string
+		if end < 0 {
+			pair = raw
+			raw = ""
+		} else {
+			pair = raw[:end]
+			raw = raw[end+1:]
+		}
+		// Extract name (before '=').
+		eq := strings.IndexByte(pair, '=')
+		var name string
+		if eq < 0 {
+			name = strings.TrimSpace(pair)
+		} else {
+			name = strings.TrimSpace(pair[:eq])
+		}
+		if name == "" {
+			continue
+		}
+		if !first {
+			b.WriteByte(',')
+		}
+		b.WriteString(name)
+		first = false
+	}
+	return b.String()
 }
