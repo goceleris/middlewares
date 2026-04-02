@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	semconv "go.opentelemetry.io/otel/semconv/v1.32.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -38,6 +39,8 @@ func New(config ...Config) celeris.HandlerFunc {
 	metricsEnabled := !cfg.DisableMetrics
 	var requestDuration metric.Float64Histogram
 	var activeRequests metric.Int64UpDownCounter
+	var requestBodySize metric.Int64Histogram
+	var responseBodySize metric.Int64Histogram
 	if metricsEnabled {
 		meter := cfg.MeterProvider.Meter(tracerName,
 			metric.WithInstrumentationVersion(instrumentationVersion),
@@ -50,6 +53,16 @@ func New(config ...Config) celeris.HandlerFunc {
 		activeRequests, _ = meter.Int64UpDownCounter(
 			"http.server.active_requests",
 			metric.WithDescription("Number of active HTTP server requests"),
+		)
+		requestBodySize, _ = meter.Int64Histogram(
+			"http.server.request.body.size",
+			metric.WithUnit("By"),
+			metric.WithDescription("Size of HTTP server request bodies"),
+		)
+		responseBodySize, _ = meter.Int64Histogram(
+			"http.server.response.body.size",
+			metric.WithUnit("By"),
+			metric.WithDescription("Size of HTTP server response bodies"),
 		)
 	}
 
@@ -90,24 +103,26 @@ func New(config ...Config) celeris.HandlerFunc {
 
 		var spanBuf [12]attribute.KeyValue
 		n := 0
-		spanBuf[n] = attribute.String("http.request.method", c.Method())
+		spanBuf[n] = semconv.HTTPRequestMethodKey.String(c.Method())
 		n++
-		spanBuf[n] = attribute.String("http.route", c.FullPath())
+		spanBuf[n] = semconv.HTTPRoute(c.FullPath())
 		n++
-		spanBuf[n] = attribute.String("url.scheme", c.Scheme())
+		spanBuf[n] = semconv.URLScheme(c.Scheme())
 		n++
-		spanBuf[n] = attribute.String("url.path", c.Path())
+		spanBuf[n] = semconv.URLPath(c.Path())
 		n++
-		spanBuf[n] = attribute.String("network.protocol.version", "1.1")
+		// TODO: celeris Context does not expose the protocol version;
+		// default to "1.1". Update when Context.Protocol() is available.
+		spanBuf[n] = semconv.NetworkProtocolVersion("1.1")
 		n++
 		if collectClientIP {
-			spanBuf[n] = attribute.String("client.address", c.ClientIP())
+			spanBuf[n] = semconv.ClientAddress(c.ClientIP())
 			n++
 		}
-		spanBuf[n] = attribute.String("server.address", c.Host())
+		spanBuf[n] = semconv.ServerAddress(c.Host())
 		n++
 		if collectUserAgent {
-			spanBuf[n] = attribute.String("user_agent.original", c.Header("user-agent"))
+			spanBuf[n] = semconv.UserAgentOriginal(c.Header("user-agent"))
 			n++
 		}
 		spanAttrs := spanBuf[:n]
@@ -127,13 +142,13 @@ func New(config ...Config) celeris.HandlerFunc {
 		if metricsEnabled {
 			var metricBuf [6]attribute.KeyValue
 			mn := 0
-			metricBuf[mn] = attribute.String("http.request.method", c.Method())
+			metricBuf[mn] = semconv.HTTPRequestMethodKey.String(c.Method())
 			mn++
-			metricBuf[mn] = attribute.String("http.route", c.FullPath())
+			metricBuf[mn] = semconv.HTTPRoute(c.FullPath())
 			mn++
-			metricBuf[mn] = attribute.String("url.scheme", c.Scheme())
+			metricBuf[mn] = semconv.URLScheme(c.Scheme())
 			mn++
-			metricBuf[mn] = attribute.String("server.address", c.Host())
+			metricBuf[mn] = semconv.ServerAddress(c.Host())
 			mn++
 			metricBaseAttrs := metricBuf[:mn]
 			if customMetricAttrs != nil {
@@ -150,8 +165,8 @@ func New(config ...Config) celeris.HandlerFunc {
 
 			if span.IsRecording() {
 				span.SetAttributes(
-					attribute.Int("http.response.status_code", status),
-					attribute.Int64("http.response.body.size", int64(c.BytesWritten())),
+					semconv.HTTPResponseStatusCode(status),
+					semconv.HTTPResponseBodySize(c.BytesWritten()),
 				)
 			}
 
@@ -162,10 +177,17 @@ func New(config ...Config) celeris.HandlerFunc {
 				span.SetStatus(codes.Error, "")
 			}
 
-			allAttrs := append(metricBaseAttrs, attribute.Int("http.response.status_code", status))
+			allAttrs := append(metricBaseAttrs, semconv.HTTPResponseStatusCode(status))
 			fullAttrSet := metric.WithAttributeSet(attribute.NewSet(allAttrs...))
 			requestDuration.Record(spanCtx, duration, fullAttrSet)
 			activeRequests.Add(spanCtx, -1, activeAttrSet)
+
+			if reqSize := c.ContentLength(); reqSize > 0 {
+				requestBodySize.Record(spanCtx, reqSize, fullAttrSet)
+			}
+			if respSize := int64(c.BytesWritten()); respSize > 0 {
+				responseBodySize.Record(spanCtx, respSize, fullAttrSet)
+			}
 
 			return err
 		}
@@ -175,8 +197,8 @@ func New(config ...Config) celeris.HandlerFunc {
 
 		if span.IsRecording() {
 			span.SetAttributes(
-				attribute.Int("http.response.status_code", status),
-				attribute.Int64("http.response.body.size", int64(c.BytesWritten())),
+				semconv.HTTPResponseStatusCode(status),
+				semconv.HTTPResponseBodySize(c.BytesWritten()),
 			)
 		}
 
