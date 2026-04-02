@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -1536,5 +1538,175 @@ func TestBeforeFuncEnrichesContext(t *testing.T) {
 	assertNoError(t, err)
 	if reqID != "req-abc" {
 		t.Fatalf("request_id: got %q, want %q", reqID, "req-abc")
+	}
+}
+
+// --- HMAC minimum key length tests ---
+
+func TestHMACKeyLengthWarningHS256(t *testing.T) {
+	shortKey := []byte("short") // 5 bytes, below 32
+	var logBuf strings.Builder
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	defer log.SetOutput(nil)
+	defer log.SetFlags(log.LstdFlags)
+
+	tokenStr := signTokenWithMethod(jwtparse.SigningMethodHS256, jwtparse.MapClaims{"sub": "1"}, shortKey)
+	mw := New(Config{SigningKey: shortKey})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+	if !strings.Contains(logBuf.String(), "HS256 signing key is 5 bytes") {
+		t.Fatalf("expected HS256 key length warning, got: %q", logBuf.String())
+	}
+}
+
+func TestHMACKeyLengthWarningHS384(t *testing.T) {
+	shortKey := make([]byte, 32) // 32 bytes, below 48
+	for i := range shortKey {
+		shortKey[i] = byte(i)
+	}
+	var logBuf strings.Builder
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	defer log.SetOutput(nil)
+	defer log.SetFlags(log.LstdFlags)
+
+	tokenStr := signTokenWithMethod(jwtparse.SigningMethodHS384, jwtparse.MapClaims{"sub": "1"}, shortKey)
+	mw := New(Config{
+		SigningKey:    shortKey,
+		SigningMethod: jwtparse.SigningMethodHS384,
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+	if !strings.Contains(logBuf.String(), "HS384 signing key is 32 bytes") {
+		t.Fatalf("expected HS384 key length warning, got: %q", logBuf.String())
+	}
+}
+
+func TestHMACKeyLengthWarningHS512(t *testing.T) {
+	shortKey := make([]byte, 48) // 48 bytes, below 64
+	for i := range shortKey {
+		shortKey[i] = byte(i)
+	}
+	var logBuf strings.Builder
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	defer log.SetOutput(nil)
+	defer log.SetFlags(log.LstdFlags)
+
+	tokenStr := signTokenWithMethod(jwtparse.SigningMethodHS512, jwtparse.MapClaims{"sub": "1"}, shortKey)
+	mw := New(Config{
+		SigningKey:    shortKey,
+		SigningMethod: jwtparse.SigningMethodHS512,
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+	if !strings.Contains(logBuf.String(), "HS512 signing key is 48 bytes") {
+		t.Fatalf("expected HS512 key length warning, got: %q", logBuf.String())
+	}
+}
+
+func TestHMACKeyLengthNoWarningWhenSufficient(t *testing.T) {
+	goodKey := make([]byte, 32) // exactly 32 bytes for HS256
+	for i := range goodKey {
+		goodKey[i] = byte(i + 1)
+	}
+	var logBuf strings.Builder
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	defer log.SetOutput(nil)
+	defer log.SetFlags(log.LstdFlags)
+
+	tokenStr := signTokenWithMethod(jwtparse.SigningMethodHS256, jwtparse.MapClaims{"sub": "1"}, goodKey)
+	mw := New(Config{SigningKey: goodKey})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+	if logBuf.Len() > 0 {
+		t.Fatalf("expected no warning for adequate key length, got: %q", logBuf.String())
+	}
+}
+
+func TestMinKeyLengthPanicsWhenTooShort(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for short key with MinKeyLength set")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("expected string panic, got %T: %v", r, r)
+		}
+		if !strings.Contains(msg, "below MinKeyLength") {
+			t.Fatalf("unexpected panic message: %q", msg)
+		}
+	}()
+	New(Config{
+		SigningKey:    []byte("short"),
+		MinKeyLength: 32,
+	})
+}
+
+func TestMinKeyLengthAcceptsAdequateKey(t *testing.T) {
+	key := make([]byte, 64)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	var logBuf strings.Builder
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	defer log.SetOutput(nil)
+	defer log.SetFlags(log.LstdFlags)
+
+	tokenStr := signTokenWithMethod(jwtparse.SigningMethodHS256, jwtparse.MapClaims{"sub": "1"}, key)
+	mw := New(Config{
+		SigningKey:    key,
+		MinKeyLength: 32,
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+}
+
+func TestMinKeyLengthZeroNoEnforcement(t *testing.T) {
+	var logBuf strings.Builder
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	defer log.SetOutput(nil)
+	defer log.SetFlags(log.LstdFlags)
+
+	shortKey := []byte("tiny")
+	tokenStr := signTokenWithMethod(jwtparse.SigningMethodHS256, jwtparse.MapClaims{"sub": "1"}, shortKey)
+	mw := New(Config{
+		SigningKey:    shortKey,
+		MinKeyLength: 0, // no enforcement
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+	// Should still warn, just not panic.
+	if !strings.Contains(logBuf.String(), "WARNING") {
+		t.Fatalf("expected warning even with MinKeyLength=0, got: %q", logBuf.String())
 	}
 }

@@ -136,6 +136,43 @@
 //	    ContextKey: "my_csrf_token",
 //	}))
 //
+// # Session Store Adapter
+//
+// The session middleware's [session.Store] can be adapted to serve as a CSRF
+// [Storage] backend, allowing CSRF tokens to be scoped to authenticated
+// sessions. Below is a pseudocode adapter pattern (not provided by this
+// package):
+//
+//	type sessionCSRFStorage struct {
+//	    store  session.Store
+//	    prefix string // e.g. "csrf:"
+//	}
+//
+//	func (s *sessionCSRFStorage) Get(key string) (string, bool) {
+//	    data, err := s.store.Get(context.Background(), s.prefix+key)
+//	    if err != nil || data == nil {
+//	        return "", false
+//	    }
+//	    token, _ := data["token"].(string)
+//	    return token, token != ""
+//	}
+//
+//	func (s *sessionCSRFStorage) Set(key, token string, expiry time.Duration) {
+//	    _ = s.store.Save(context.Background(), s.prefix+key,
+//	        map[string]any{"token": token}, expiry)
+//	}
+//
+//	func (s *sessionCSRFStorage) Delete(key string) {
+//	    _ = s.store.Delete(context.Background(), s.prefix+key)
+//	}
+//
+// Usage:
+//
+//	sessStore := session.NewMemoryStore()
+//	server.Use(csrf.New(csrf.Config{
+//	    Storage: &sessionCSRFStorage{store: sessStore, prefix: "csrf:"},
+//	}))
+//
 // # Custom Key Generator
 //
 // [Config].KeyGenerator provides a custom function for token generation:
