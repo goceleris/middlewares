@@ -1,4 +1,4 @@
-package metrics
+package metrics //nolint:revive // package name intentionally matches the middleware domain
 
 import (
 	"testing"

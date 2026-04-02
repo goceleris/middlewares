@@ -1,4 +1,4 @@
-package metrics //nolint:revive // package name intentionally matches the middleware domain
+package metrics
 
 import (
 	"fmt"
@@ -1089,7 +1089,7 @@ func TestCounterOptsCallback(t *testing.T) {
 	var callbackCalled bool
 	mw := New(Config{
 		Registry: reg,
-		CounterOpts: func(opts *prometheus.CounterOpts) {
+		CounterOpts: func(_ *prometheus.CounterOpts) {
 			callbackCalled = true
 		},
 	})
