@@ -124,3 +124,27 @@ func ExampleTokenFromContext() {
 		return c.String(200, "Algorithm: %s", token.Method.Alg())
 	}
 }
+
+func ExampleNew_tokenProcessorFunc() {
+	// JWE decryption: TokenProcessorFunc decrypts the outer JWE envelope
+	// before the inner JWS is parsed and validated by the middleware.
+	_ = jwt.New(jwt.Config{
+		SigningKey: []byte("signing-secret"),
+		TokenProcessorFunc: func(token string) (string, error) {
+			// In a real application, this would decrypt a JWE compact
+			// serialization (5-part dot-separated) using a private key
+			// or shared symmetric key, returning the inner JWS token.
+			//
+			// Example with a JWE library (pseudocode):
+			//   privKey := loadDecryptionKey()
+			//   jws, err := jwe.Decrypt([]byte(token), privKey)
+			//   return string(jws), err
+			//
+			// For this example, we simulate by stripping a "jwe:" prefix.
+			if len(token) > 4 && token[:4] == "jwe:" {
+				return token[4:], nil
+			}
+			return token, nil
+		},
+	})
+}

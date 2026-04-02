@@ -173,6 +173,11 @@ func (cfg Config) validate() {
 	if cfg.SingleUseToken && cfg.Storage == nil {
 		panic("csrf: SingleUseToken requires Storage to be set")
 	}
+	for _, o := range cfg.TrustedOrigins {
+		if strings.Contains(o, "*") && !strings.HasPrefix(o, "https://") {
+			panic("csrf: wildcard TrustedOrigins must use https:// scheme, got " + o)
+		}
+	}
 }
 
 func validateTokenLookup(lookup string) {

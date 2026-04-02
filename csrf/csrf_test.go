@@ -1879,3 +1879,72 @@ func TestGranularErrorSentinelsAreDistinct(t *testing.T) {
 		seen[msg] = true
 	}
 }
+
+// --- Wildcard origin scheme enforcement tests ---
+
+func TestValidateWildcardHTTPPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for wildcard origin with http:// scheme")
+		}
+	}()
+	New(Config{
+		TrustedOrigins: []string{"http://*.example.com"},
+	})
+}
+
+func TestValidateWildcardHTTPSAllowed(t *testing.T) {
+	// Should not panic: HTTPS wildcard is fine.
+	_ = New(Config{
+		TrustedOrigins: []string{"https://*.example.com"},
+	})
+}
+
+func TestValidateExactMatchHTTPAllowed(t *testing.T) {
+	// Exact match origins can use any scheme.
+	_ = New(Config{
+		TrustedOrigins: []string{"http://trusted.example.com"},
+	})
+}
+
+func TestValidateExactMatchHTTPSAllowed(t *testing.T) {
+	// Exact match origins with HTTPS.
+	_ = New(Config{
+		TrustedOrigins: []string{"https://trusted.example.com"},
+	})
+}
+
+func TestValidateWildcardNoSchemePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for wildcard origin without https:// prefix")
+		}
+	}()
+	New(Config{
+		TrustedOrigins: []string{"*.example.com"},
+	})
+}
+
+func TestValidateMixedOriginsHTTPWildcardPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic when any wildcard uses http://")
+		}
+	}()
+	New(Config{
+		TrustedOrigins: []string{
+			"https://trusted.example.com",
+			"http://*.evil.com",
+		},
+	})
+}
+
+func TestValidateMixedOriginsAllValid(t *testing.T) {
+	// Should not panic: exact HTTP + wildcard HTTPS.
+	_ = New(Config{
+		TrustedOrigins: []string{
+			"http://trusted.example.com",
+			"https://*.example.com",
+		},
+	})
+}

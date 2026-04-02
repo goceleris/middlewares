@@ -34,6 +34,14 @@ type Config struct {
 	// the error handler result. Handlers MUST respect context cancellation
 	// (select on c.Context().Done()) to avoid blocking the response.
 	Preemptive bool
+
+	// TimeoutErrors lists errors that should be treated as timeouts even
+	// if the deadline has not been reached. When the handler returns an
+	// error matching any entry via errors.Is, the ErrorHandler is invoked
+	// as though the request timed out. This is useful for treating
+	// upstream timeout errors (e.g. database query timeout) as request
+	// timeouts.
+	TimeoutErrors []error
 }
 
 // DefaultConfig is the default timeout configuration.

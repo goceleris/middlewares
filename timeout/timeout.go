@@ -2,6 +2,7 @@ package timeout
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -28,9 +29,10 @@ func New(config ...Config) celeris.HandlerFunc {
 	timeoutFunc := cfg.TimeoutFunc
 	errHandler := cfg.ErrorHandler
 	preemptive := cfg.Preemptive
+	timeoutErrors := cfg.TimeoutErrors
 
 	if preemptive {
-		return preemptiveHandler(skipMap, dur, timeoutFunc, errHandler, cfg.Skip)
+		return preemptiveHandler(skipMap, dur, timeoutFunc, errHandler, cfg.Skip, timeoutErrors)
 	}
 
 	return func(c *celeris.Context) error {
@@ -59,8 +61,22 @@ func New(config ...Config) celeris.HandlerFunc {
 			return errHandler(c)
 		}
 
+		if err != nil && isTimeoutError(err, timeoutErrors) {
+			return errHandler(c)
+		}
+
 		return err
 	}
+}
+
+// isTimeoutError checks if err matches any of the configured timeout-like errors.
+func isTimeoutError(err error, timeoutErrors []error) bool {
+	for _, te := range timeoutErrors {
+		if errors.Is(err, te) {
+			return true
+		}
+	}
+	return false
 }
 
 func preemptiveHandler(
@@ -69,6 +85,7 @@ func preemptiveHandler(
 	timeoutFunc func(*celeris.Context) time.Duration,
 	errHandler func(*celeris.Context) error,
 	skip func(*celeris.Context) bool,
+	timeoutErrors []error,
 ) celeris.HandlerFunc {
 	return func(c *celeris.Context) error {
 		if skip != nil && skip(c) {
@@ -105,6 +122,9 @@ func preemptiveHandler(
 		select {
 		case err := <-done:
 			chanPool.Put(done)
+			if err != nil && isTimeoutError(err, timeoutErrors) {
+				return errHandler(c)
+			}
 			if flushErr := c.FlushResponse(); flushErr != nil {
 				return flushErr
 			}

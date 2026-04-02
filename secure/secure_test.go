@@ -1,6 +1,7 @@
 package secure
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/goceleris/celeris"
@@ -582,5 +583,54 @@ func TestSuppressNotOverriddenByDefaults(t *testing.T) {
 func TestSuppressConstValue(t *testing.T) {
 	if Suppress != "-" {
 		t.Fatalf("Suppress: got %q, want %q", Suppress, "-")
+	}
+}
+
+// --- YAML struct tag tests ---
+
+func TestConfigYAMLTags(t *testing.T) {
+	expected := map[string]string{
+		"Skip":                      "-",
+		"SkipPaths":                 "skip_paths",
+		"XContentTypeOptions":       "x_content_type_options",
+		"XFrameOptions":             "x_frame_options",
+		"XSSProtection":             "xss_protection",
+		"HSTSMaxAge":                "hsts_max_age",
+		"HSTSExcludeSubdomains":     "hsts_exclude_subdomains",
+		"HSTSPreload":               "hsts_preload",
+		"ContentSecurityPolicy":     "content_security_policy",
+		"CSPReportOnly":             "csp_report_only",
+		"ReferrerPolicy":            "referrer_policy",
+		"PermissionsPolicy":         "permissions_policy",
+		"CrossOriginOpenerPolicy":   "cross_origin_opener_policy",
+		"CrossOriginResourcePolicy": "cross_origin_resource_policy",
+		"CrossOriginEmbedderPolicy": "cross_origin_embedder_policy",
+		"XDNSPrefetchControl":       "x_dns_prefetch_control",
+		"XPermittedCrossDomain":     "x_permitted_cross_domain",
+		"OriginAgentCluster":        "origin_agent_cluster",
+		"XDownloadOptions":          "x_download_options",
+	}
+
+	typ := reflect.TypeOf(Config{})
+	for fieldName, wantTag := range expected {
+		field, ok := typ.FieldByName(fieldName)
+		if !ok {
+			t.Fatalf("field %q not found in Config", fieldName)
+		}
+		gotTag := field.Tag.Get("yaml")
+		if gotTag != wantTag {
+			t.Fatalf("Config.%s yaml tag: got %q, want %q", fieldName, gotTag, wantTag)
+		}
+	}
+}
+
+func TestConfigYAMLTagsAllFieldsCovered(t *testing.T) {
+	typ := reflect.TypeOf(Config{})
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		tag := field.Tag.Get("yaml")
+		if tag == "" {
+			t.Fatalf("Config.%s is missing a yaml struct tag", field.Name)
+		}
 	}
 }

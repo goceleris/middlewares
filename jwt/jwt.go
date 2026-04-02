@@ -59,6 +59,16 @@ func New(config ...Config) celeris.HandlerFunc {
 	}
 	successHandler := cfg.SuccessHandler
 	tokenProcessor := cfg.TokenProcessorFunc
+	continueOnIgnored := cfg.ContinueOnIgnoredError
+	beforeFunc := cfg.BeforeFunc
+
+	handleError := func(c *celeris.Context, err error) error {
+		result := errorHandler(c, err)
+		if result == nil && continueOnIgnored {
+			return c.Next()
+		}
+		return result
+	}
 
 	return func(c *celeris.Context) error {
 		if cfg.Skip != nil && cfg.Skip(c) {
@@ -69,6 +79,10 @@ func New(config ...Config) celeris.HandlerFunc {
 			return c.Next()
 		}
 
+		if beforeFunc != nil {
+			beforeFunc(c)
+		}
+
 		var tokenStr string
 		for _, ex := range extractors {
 			if t := ex(c); t != "" {
@@ -77,13 +91,13 @@ func New(config ...Config) celeris.HandlerFunc {
 			}
 		}
 		if tokenStr == "" {
-			return errorHandler(c, ErrTokenMissing)
+			return handleError(c, ErrTokenMissing)
 		}
 
 		if tokenProcessor != nil {
 			processed, err := tokenProcessor(tokenStr)
 			if err != nil {
-				return errorHandler(c, fmt.Errorf("%w: %w", ErrTokenInvalid, err))
+				return handleError(c, fmt.Errorf("%w: %w", ErrTokenInvalid, err))
 			}
 			tokenStr = processed
 		}
@@ -92,7 +106,7 @@ func New(config ...Config) celeris.HandlerFunc {
 		token, err := parser.ParseWithClaims(tokenStr, claims, keyFunc)
 		if err != nil || !token.Valid {
 			wrappedErr := fmt.Errorf("%w: %w", ErrTokenInvalid, err)
-			return errorHandler(c, wrappedErr)
+			return handleError(c, wrappedErr)
 		}
 
 		c.Set(tokenCtxKey, token)

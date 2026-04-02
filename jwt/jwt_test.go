@@ -1173,3 +1173,368 @@ func TestJWKSURLsHTTPSEnforcement(t *testing.T) {
 		JWKSURLs: []string{"http://external.example.com/jwks"},
 	})
 }
+
+// --- WithSubject tests ---
+
+func TestWithSubjectMatching(t *testing.T) {
+	tokenStr := signToken(jwtparse.MapClaims{"sub": "user-123"})
+	mw := New(Config{
+		SigningKey:   testSecret,
+		ParseOptions: []jwtparse.ParserOption{jwtparse.WithSubject("user-123")},
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+	assertStatus(t, rec, 200)
+}
+
+func TestWithSubjectMismatch(t *testing.T) {
+	tokenStr := signToken(jwtparse.MapClaims{"sub": "user-123"})
+	mw := New(Config{
+		SigningKey:   testSecret,
+		ParseOptions: []jwtparse.ParserOption{jwtparse.WithSubject("user-456")},
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertHTTPError(t, err, 401)
+	if !errors.Is(err, ErrTokenInvalid) {
+		t.Fatalf("expected ErrTokenInvalid, got %v", err)
+	}
+}
+
+func TestWithSubjectMissing(t *testing.T) {
+	tokenStr := signToken(jwtparse.MapClaims{"iss": "my-app"})
+	mw := New(Config{
+		SigningKey:   testSecret,
+		ParseOptions: []jwtparse.ParserOption{jwtparse.WithSubject("user-123")},
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertHTTPError(t, err, 401)
+}
+
+func TestWithSubjectRegisteredClaims(t *testing.T) {
+	claims := &jwtparse.RegisteredClaims{Subject: "service-a"}
+	tokenStr, err := jwtparse.SignToken(jwtparse.SigningMethodHS256, claims, testSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mw := New(Config{
+		SigningKey: testSecret,
+		ClaimsFactory: func() jwtparse.Claims {
+			return &jwtparse.RegisteredClaims{}
+		},
+		ParseOptions: []jwtparse.ParserOption{jwtparse.WithSubject("service-a")},
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+	assertStatus(t, rec, 200)
+}
+
+func TestWithSubjectRegisteredClaimsMismatch(t *testing.T) {
+	claims := &jwtparse.RegisteredClaims{Subject: "service-a"}
+	tokenStr, err := jwtparse.SignToken(jwtparse.SigningMethodHS256, claims, testSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mw := New(Config{
+		SigningKey: testSecret,
+		ClaimsFactory: func() jwtparse.Claims {
+			return &jwtparse.RegisteredClaims{}
+		},
+		ParseOptions: []jwtparse.ParserOption{jwtparse.WithSubject("service-b")},
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err = runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertHTTPError(t, err, 401)
+}
+
+func TestErrInvalidSubjectReExported(t *testing.T) {
+	if ErrInvalidSubject == nil {
+		t.Fatal("ErrInvalidSubject is nil")
+	}
+	if ErrInvalidSubject.Error() != "token has invalid subject" {
+		t.Fatalf("unexpected error message: %q", ErrInvalidSubject.Error())
+	}
+}
+
+func TestWithSubjectReExported(t *testing.T) {
+	// Verify WithSubject is properly re-exported and can be used.
+	opt := WithSubject("test-sub")
+	if opt == nil {
+		t.Fatal("WithSubject returned nil")
+	}
+}
+
+// --- ContinueOnIgnoredError tests ---
+
+func TestContinueOnIgnoredErrorCallsNext(t *testing.T) {
+	var nextCalled bool
+	mw := New(Config{
+		SigningKey: testSecret,
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
+			return nil // suppress error
+		},
+		ContinueOnIgnoredError: true,
+	})
+	handler := func(c *celeris.Context) error {
+		nextCalled = true
+		return c.String(200, "reached")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := runChain(t, chain, "GET", "/")
+	assertNoError(t, err)
+	assertStatus(t, rec, 200)
+	if !nextCalled {
+		t.Fatal("expected downstream handler to be called when ContinueOnIgnoredError is true")
+	}
+}
+
+func TestContinueOnIgnoredErrorFalseDoesNotCallNext(t *testing.T) {
+	// When ContinueOnIgnoredError is false and ErrorHandler returns nil,
+	// the middleware returns nil without calling c.Next(). Downstream
+	// errors are not propagated through the middleware.
+	mw := New(Config{
+		SigningKey: testSecret,
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
+			return nil // suppress error
+		},
+		ContinueOnIgnoredError: false,
+	})
+	downstreamErr := celeris.NewHTTPError(422, "Unprocessable")
+	handler := func(_ *celeris.Context) error {
+		return downstreamErr
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	// The middleware returns nil; the framework's outer Next loop runs
+	// the downstream handler, but the error is NOT propagated through
+	// the middleware (the middleware already returned nil). The outer
+	// loop stops on the first non-nil error from the downstream handler.
+	_, err := runChain(t, chain, "GET", "/")
+	assertHTTPError(t, err, 422)
+}
+
+func TestContinueOnIgnoredErrorTruePropagatesDownstreamError(t *testing.T) {
+	// When ContinueOnIgnoredError is true and ErrorHandler returns nil,
+	// the middleware explicitly calls c.Next(), so downstream errors
+	// propagate through the middleware's return value.
+	mw := New(Config{
+		SigningKey: testSecret,
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
+			return nil // suppress error
+		},
+		ContinueOnIgnoredError: true,
+	})
+	downstreamErr := celeris.NewHTTPError(422, "Unprocessable")
+	handler := func(_ *celeris.Context) error {
+		return downstreamErr
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := runChain(t, chain, "GET", "/")
+	assertHTTPError(t, err, 422)
+}
+
+func TestContinueOnIgnoredErrorWithTokenProcessorError(t *testing.T) {
+	tokenStr := signToken(jwtparse.MapClaims{"sub": "1"})
+	var nextCalled bool
+	mw := New(Config{
+		SigningKey: testSecret,
+		TokenProcessorFunc: func(_ string) (string, error) {
+			return "", errors.New("decrypt failed")
+		},
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
+			return nil
+		},
+		ContinueOnIgnoredError: true,
+	})
+	handler := func(c *celeris.Context) error {
+		nextCalled = true
+		return c.String(200, "fallback")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+	assertStatus(t, rec, 200)
+	if !nextCalled {
+		t.Fatal("expected downstream handler called for ignored processor error")
+	}
+}
+
+func TestContinueOnIgnoredErrorNonNilErrorStops(t *testing.T) {
+	var nextCalled bool
+	mw := New(Config{
+		SigningKey: testSecret,
+		ErrorHandler: func(_ *celeris.Context, err error) error {
+			return err // propagate error
+		},
+		ContinueOnIgnoredError: true,
+	})
+	handler := func(c *celeris.Context) error {
+		nextCalled = true
+		return c.String(200, "reached")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := runChain(t, chain, "GET", "/")
+	assertHTTPError(t, err, 401)
+	if nextCalled {
+		t.Fatal("downstream handler should NOT be called when ErrorHandler returns non-nil")
+	}
+}
+
+// --- BeforeFunc tests ---
+
+func TestBeforeFuncCalled(t *testing.T) {
+	tokenStr := signToken(jwtparse.MapClaims{"sub": "1234"})
+	var beforeCalled bool
+	mw := New(Config{
+		SigningKey: testSecret,
+		BeforeFunc: func(_ *celeris.Context) {
+			beforeCalled = true
+		},
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+	assertStatus(t, rec, 200)
+	if !beforeCalled {
+		t.Fatal("BeforeFunc was not called")
+	}
+}
+
+func TestBeforeFuncCalledBeforeExtraction(t *testing.T) {
+	tokenStr := signToken(jwtparse.MapClaims{"sub": "1234"})
+	var order []string
+	mw := New(Config{
+		SigningKey: testSecret,
+		BeforeFunc: func(_ *celeris.Context) {
+			order = append(order, "before")
+		},
+		SuccessHandler: func(_ *celeris.Context) {
+			order = append(order, "success")
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		order = append(order, "handler")
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+	if len(order) != 3 || order[0] != "before" || order[1] != "success" || order[2] != "handler" {
+		t.Fatalf("unexpected call order: %v", order)
+	}
+}
+
+func TestBeforeFuncCalledEvenOnMissingToken(t *testing.T) {
+	var beforeCalled bool
+	mw := New(Config{
+		SigningKey: testSecret,
+		BeforeFunc: func(_ *celeris.Context) {
+			beforeCalled = true
+		},
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = runChain(t, chain, "GET", "/")
+	if !beforeCalled {
+		t.Fatal("BeforeFunc should be called even when token is missing")
+	}
+}
+
+func TestBeforeFuncNotCalledOnSkip(t *testing.T) {
+	var beforeCalled bool
+	mw := New(Config{
+		SigningKey: testSecret,
+		Skip:      func(_ *celeris.Context) bool { return true },
+		BeforeFunc: func(_ *celeris.Context) {
+			beforeCalled = true
+		},
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := runChain(t, chain, "GET", "/")
+	assertNoError(t, err)
+	if beforeCalled {
+		t.Fatal("BeforeFunc should NOT be called when Skip returns true")
+	}
+}
+
+func TestBeforeFuncNotCalledOnSkipPaths(t *testing.T) {
+	var beforeCalled bool
+	mw := New(Config{
+		SigningKey: testSecret,
+		SkipPaths: []string{"/health"},
+		BeforeFunc: func(_ *celeris.Context) {
+			beforeCalled = true
+		},
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := runChain(t, chain, "GET", "/health")
+	assertNoError(t, err)
+	if beforeCalled {
+		t.Fatal("BeforeFunc should NOT be called when path is skipped")
+	}
+}
+
+func TestBeforeFuncNilIsHarmless(t *testing.T) {
+	tokenStr := signToken(jwtparse.MapClaims{"sub": "1234"})
+	mw := New(Config{
+		SigningKey:  testSecret,
+		BeforeFunc: nil,
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+	assertStatus(t, rec, 200)
+}
+
+func TestBeforeFuncEnrichesContext(t *testing.T) {
+	tokenStr := signToken(jwtparse.MapClaims{"sub": "1234"})
+	mw := New(Config{
+		SigningKey: testSecret,
+		BeforeFunc: func(c *celeris.Context) {
+			c.Set("request_id", "req-abc")
+		},
+	})
+	var reqID string
+	handler := func(c *celeris.Context) error {
+		v, _ := c.Get("request_id")
+		reqID, _ = v.(string)
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+	if reqID != "req-abc" {
+		t.Fatalf("request_id: got %q, want %q", reqID, "req-abc")
+	}
+}
