@@ -1122,3 +1122,501 @@ func FuzzConcurrentAccess(f *testing.F) {
 		wg.Wait()
 	})
 }
+
+// --- Key Redaction Tests ---
+
+func TestKeyRedactionDefault(t *testing.T) {
+	cfg := Config{}
+	got := cfg.RedactKey("192.168.1.1")
+	if got != "[redacted]" {
+		t.Fatalf("expected [redacted], got %q", got)
+	}
+}
+
+func TestKeyRedactionDisabled(t *testing.T) {
+	cfg := Config{DisableKeyRedaction: true}
+	got := cfg.RedactKey("192.168.1.1")
+	if got != "192.168.1.1" {
+		t.Fatalf("expected raw key, got %q", got)
+	}
+}
+
+func TestKeyRedactionWithLimitReached(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var receivedKey string
+	redactor := Config{} // default: redaction enabled
+	cfg := Config{
+		RPS:   0.001,
+		Burst: 1,
+		KeyFunc: func(c *celeris.Context) string {
+			return "192.168.1.1"
+		},
+		LimitReached: func(c *celeris.Context) error {
+			receivedKey = redactor.RedactKey("192.168.1.1")
+			return celeris.NewHTTPError(429, "limited")
+		},
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+	}
+	mw := New(cfg)
+
+	// Exhaust token.
+	_, _ = testutil.RunMiddleware(t, mw)
+
+	// Trigger LimitReached.
+	_, err := testutil.RunMiddleware(t, mw)
+	testutil.AssertHTTPError(t, err, 429)
+
+	if receivedKey != "[redacted]" {
+		t.Fatalf("expected redacted key in LimitReached, got %q", receivedKey)
+	}
+}
+
+func TestKeyRedactionDisabledWithLimitReached(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var receivedKey string
+	redactor := Config{DisableKeyRedaction: true}
+	cfg := Config{
+		RPS:                 0.001,
+		Burst:               1,
+		DisableKeyRedaction: true,
+		KeyFunc: func(c *celeris.Context) string {
+			return "192.168.1.1"
+		},
+		LimitReached: func(c *celeris.Context) error {
+			receivedKey = redactor.RedactKey("192.168.1.1")
+			return celeris.NewHTTPError(429, "limited")
+		},
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+	}
+	mw := New(cfg)
+
+	_, _ = testutil.RunMiddleware(t, mw)
+	_, err := testutil.RunMiddleware(t, mw)
+	testutil.AssertHTTPError(t, err, 429)
+
+	if receivedKey != "192.168.1.1" {
+		t.Fatalf("expected raw key when redaction disabled, got %q", receivedKey)
+	}
+}
+
+// --- Sliding Window Tests ---
+
+func TestSlidingWindowBasicAllow(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:             0.001,
+		Burst:           5,
+		SlidingWindow:   true,
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+	})
+
+	for range 5 {
+		_, err := testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+		testutil.AssertNoError(t, err)
+	}
+}
+
+func TestSlidingWindowBlockOverLimit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:             0.001,
+		Burst:           3,
+		SlidingWindow:   true,
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+	})
+
+	for range 3 {
+		_, err := testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "10.0.0.1"))
+		testutil.AssertNoError(t, err)
+	}
+
+	_, err := testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "10.0.0.1"))
+	testutil.AssertHTTPError(t, err, 429)
+}
+
+func TestSlidingWindowHeaders(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:             100,
+		Burst:           10,
+		SlidingWindow:   true,
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+	})
+
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "x-ratelimit-limit", "10")
+
+	remaining := rec.Header("x-ratelimit-remaining")
+	if remaining == "" {
+		t.Fatal("expected x-ratelimit-remaining header")
+	}
+}
+
+func TestSlidingWindowDifferentKeys(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:             0.001,
+		Burst:           1,
+		SlidingWindow:   true,
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+	})
+
+	_, err := testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "10.0.0.1"))
+	testutil.AssertNoError(t, err)
+
+	_, err = testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "10.0.0.1"))
+	testutil.AssertHTTPError(t, err, 429)
+
+	_, err = testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "10.0.0.2"))
+	testutil.AssertNoError(t, err)
+}
+
+func TestSlidingWindowUndo(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:                0.001,
+		Burst:              2,
+		SlidingWindow:      true,
+		SkipFailedRequests: true,
+		CleanupInterval:    time.Hour,
+		CleanupContext:     ctx,
+		KeyFunc:            func(c *celeris.Context) string { return "test" },
+	})
+
+	failHandler := func(c *celeris.Context) error {
+		return celeris.NewHTTPError(500, "fail")
+	}
+	chain := []celeris.HandlerFunc{mw, failHandler}
+
+	// Failed requests should be refunded.
+	for range 5 {
+		_, err := testutil.RunChain(t, chain, "GET", "/")
+		testutil.AssertHTTPError(t, err, 500)
+	}
+
+	// Should still be able to make a successful request.
+	_, err := testutil.RunMiddleware(t, mw)
+	testutil.AssertNoError(t, err)
+}
+
+func TestSlidingWindowConcurrent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:             0.001,
+		Burst:           10,
+		SlidingWindow:   true,
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+	})
+
+	var (
+		wg       sync.WaitGroup
+		allowed  atomic.Int64
+		rejected atomic.Int64
+	)
+
+	const goroutines = 50
+	wg.Add(goroutines)
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			c, _ := celeristest.NewContext("GET", "/", celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+			err := mw(c)
+			celeristest.ReleaseContext(c)
+			if err != nil {
+				rejected.Add(1)
+			} else {
+				allowed.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	a := allowed.Load()
+	r := rejected.Load()
+	if a+r != goroutines {
+		t.Fatalf("total requests: got %d, want %d", a+r, goroutines)
+	}
+	if a > 10 {
+		t.Fatalf("allowed %d requests, expected <= 10 (limit)", a)
+	}
+	if a < 1 {
+		t.Fatal("expected at least 1 allowed request")
+	}
+}
+
+func TestSlidingWindowWithRate(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		Rate:            "5-S",
+		SlidingWindow:   true,
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+	})
+
+	for range 5 {
+		_, err := testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+		testutil.AssertNoError(t, err)
+	}
+
+	_, err := testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	testutil.AssertHTTPError(t, err, 429)
+}
+
+// --- Sliding Window Limiter Unit Tests ---
+
+func TestSlidingWindowLimiterAllow(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l := newSlidingWindowLimiter(ctx, 4, 1, 5, time.Hour) // 1 RPS, limit 5
+
+	now := time.Now().UnixNano()
+	for range 5 {
+		allowed, _, _ := l.allow("k", now)
+		if !allowed {
+			t.Fatal("expected allow within limit")
+		}
+	}
+
+	allowed, _, _ := l.allow("k", now)
+	if allowed {
+		t.Fatal("expected denial over limit")
+	}
+}
+
+func TestSlidingWindowLimiterUndo(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l := newSlidingWindowLimiter(ctx, 4, 0.001, 2, time.Hour)
+
+	now := time.Now().UnixNano()
+	l.allow("k", now)
+	l.allow("k", now)
+
+	allowed, _, _ := l.allow("k", now)
+	if allowed {
+		t.Fatal("expected denial after consuming all tokens")
+	}
+
+	l.undo("k")
+
+	allowed, _, _ = l.allow("k", now)
+	if !allowed {
+		t.Fatal("expected allow after undo")
+	}
+}
+
+func TestSlidingWindowLimiterUndoNonexistent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l := newSlidingWindowLimiter(ctx, 4, 10, 5, time.Hour)
+	l.undo("nonexistent") // should not panic
+}
+
+func TestSlidingWindowLimiterWindowAdvance(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// 5 per second, limit 5 (window = 5s)
+	l := newSlidingWindowLimiter(ctx, 4, 1, 5, time.Hour)
+
+	now := time.Now().UnixNano()
+	for range 5 {
+		allowed, _, _ := l.allow("k", now)
+		if !allowed {
+			t.Fatal("expected allow within first window")
+		}
+	}
+
+	// Denied in same window.
+	allowed, _, _ := l.allow("k", now)
+	if allowed {
+		t.Fatal("expected denial at limit")
+	}
+
+	// Advance well past two windows — should reset.
+	futureNow := now + 2*l.windowNano + int64(time.Second)
+	for range 5 {
+		allowed, _, _ := l.allow("k", futureNow)
+		if !allowed {
+			t.Fatal("expected allow after window reset")
+		}
+	}
+}
+
+// --- RateFunc Tests ---
+
+func TestRateFuncBasic(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:   100,
+		Burst: 100,
+		RateFunc: func(c *celeris.Context) (string, error) {
+			if c.Header("x-tier") == "premium" {
+				return "10-S", nil
+			}
+			return "2-S", nil
+		},
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+		KeyFunc:         func(c *celeris.Context) string { return c.Header("x-user") },
+	})
+
+	// Basic user gets 2 per second.
+	for range 2 {
+		_, err := testutil.RunMiddleware(t, mw,
+			celeristest.WithHeader("x-user", "basic"),
+			celeristest.WithHeader("x-tier", "basic"))
+		testutil.AssertNoError(t, err)
+	}
+	_, err := testutil.RunMiddleware(t, mw,
+		celeristest.WithHeader("x-user", "basic"),
+		celeristest.WithHeader("x-tier", "basic"))
+	testutil.AssertHTTPError(t, err, 429)
+
+	// Premium user gets 10 per second.
+	for range 10 {
+		_, err := testutil.RunMiddleware(t, mw,
+			celeristest.WithHeader("x-user", "premium"),
+			celeristest.WithHeader("x-tier", "premium"))
+		testutil.AssertNoError(t, err)
+	}
+	_, err = testutil.RunMiddleware(t, mw,
+		celeristest.WithHeader("x-user", "premium"),
+		celeristest.WithHeader("x-tier", "premium"))
+	testutil.AssertHTTPError(t, err, 429)
+}
+
+func TestRateFuncFallback(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:   0.001,
+		Burst: 3,
+		RateFunc: func(c *celeris.Context) (string, error) {
+			return "", nil // empty string = fallback to static
+		},
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+	})
+
+	for range 3 {
+		_, err := testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+		testutil.AssertNoError(t, err)
+	}
+	_, err := testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	testutil.AssertHTTPError(t, err, 429)
+}
+
+func TestRateFuncError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:   100,
+		Burst: 100,
+		RateFunc: func(c *celeris.Context) (string, error) {
+			return "", errors.New("config lookup failed")
+		},
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+	})
+
+	_, err := testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	if err == nil {
+		t.Fatal("expected error from RateFunc")
+	}
+	if !strings.Contains(err.Error(), "RateFunc error") {
+		t.Fatalf("expected RateFunc error message, got: %v", err)
+	}
+}
+
+func TestRateFuncHeaders(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:   100,
+		Burst: 100,
+		RateFunc: func(c *celeris.Context) (string, error) {
+			return "5-S", nil
+		},
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+		KeyFunc:         func(c *celeris.Context) string { return "test" },
+	})
+
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	// RateFunc returns "5-S" which has burst=5, so limit header should be "5".
+	testutil.AssertHeader(t, rec, "x-ratelimit-limit", "5")
+}
+
+func TestRateFuncWithSlidingWindow(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:           100,
+		Burst:         100,
+		SlidingWindow: true,
+		RateFunc: func(c *celeris.Context) (string, error) {
+			return "3-S", nil
+		},
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+		KeyFunc:         func(c *celeris.Context) string { return "test" },
+	})
+
+	for range 3 {
+		_, err := testutil.RunMiddleware(t, mw)
+		testutil.AssertNoError(t, err)
+	}
+	_, err := testutil.RunMiddleware(t, mw)
+	testutil.AssertHTTPError(t, err, 429)
+}
+
+func TestRateFuncCachesLimiters(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	callCount := 0
+	mw := New(Config{
+		RPS:   100,
+		Burst: 100,
+		RateFunc: func(c *celeris.Context) (string, error) {
+			callCount++
+			return "5-S", nil
+		},
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+		KeyFunc:         func(c *celeris.Context) string { return "test" },
+	})
+
+	// Call multiple times — should reuse cached limiter.
+	for range 3 {
+		_, err := testutil.RunMiddleware(t, mw)
+		testutil.AssertNoError(t, err)
+	}
+
+	if callCount != 3 {
+		t.Fatalf("expected RateFunc called 3 times, got %d", callCount)
+	}
+}

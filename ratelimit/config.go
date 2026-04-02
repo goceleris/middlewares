@@ -49,6 +49,12 @@ type Config struct {
 	// Takes precedence over RPS/Burst when set.
 	Rate string
 
+	// RateFunc, when set, is called per-request to determine the rate.
+	// Returns a rate string in the same format as Rate (e.g., "100-M").
+	// Falls back to the static Rate/RPS/Burst when it returns an empty string.
+	// Parsed via ParseRate.
+	RateFunc func(c *celeris.Context) (rate string, err error)
+
 	// KeyFunc extracts the rate limit key from the request. Default: c.ClientIP().
 	KeyFunc func(c *celeris.Context) string
 
@@ -69,6 +75,18 @@ type Config struct {
 
 	// DisableHeaders disables X-RateLimit-* response headers.
 	DisableHeaders bool
+
+	// DisableKeyRedaction, when false (default), redacts the key value
+	// passed to internal logging or LimitReached context. This prevents
+	// leaking potentially sensitive key information (e.g., IP addresses).
+	DisableKeyRedaction bool
+
+	// SlidingWindow, when true, uses a sliding window counter instead
+	// of the default token bucket algorithm. The sliding window tracks
+	// the previous and current window counts, weighted by the elapsed
+	// fraction of the current window. This provides smoother rate limiting
+	// near window boundaries.
+	SlidingWindow bool
 
 	// SkipFailedRequests, when true, refunds the token for requests
 	// whose downstream handler returns a status >= 400. The token is
@@ -123,6 +141,14 @@ func (cfg Config) validate() {
 	if cfg.Burst < 1 {
 		panic("ratelimit: Burst must be >= 1")
 	}
+}
+
+// RedactKey returns "[redacted]" unless DisableKeyRedaction is true.
+func (cfg Config) RedactKey(key string) string {
+	if cfg.DisableKeyRedaction {
+		return key
+	}
+	return "[redacted]"
 }
 
 // ParseRate parses a human-readable rate string into RPS and burst values.

@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/goceleris/celeris"
@@ -10,6 +11,12 @@ import (
 
 // ErrTooManyRequests is returned when the rate limit is exceeded.
 var ErrTooManyRequests = celeris.NewHTTPError(429, "Too Many Requests")
+
+// limiter is an interface that both shardedLimiter and slidingWindowLimiter satisfy.
+type limiter interface {
+	allow(key string, now int64) (bool, int, int64)
+	undo(key string)
+}
 
 // New creates a rate limit middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
@@ -30,13 +37,47 @@ func New(config ...Config) celeris.HandlerFunc {
 	limitReached := cfg.LimitReached
 	skipFailed := cfg.SkipFailedRequests
 	skipSuccess := cfg.SkipSuccessfulRequests
+	rateFunc := cfg.RateFunc
 
 	if cfg.Store != nil {
 		return newStoreMiddleware(cfg.Store, cfg.Skip, keyFunc, skipMap, disableHeaders, limitReached, skipFailed, skipSuccess)
 	}
 
-	limiter := newShardedLimiter(cfg.CleanupContext, cfg.Shards, cfg.RPS, cfg.Burst, cfg.CleanupInterval)
+	var lim limiter
+	if cfg.SlidingWindow {
+		lim = newSlidingWindowLimiter(cfg.CleanupContext, cfg.Shards, cfg.RPS, cfg.Burst, cfg.CleanupInterval)
+	} else {
+		lim = newShardedLimiter(cfg.CleanupContext, cfg.Shards, cfg.RPS, cfg.Burst, cfg.CleanupInterval)
+	}
 	limitStr := formatInt(cfg.Burst)
+	defaultBurst := cfg.Burst
+
+	type dynamicEntry struct {
+		lim   limiter
+		burst int
+	}
+
+	var (
+		dynamicMu       sync.Mutex
+		dynamicLimiters = make(map[string]dynamicEntry)
+	)
+
+	getDynamicLimiter := func(rateStr string) (limiter, int) {
+		dynamicMu.Lock()
+		defer dynamicMu.Unlock()
+		if e, ok := dynamicLimiters[rateStr]; ok {
+			return e.lim, e.burst
+		}
+		rps, burst := ParseRate(rateStr)
+		var dl limiter
+		if cfg.SlidingWindow {
+			dl = newSlidingWindowLimiter(cfg.CleanupContext, cfg.Shards, rps, burst, cfg.CleanupInterval)
+		} else {
+			dl = newShardedLimiter(cfg.CleanupContext, cfg.Shards, rps, burst, cfg.CleanupInterval)
+		}
+		dynamicLimiters[rateStr] = dynamicEntry{lim: dl, burst: burst}
+		return dl, burst
+	}
 
 	return func(c *celeris.Context) error {
 		if cfg.Skip != nil && cfg.Skip(c) {
@@ -48,11 +89,30 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 
 		key := keyFunc(c)
+
+		activeLim := lim
+		activeBurst := defaultBurst
+
+		if rateFunc != nil {
+			rateStr, err := rateFunc(c)
+			if err != nil {
+				return fmt.Errorf("ratelimit: RateFunc error: %w", err)
+			}
+			if rateStr != "" {
+				activeLim, activeBurst = getDynamicLimiter(rateStr)
+			}
+		}
+
 		now := time.Now().UnixNano()
-		allowed, remaining, resetNano := limiter.allow(key, now)
+		allowed, remaining, resetNano := activeLim.allow(key, now)
+
+		activeLimitStr := limitStr
+		if activeBurst != defaultBurst {
+			activeLimitStr = formatInt(activeBurst)
+		}
 
 		if !disableHeaders {
-			c.SetHeader("x-ratelimit-limit", limitStr)
+			c.SetHeader("x-ratelimit-limit", activeLimitStr)
 			c.SetHeader("x-ratelimit-remaining", formatInt(remaining))
 			c.SetHeader("x-ratelimit-reset", formatResetSeconds(resetNano, now))
 		}
@@ -72,7 +132,7 @@ func New(config ...Config) celeris.HandlerFunc {
 		if skipFailed || skipSuccess {
 			status := responseStatus(c, err)
 			if (skipFailed && status >= 400) || (skipSuccess && status < 400) {
-				limiter.undo(key)
+				activeLim.undo(key)
 			}
 		}
 

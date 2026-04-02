@@ -8,6 +8,11 @@ import (
 	"github.com/goceleris/celeris"
 )
 
+// maxOriginLength is the maximum allowed length for an Origin header value.
+// Origins exceeding this are rejected before any comparison to prevent
+// CPU waste on extremely long strings.
+const maxOriginLength = 256
+
 // Config defines the CORS middleware configuration.
 type Config struct {
 	// Skip defines a function to skip this middleware for certain requests.
@@ -23,11 +28,17 @@ type Config struct {
 	// AllowOriginsFunc is a custom function to validate origins.
 	// Called after static and wildcard origin checks.
 	// Cannot be used with wildcard "*" AllowOrigins.
+	//
+	// The middleware validates that the incoming Origin header looks like a
+	// serialized origin (has scheme + host, no path/query/fragment/userinfo)
+	// before passing it to this function. Malformed origins are rejected.
 	AllowOriginsFunc func(origin string) bool
 
 	// AllowOriginRequestFunc validates origins with access to the full request context.
 	// Called after AllowOriginsFunc. Useful for tenant-based or header-dependent
 	// origin decisions. Cannot be used with wildcard "*" AllowOrigins.
+	//
+	// The same serialized-origin validation applies as for AllowOriginsFunc.
 	AllowOriginRequestFunc func(c *celeris.Context, origin string) bool
 
 	// AllowMethods lists allowed HTTP methods.
@@ -47,6 +58,11 @@ type Config struct {
 	// AllowPrivateNetwork enables the Private Network Access spec.
 	// When true, preflight responses include Access-Control-Allow-Private-Network.
 	AllowPrivateNetwork bool
+
+	// DisableValueRedaction, when false (default), replaces origin values
+	// in panic messages with "[redacted]" to prevent leaking potentially
+	// sensitive origin information in logs.
+	DisableValueRedaction bool
 
 	// MaxAge is the preflight cache duration in seconds. Default: 0 (no cache).
 	MaxAge int
@@ -93,6 +109,14 @@ func (cfg Config) validate() {
 	}
 }
 
+// redactOrigin returns "[redacted]" unless DisableValueRedaction is true.
+func (cfg Config) redactOrigin(origin string) string {
+	if cfg.DisableValueRedaction {
+		return origin
+	}
+	return "[redacted]"
+}
+
 // wildcardPattern represents a parsed wildcard origin like "https://*.example.com".
 type wildcardPattern struct {
 	prefix string
@@ -108,6 +132,8 @@ func (w wildcardPattern) match(origin string) bool {
 // precomputed holds pre-joined header values for zero-alloc responses.
 type precomputed struct {
 	allowAllOrigins        bool
+	nullAllowed            bool
+	validateOriginFunc     bool
 	originSet              map[string]struct{}
 	wildcardPatterns       []wildcardPattern
 	allowOriginsFunc       func(string) bool
@@ -127,6 +153,7 @@ func precompute(cfg Config) precomputed {
 		allowOriginsFunc:       cfg.AllowOriginsFunc,
 		allowOriginRequestFunc: cfg.AllowOriginRequestFunc,
 		allowPrivateNetwork:    cfg.AllowPrivateNetwork,
+		validateOriginFunc:     cfg.AllowOriginsFunc != nil || cfg.AllowOriginRequestFunc != nil,
 	}
 
 	// Mirror request headers when AllowHeaders is not configured.
@@ -155,9 +182,13 @@ func precompute(cfg Config) precomputed {
 	if !p.allowAllOrigins {
 		p.originSet = make(map[string]struct{})
 		for _, o := range cfg.AllowOrigins {
+			if o == "null" {
+				p.nullAllowed = true
+				continue
+			}
 			if strings.Contains(o, "*") {
 				if strings.Count(o, "*") > 1 {
-					panic("cors: origin pattern must contain at most one wildcard: " + o)
+					panic("cors: origin pattern must contain at most one wildcard: " + cfg.redactOrigin(o))
 				}
 				norm := normalizeOrigin(o)
 				idx := strings.Index(norm, "*")
@@ -178,6 +209,26 @@ func precompute(cfg Config) precomputed {
 	p.preflightVary = vary
 
 	return p
+}
+
+// isSerializedOrigin checks whether an origin string looks like a valid
+// serialized origin per RFC 6454: scheme "://" host [ ":" port ].
+// Returns false for origins with path, query, fragment, or userinfo.
+func isSerializedOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return false
+	}
+	if u.Path != "" && u.Path != "/" {
+		return false
+	}
+	if u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return false
+	}
+	return true
 }
 
 // normalizeOrigin lowercases the scheme and host of a URL-shaped origin.
