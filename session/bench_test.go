@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"testing"
 
 	"github.com/goceleris/celeris"
@@ -31,7 +32,7 @@ func BenchmarkSessionExisting(b *testing.B) {
 		KeyGenerator: func() string { return "bench-session-id" },
 	})
 	// Pre-populate store.
-	_ = store.Save("bench-session-id", map[string]any{"user": "admin"}, 0)
+	_ = store.Save(context.Background(), "bench-session-id", map[string]any{"user": "admin"}, 0)
 
 	noop := func(c *celeris.Context) error {
 		s := FromContext(c)
@@ -53,20 +54,22 @@ func BenchmarkSessionExisting(b *testing.B) {
 
 func BenchmarkMemoryStoreGet(b *testing.B) {
 	store := NewMemoryStore()
-	_ = store.Save("bench-id", map[string]any{"k": "v"}, 0)
+	ctx := context.Background()
+	_ = store.Save(ctx, "bench-id", map[string]any{"k": "v"}, 0)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		_, _ = store.Get("bench-id")
+		_, _ = store.Get(ctx, "bench-id")
 	}
 }
 
 func BenchmarkMemoryStoreSave(b *testing.B) {
 	store := NewMemoryStore()
+	ctx := context.Background()
 	data := map[string]any{"k": "v"}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		_ = store.Save("bench-id", data, 0)
+		_ = store.Save(ctx, "bench-id", data, 0)
 	}
 }

@@ -8,16 +8,23 @@ import (
 )
 
 // Store defines the interface for session storage backends.
+//
+// All methods accept a [context.Context] to support cancellation and
+// deadline propagation. The middleware passes the request context
+// obtained from [celeris.Context.Context].
 type Store interface {
 	// Get retrieves session data by ID. Returns nil map and no error if the
 	// session does not exist or has expired.
-	Get(id string) (map[string]any, error)
+	Get(ctx context.Context, id string) (map[string]any, error)
 
 	// Save persists session data with the given expiry duration.
-	Save(id string, data map[string]any, expiry time.Duration) error
+	Save(ctx context.Context, id string, data map[string]any, expiry time.Duration) error
 
 	// Delete removes a session by ID.
-	Delete(id string) error
+	Delete(ctx context.Context, id string) error
+
+	// Reset wipes all sessions from the store.
+	Reset(ctx context.Context) error
 }
 
 // MemoryStoreConfig configures the in-memory session store.
@@ -87,7 +94,7 @@ func (m *memoryStore) shard(id string) *msShard {
 	return &m.shards[fnv1a(id)&m.mask]
 }
 
-func (m *memoryStore) Get(id string) (map[string]any, error) {
+func (m *memoryStore) Get(_ context.Context, id string) (map[string]any, error) {
 	s := m.shard(id)
 	s.mu.Lock()
 	item, ok := s.items[id]
@@ -109,7 +116,7 @@ func (m *memoryStore) Get(id string) (map[string]any, error) {
 	return cp, nil
 }
 
-func (m *memoryStore) Save(id string, data map[string]any, expiry time.Duration) error {
+func (m *memoryStore) Save(_ context.Context, id string, data map[string]any, expiry time.Duration) error {
 	s := m.shard(id)
 	cp := make(map[string]any, len(data))
 	for k, v := range data {
@@ -125,11 +132,21 @@ func (m *memoryStore) Save(id string, data map[string]any, expiry time.Duration)
 	return nil
 }
 
-func (m *memoryStore) Delete(id string) error {
+func (m *memoryStore) Delete(_ context.Context, id string) error {
 	s := m.shard(id)
 	s.mu.Lock()
 	delete(s.items, id)
 	s.mu.Unlock()
+	return nil
+}
+
+func (m *memoryStore) Reset(_ context.Context) error {
+	for i := range m.shards {
+		s := &m.shards[i]
+		s.mu.Lock()
+		clear(s.items)
+		s.mu.Unlock()
+	}
 	return nil
 }
 

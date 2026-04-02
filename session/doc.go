@@ -162,6 +162,19 @@
 //	    Store: myRedisStore,
 //	}))
 //
+// All [Store] methods receive a [context.Context] propagated from the
+// request. Implementations can use it for cancellation, deadlines, or
+// tracing. The built-in [MemoryStore] ignores the context since in-memory
+// operations are instantaneous, but network-backed stores (Redis, SQL)
+// should pass it through to their client calls.
+//
+// # Store-level Reset
+//
+// [Store].Reset wipes every session from the backend in a single call.
+// This is useful for administrative "log out all users" operations or
+// integration-test cleanup. The [MemoryStore] implementation iterates all
+// shards, locks each one, and clears the map.
+//
 // [ContextKey] is the key used to store the session in the request context,
 // usable with c.Get/c.Set for advanced scenarios.
 package session
