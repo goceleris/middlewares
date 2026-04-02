@@ -91,11 +91,13 @@
 //
 // # Metrics
 //
-// The middleware records two instruments:
+// The middleware records four instruments:
 //   - http.server.request.duration (Float64Histogram, seconds)
 //   - http.server.active_requests (Int64UpDownCounter)
+//   - http.server.request.body.size (Int64Histogram, bytes) -- recorded when > 0
+//   - http.server.response.body.size (Int64Histogram, bytes) -- recorded when > 0
 //
-// Both are tagged with http.request.method, http.route, url.scheme,
+// All are tagged with http.request.method, http.route, url.scheme,
 // server.address, and http.response.status_code.
 //
 // Use [Config].CustomMetricAttributes to append additional per-request
