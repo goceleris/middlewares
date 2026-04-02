@@ -10,10 +10,33 @@ import (
 	"github.com/goceleris/celeris"
 )
 
+// Store defines the interface for pluggable rate limit storage backends
+// (e.g., Redis). The store handles its own rate/burst logic; Config.RPS
+// and Config.Burst are ignored when Store is set.
+type Store interface {
+	// Allow checks if the request identified by key is allowed.
+	// Returns whether the request is allowed, the remaining token count,
+	// and the time at which the bucket resets.
+	Allow(key string) (allowed bool, remaining int, resetAt time.Time, err error)
+}
+
+// StoreUndo is an optional interface that Store implementations may
+// satisfy to support token refunds. Used by SkipFailedRequests and
+// SkipSuccessfulRequests.
+type StoreUndo interface {
+	Undo(key string) error
+}
+
 // Config defines the rate limit middleware configuration.
 type Config struct {
 	// Skip defines a function to skip this middleware for certain requests.
 	Skip func(c *celeris.Context) bool
+
+	// Store, when set, replaces the built-in sharded limiter with an
+	// external storage backend (e.g., Redis). The store is responsible
+	// for its own rate and burst logic; RPS, Burst, Shards, and
+	// CleanupInterval are ignored.
+	Store Store
 
 	// RPS is the refill rate in requests per second per key. Default: 10.
 	RPS float64
@@ -46,6 +69,16 @@ type Config struct {
 
 	// DisableHeaders disables X-RateLimit-* response headers.
 	DisableHeaders bool
+
+	// SkipFailedRequests, when true, refunds the token for requests
+	// whose downstream handler returns a status >= 400. The token is
+	// refunded after c.Next() completes.
+	SkipFailedRequests bool
+
+	// SkipSuccessfulRequests, when true, refunds the token for requests
+	// whose downstream handler returns a status < 400. The token is
+	// refunded after c.Next() completes.
+	SkipSuccessfulRequests bool
 
 	// LimitReached is called when a request is rate-limited.
 	// If nil, returns 429 Too Many Requests.

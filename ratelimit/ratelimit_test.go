@@ -2,6 +2,8 @@ package ratelimit
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -583,6 +585,516 @@ func FuzzKeyExtraction(f *testing.F) {
 		_ = mw(c)
 		celeristest.ReleaseContext(c)
 	})
+}
+
+// --- Store interface tests ---
+
+type mockStore struct {
+	mu        sync.Mutex
+	tokens    map[string]int
+	burst     int
+	allowErr  error
+	undoCalls int
+}
+
+func newMockStore(burst int) *mockStore {
+	return &mockStore{
+		tokens: make(map[string]int),
+		burst:  burst,
+	}
+}
+
+func (s *mockStore) Allow(key string) (bool, int, time.Time, error) {
+	if s.allowErr != nil {
+		return false, 0, time.Time{}, s.allowErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.tokens[key]; !ok {
+		s.tokens[key] = s.burst
+	}
+	if s.tokens[key] <= 0 {
+		return false, 0, time.Now().Add(time.Second), nil
+	}
+	s.tokens[key]--
+	return true, s.tokens[key], time.Now().Add(time.Second), nil
+}
+
+func (s *mockStore) Undo(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.undoCalls++
+	if s.tokens[key] < s.burst {
+		s.tokens[key]++
+	}
+	return nil
+}
+
+func TestStoreBasicAllow(t *testing.T) {
+	store := newMockStore(3)
+	mw := New(Config{
+		Store:   store,
+		KeyFunc: func(c *celeris.Context) string { return "test" },
+	})
+
+	for range 3 {
+		_, err := testutil.RunMiddleware(t, mw)
+		testutil.AssertNoError(t, err)
+	}
+
+	// 4th should be blocked.
+	_, err := testutil.RunMiddleware(t, mw)
+	testutil.AssertHTTPError(t, err, 429)
+}
+
+func TestStoreHeaders(t *testing.T) {
+	store := newMockStore(5)
+	mw := New(Config{
+		Store:   store,
+		KeyFunc: func(c *celeris.Context) string { return "test" },
+	})
+
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+
+	got := rec.Header("x-ratelimit-remaining")
+	if got != "4" {
+		t.Fatalf("x-ratelimit-remaining: got %q, want %q", got, "4")
+	}
+	if rec.Header("x-ratelimit-reset") == "" {
+		t.Fatal("expected x-ratelimit-reset header")
+	}
+}
+
+func TestStoreDisableHeaders(t *testing.T) {
+	store := newMockStore(5)
+	mw := New(Config{
+		Store:          store,
+		DisableHeaders: true,
+		KeyFunc:        func(c *celeris.Context) string { return "test" },
+	})
+
+	c, _ := celeristest.NewContextT(t, "GET", "/")
+	err := mw(c)
+	testutil.AssertNoError(t, err)
+
+	if got := contextHeader(c, "x-ratelimit-remaining"); got != "" {
+		t.Fatalf("expected no x-ratelimit-remaining with DisableHeaders, got %q", got)
+	}
+}
+
+func TestStoreError(t *testing.T) {
+	store := newMockStore(5)
+	store.allowErr = errors.New("connection refused")
+	mw := New(Config{
+		Store:   store,
+		KeyFunc: func(c *celeris.Context) string { return "test" },
+	})
+
+	_, err := testutil.RunMiddleware(t, mw)
+	if err == nil {
+		t.Fatal("expected error from store")
+	}
+	if !strings.Contains(err.Error(), "store error") {
+		t.Fatalf("expected store error message, got: %v", err)
+	}
+}
+
+func TestStoreDenyRetryAfter(t *testing.T) {
+	store := newMockStore(1)
+	mw := New(Config{
+		Store:   store,
+		KeyFunc: func(c *celeris.Context) string { return "test" },
+	})
+
+	// Exhaust token.
+	c, _ := celeristest.NewContextT(t, "GET", "/")
+	_ = mw(c)
+
+	// Denied request.
+	c2, _ := celeristest.NewContextT(t, "GET", "/")
+	err := mw(c2)
+	testutil.AssertHTTPError(t, err, 429)
+
+	if got := contextHeader(c2, "retry-after"); got == "" {
+		t.Fatal("expected retry-after header on denied request")
+	}
+}
+
+func TestStoreLimitReached(t *testing.T) {
+	store := newMockStore(1)
+	called := false
+	mw := New(Config{
+		Store: store,
+		LimitReached: func(c *celeris.Context) error {
+			called = true
+			return c.String(429, "custom")
+		},
+		KeyFunc: func(c *celeris.Context) string { return "test" },
+	})
+
+	_, _ = testutil.RunMiddleware(t, mw)
+	_, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/")
+	testutil.AssertNoError(t, err)
+	if !called {
+		t.Fatal("expected LimitReached callback")
+	}
+}
+
+func TestStoreSkipPaths(t *testing.T) {
+	store := newMockStore(1)
+	mw := New(Config{
+		Store:     store,
+		SkipPaths: []string{"/health"},
+		KeyFunc:   func(c *celeris.Context) string { return "test" },
+	})
+
+	// Exhaust token.
+	_, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/")
+	testutil.AssertNoError(t, err)
+
+	_, err = testutil.RunMiddlewareWithMethod(t, mw, "GET", "/")
+	testutil.AssertHTTPError(t, err, 429)
+
+	// /health should bypass.
+	_, err = testutil.RunMiddlewareWithMethod(t, mw, "GET", "/health")
+	testutil.AssertNoError(t, err)
+}
+
+func TestStoreSkipFunction(t *testing.T) {
+	store := newMockStore(1)
+	mw := New(Config{
+		Store: store,
+		Skip: func(c *celeris.Context) bool {
+			return c.Header("x-internal") == "true"
+		},
+		KeyFunc: func(c *celeris.Context) string { return "test" },
+	})
+
+	// Exhaust token.
+	_, err := testutil.RunMiddleware(t, mw)
+	testutil.AssertNoError(t, err)
+	_, err = testutil.RunMiddleware(t, mw)
+	testutil.AssertHTTPError(t, err, 429)
+
+	// Skipped request should pass.
+	_, err = testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-internal", "true"))
+	testutil.AssertNoError(t, err)
+}
+
+// --- Store without Undo (no StoreUndo interface) ---
+
+type mockStoreNoUndo struct {
+	tokens map[string]int
+	mu     sync.Mutex
+	burst  int
+}
+
+func newMockStoreNoUndo(burst int) *mockStoreNoUndo {
+	return &mockStoreNoUndo{tokens: make(map[string]int), burst: burst}
+}
+
+func (s *mockStoreNoUndo) Allow(key string) (bool, int, time.Time, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.tokens[key]; !ok {
+		s.tokens[key] = s.burst
+	}
+	if s.tokens[key] <= 0 {
+		return false, 0, time.Now().Add(time.Second), nil
+	}
+	s.tokens[key]--
+	return true, s.tokens[key], time.Now().Add(time.Second), nil
+}
+
+func TestStoreWithoutUndoSkipFailed(t *testing.T) {
+	store := newMockStoreNoUndo(2)
+	mw := New(Config{
+		Store:              store,
+		SkipFailedRequests: true,
+		KeyFunc:            func(c *celeris.Context) string { return "test" },
+	})
+
+	// Handler returns 500. Without Undo, token should NOT be refunded.
+	failHandler := func(c *celeris.Context) error {
+		return celeris.NewHTTPError(500, "fail")
+	}
+	chain := []celeris.HandlerFunc{mw, failHandler}
+
+	_, _ = testutil.RunChain(t, chain, "GET", "/")
+	_, _ = testutil.RunChain(t, chain, "GET", "/")
+
+	// Both tokens consumed (no undo). 3rd should be blocked.
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertHTTPError(t, err, 429)
+}
+
+// --- SkipFailedRequests / SkipSuccessfulRequests tests (built-in limiter) ---
+
+func TestSkipFailedRequests(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:                0.001,
+		Burst:              2,
+		SkipFailedRequests: true,
+		CleanupInterval:    time.Hour,
+		CleanupContext:     ctx,
+		KeyFunc:            func(c *celeris.Context) string { return "test" },
+	})
+
+	failHandler := func(c *celeris.Context) error {
+		return celeris.NewHTTPError(500, "fail")
+	}
+	chain := []celeris.HandlerFunc{mw, failHandler}
+
+	// Failed requests should not count: send many, tokens should be refunded.
+	for range 5 {
+		_, err := testutil.RunChain(t, chain, "GET", "/")
+		if err == nil {
+			t.Fatal("expected error from failHandler")
+		}
+		testutil.AssertHTTPError(t, err, 500)
+	}
+
+	// Now send a successful request — should still be allowed (tokens were refunded).
+	_, err := testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	testutil.AssertNoError(t, err)
+}
+
+func TestSkipFailedRequestsCountsSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:                0.001,
+		Burst:              2,
+		SkipFailedRequests: true,
+		CleanupInterval:    time.Hour,
+		CleanupContext:     ctx,
+		KeyFunc:            func(c *celeris.Context) string { return "test" },
+	})
+
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Successful requests SHOULD count.
+	for range 2 {
+		_, err := testutil.RunChain(t, chain, "GET", "/")
+		testutil.AssertNoError(t, err)
+	}
+
+	// 3rd should be blocked.
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertHTTPError(t, err, 429)
+}
+
+func TestSkipSuccessfulRequests(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:                    0.001,
+		Burst:                  2,
+		SkipSuccessfulRequests: true,
+		CleanupInterval:        time.Hour,
+		CleanupContext:         ctx,
+		KeyFunc:                func(c *celeris.Context) string { return "test" },
+	})
+
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Successful requests should not count: send many, tokens should be refunded.
+	for range 5 {
+		_, err := testutil.RunChain(t, chain, "GET", "/")
+		testutil.AssertNoError(t, err)
+	}
+}
+
+func TestSkipSuccessfulRequestsCountsFailures(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:                    0.001,
+		Burst:                  2,
+		SkipSuccessfulRequests: true,
+		CleanupInterval:        time.Hour,
+		CleanupContext:         ctx,
+		KeyFunc:                func(c *celeris.Context) string { return "test" },
+	})
+
+	failHandler := func(c *celeris.Context) error {
+		return celeris.NewHTTPError(500, "fail")
+	}
+	chain := []celeris.HandlerFunc{mw, failHandler}
+
+	// Failed requests SHOULD count.
+	for range 2 {
+		_, err := testutil.RunChain(t, chain, "GET", "/")
+		testutil.AssertHTTPError(t, err, 500)
+	}
+
+	// 3rd should be rate limited.
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertHTTPError(t, err, 429)
+}
+
+func TestSkipFailedRequestsWith400(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:                0.001,
+		Burst:              1,
+		SkipFailedRequests: true,
+		CleanupInterval:    time.Hour,
+		CleanupContext:     ctx,
+		KeyFunc:            func(c *celeris.Context) string { return "test" },
+	})
+
+	badReqHandler := func(c *celeris.Context) error {
+		return celeris.NewHTTPError(400, "bad request")
+	}
+	chain := []celeris.HandlerFunc{mw, badReqHandler}
+
+	// 400 is >= 400, so should be skipped (refunded).
+	for range 3 {
+		_, err := testutil.RunChain(t, chain, "GET", "/")
+		testutil.AssertHTTPError(t, err, 400)
+	}
+}
+
+func TestSkipFailedRequestsStatusFromContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:                0.001,
+		Burst:              1,
+		SkipFailedRequests: true,
+		CleanupInterval:    time.Hour,
+		CleanupContext:     ctx,
+		KeyFunc:            func(c *celeris.Context) string { return "test" },
+	})
+
+	// Handler that sets status on context (via c.String) then returns nil error.
+	handler404 := func(c *celeris.Context) error {
+		return c.String(404, "not found")
+	}
+	chain := []celeris.HandlerFunc{mw, handler404}
+
+	// 404 status set on context (>= 400), should be refunded.
+	for range 3 {
+		_, err := testutil.RunChain(t, chain, "GET", "/")
+		testutil.AssertNoError(t, err)
+	}
+}
+
+// --- Store + SkipFailedRequests ---
+
+func TestStoreSkipFailedRequests(t *testing.T) {
+	store := newMockStore(2)
+	mw := New(Config{
+		Store:              store,
+		SkipFailedRequests: true,
+		KeyFunc:            func(c *celeris.Context) string { return "test" },
+	})
+
+	failHandler := func(c *celeris.Context) error {
+		return celeris.NewHTTPError(500, "fail")
+	}
+	chain := []celeris.HandlerFunc{mw, failHandler}
+
+	// Failed requests should be refunded via store.Undo.
+	for range 5 {
+		_, err := testutil.RunChain(t, chain, "GET", "/")
+		testutil.AssertHTTPError(t, err, 500)
+	}
+
+	if store.undoCalls != 5 {
+		t.Fatalf("expected 5 undo calls, got %d", store.undoCalls)
+	}
+}
+
+func TestStoreSkipSuccessfulRequests(t *testing.T) {
+	store := newMockStore(2)
+	mw := New(Config{
+		Store:                  store,
+		SkipSuccessfulRequests: true,
+		KeyFunc:                func(c *celeris.Context) string { return "test" },
+	})
+
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Successful requests should be refunded.
+	for range 5 {
+		_, err := testutil.RunChain(t, chain, "GET", "/")
+		testutil.AssertNoError(t, err)
+	}
+
+	if store.undoCalls != 5 {
+		t.Fatalf("expected 5 undo calls, got %d", store.undoCalls)
+	}
+}
+
+// --- Undo method on shardedLimiter ---
+
+func TestShardedLimiterUndo(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l := newShardedLimiter(ctx, 4, 0.001, 2, time.Hour)
+	now := time.Now().UnixNano()
+
+	// Consume both tokens.
+	l.allow("k", now)
+	l.allow("k", now)
+
+	// Should be denied.
+	allowed, _, _ := l.allow("k", now)
+	if allowed {
+		t.Fatal("expected denial after consuming all tokens")
+	}
+
+	// Undo one token.
+	l.undo("k")
+
+	// Should be allowed again.
+	allowed, _, _ = l.allow("k", now)
+	if !allowed {
+		t.Fatal("expected allow after undo")
+	}
+}
+
+func TestShardedLimiterUndoCapsAtBurst(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l := newShardedLimiter(ctx, 4, 0.001, 2, time.Hour)
+	now := time.Now().UnixNano()
+
+	// Consume one token (bucket has 1 left).
+	l.allow("k", now)
+
+	// Undo twice — should cap at burst (2).
+	l.undo("k")
+	l.undo("k")
+
+	// Consume 2 tokens — both should succeed.
+	allowed1, _, _ := l.allow("k", now)
+	allowed2, _, _ := l.allow("k", now)
+	if !allowed1 || !allowed2 {
+		t.Fatal("expected both allows after capped undo")
+	}
+
+	// 3rd should fail (only had burst=2).
+	allowed3, _, _ := l.allow("k", now)
+	if allowed3 {
+		t.Fatal("expected denial — undo should not exceed burst")
+	}
+}
+
+func TestShardedLimiterUndoNonexistentKey(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l := newShardedLimiter(ctx, 4, 10, 5, time.Hour)
+
+	// Undo on nonexistent key should not panic.
+	l.undo("nonexistent")
 }
 
 func FuzzConcurrentAccess(f *testing.F) {
