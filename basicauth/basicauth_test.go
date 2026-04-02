@@ -160,7 +160,7 @@ func TestBadBase64AuthHeader(t *testing.T) {
 	_, err := testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithHeader("authorization", "Basic !!!notbase64!!!"),
 	)
-	testutil.AssertHTTPError(t, err, 401)
+	testutil.AssertHTTPError(t, err, 400)
 }
 
 func TestEmptyUsernamePassword(t *testing.T) {
@@ -627,7 +627,7 @@ func TestInvalidUTF8InUsernameRejects(t *testing.T) {
 	// \xff\xfe:password — invalid UTF-8 in username
 	_, err := testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithHeader("authorization", "Basic //46cGFzc3dvcmQ="))
-	testutil.AssertHTTPError(t, err, 401)
+	testutil.AssertHTTPError(t, err, 400)
 }
 
 func TestInvalidUTF8InPasswordRejects(t *testing.T) {
@@ -642,7 +642,7 @@ func TestInvalidUTF8InPasswordRejects(t *testing.T) {
 	// base64("admin:\xff\xfe") = "YWRtaW46//4="
 	_, err := testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithHeader("authorization", "Basic YWRtaW46//4="))
-	testutil.AssertHTTPError(t, err, 401)
+	testutil.AssertHTTPError(t, err, 400)
 }
 
 func TestControlCharTabInUsernameRejects(t *testing.T) {
@@ -656,7 +656,7 @@ func TestControlCharTabInUsernameRejects(t *testing.T) {
 	// admin\t:password — tab (0x09) in username
 	_, err := testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithHeader("authorization", "Basic YWRtaW4JOnBhc3N3b3Jk"))
-	testutil.AssertHTTPError(t, err, 401)
+	testutil.AssertHTTPError(t, err, 400)
 }
 
 func TestControlCharNullInPasswordRejects(t *testing.T) {
@@ -670,7 +670,7 @@ func TestControlCharNullInPasswordRejects(t *testing.T) {
 	// admin:pass\x00word — null byte (0x00) in password
 	_, err := testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithHeader("authorization", "Basic YWRtaW46cGFzcwB3b3Jk"))
-	testutil.AssertHTTPError(t, err, 401)
+	testutil.AssertHTTPError(t, err, 400)
 }
 
 func TestControlCharDELInPasswordRejects(t *testing.T) {
@@ -684,7 +684,7 @@ func TestControlCharDELInPasswordRejects(t *testing.T) {
 	// admin:pass\x7fword — DEL (0x7F) in password
 	_, err := testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithHeader("authorization", "Basic YWRtaW46cGFzc393b3Jk"))
-	testutil.AssertHTTPError(t, err, 401)
+	testutil.AssertHTTPError(t, err, 400)
 }
 
 func TestValidUTF8CredentialsPass(t *testing.T) {
@@ -902,4 +902,325 @@ func TestUsersMapTakesPrecedenceOverHashedUsers(t *testing.T) {
 	_, err = testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithBasicAuth("admin", "hashed"))
 	testutil.AssertHTTPError(t, err, 401)
+}
+
+// --- SkipPaths tests ---
+
+func TestSkipPathsMatchingPathSkipsAuth(t *testing.T) {
+	mw := New(Config{
+		Validator: validatorFor("admin", "secret"),
+		SkipPaths: []string{"/health", "/ready"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/health")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertBodyContains(t, rec, "ok")
+}
+
+func TestSkipPathsNonMatchingPathRequiresAuth(t *testing.T) {
+	mw := New(Config{
+		Validator: validatorFor("admin", "secret"),
+		SkipPaths: []string{"/health"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/api/data")
+	testutil.AssertHTTPError(t, err, 401)
+}
+
+func TestSkipPathsMultiplePaths(t *testing.T) {
+	mw := New(Config{
+		Validator: validatorFor("admin", "secret"),
+		SkipPaths: []string{"/health", "/ready", "/metrics"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	for _, path := range []string{"/health", "/ready", "/metrics"} {
+		rec, err := testutil.RunChain(t, chain, "GET", path)
+		testutil.AssertNoError(t, err)
+		testutil.AssertStatus(t, rec, 200)
+	}
+
+	// Non-skip path requires auth.
+	_, err := testutil.RunChain(t, chain, "GET", "/secret")
+	testutil.AssertHTTPError(t, err, 401)
+}
+
+func TestSkipPathsAuthStillWorksOnNonSkipped(t *testing.T) {
+	mw := New(Config{
+		Validator: validatorFor("admin", "secret"),
+		SkipPaths: []string{"/health"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/api",
+		celeristest.WithBasicAuth("admin", "secret"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+// --- Cache-Control + Vary header tests ---
+
+func TestCacheControlAndVaryOn401(t *testing.T) {
+	mw := New(Config{Validator: validatorFor("admin", "secret")})
+	ctx, _ := celeristest.NewContextT(t, "GET", "/")
+	err := mw(ctx)
+	testutil.AssertHTTPError(t, err, 401)
+	assertResponseHeader(t, ctx, "cache-control", "no-store")
+	assertResponseHeader(t, ctx, "vary", "authorization")
+}
+
+func TestCacheControlAndVaryOn401WrongCreds(t *testing.T) {
+	mw := New(Config{Validator: validatorFor("admin", "secret")})
+	ctx, _ := celeristest.NewContextT(t, "GET", "/",
+		celeristest.WithBasicAuth("admin", "wrong"))
+	err := mw(ctx)
+	testutil.AssertHTTPError(t, err, 401)
+	assertResponseHeader(t, ctx, "cache-control", "no-store")
+	assertResponseHeader(t, ctx, "vary", "authorization")
+}
+
+func TestCacheControlAndVaryOn400BadBase64(t *testing.T) {
+	mw := New(Config{Validator: validatorFor("admin", "secret")})
+	ctx, _ := celeristest.NewContextT(t, "GET", "/",
+		celeristest.WithHeader("authorization", "Basic !!!bad!!!"))
+	err := mw(ctx)
+	testutil.AssertHTTPError(t, err, 400)
+	assertResponseHeader(t, ctx, "cache-control", "no-store")
+	assertResponseHeader(t, ctx, "vary", "authorization")
+}
+
+func TestNoCacheControlOnSuccess(t *testing.T) {
+	mw := New(Config{Validator: validatorFor("admin", "secret")})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	ctx, rec := celeristest.NewContextT(t, "GET", "/",
+		celeristest.WithHandlers(chain...),
+		celeristest.WithBasicAuth("admin", "secret"))
+	err := ctx.Next()
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	for _, h := range ctx.ResponseHeaders() {
+		if h[0] == "cache-control" {
+			t.Fatal("cache-control should not be set on successful auth")
+		}
+	}
+}
+
+// --- ErrBadRequest (400 vs 401) tests ---
+
+func TestErrBadRequestBadBase64(t *testing.T) {
+	var receivedErr error
+	mw := New(Config{
+		Validator: validatorFor("admin", "secret"),
+		ErrorHandler: func(_ *celeris.Context, err error) error {
+			receivedErr = err
+			return err
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Basic !!!bad!!!"))
+	testutil.AssertHTTPError(t, err, 400)
+	if receivedErr != ErrBadRequest {
+		t.Fatalf("expected ErrBadRequest, got %v", receivedErr)
+	}
+}
+
+func TestErrBadRequestNoColon(t *testing.T) {
+	var receivedErr error
+	mw := New(Config{
+		Validator: validatorFor("admin", "secret"),
+		ErrorHandler: func(_ *celeris.Context, err error) error {
+			receivedErr = err
+			return err
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	// base64("nocolon") = "bm9jb2xvbg=="
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Basic bm9jb2xvbg=="))
+	testutil.AssertHTTPError(t, err, 400)
+	if receivedErr != ErrBadRequest {
+		t.Fatalf("expected ErrBadRequest, got %v", receivedErr)
+	}
+}
+
+func TestErrBadRequestControlChars(t *testing.T) {
+	var receivedErr error
+	mw := New(Config{
+		Validator: func(_, _ string) bool { return true },
+		ErrorHandler: func(_ *celeris.Context, err error) error {
+			receivedErr = err
+			return err
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	// admin\t:password — tab in username
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Basic YWRtaW4JOnBhc3N3b3Jk"))
+	testutil.AssertHTTPError(t, err, 400)
+	if receivedErr != ErrBadRequest {
+		t.Fatalf("expected ErrBadRequest, got %v", receivedErr)
+	}
+}
+
+func TestErrUnauthorizedMissingHeader(t *testing.T) {
+	var receivedErr error
+	mw := New(Config{
+		Validator: validatorFor("admin", "secret"),
+		ErrorHandler: func(c *celeris.Context, err error) error {
+			receivedErr = err
+			c.SetHeader("www-authenticate", `Basic realm="Test"`)
+			return err
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertHTTPError(t, err, 401)
+	if receivedErr != ErrUnauthorized {
+		t.Fatalf("expected ErrUnauthorized, got %v", receivedErr)
+	}
+}
+
+func TestErrUnauthorizedWrongScheme(t *testing.T) {
+	var receivedErr error
+	mw := New(Config{
+		Validator: validatorFor("admin", "secret"),
+		ErrorHandler: func(_ *celeris.Context, err error) error {
+			receivedErr = err
+			return err
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer token123"))
+	testutil.AssertHTTPError(t, err, 401)
+	if receivedErr != ErrUnauthorized {
+		t.Fatalf("expected ErrUnauthorized, got %v", receivedErr)
+	}
+}
+
+func TestErrUnauthorizedWrongPassword(t *testing.T) {
+	var receivedErr error
+	mw := New(Config{
+		Validator: validatorFor("admin", "secret"),
+		ErrorHandler: func(_ *celeris.Context, err error) error {
+			receivedErr = err
+			return err
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithBasicAuth("admin", "wrong"))
+	testutil.AssertHTTPError(t, err, 401)
+	if receivedErr != ErrUnauthorized {
+		t.Fatalf("expected ErrUnauthorized, got %v", receivedErr)
+	}
+}
+
+// --- parseBasicAuth unit tests ---
+
+func TestParseBasicAuthOK(t *testing.T) {
+	user, pass, result := parseBasicAuth("Basic YWRtaW46c2VjcmV0")
+	if result != authOK {
+		t.Fatalf("expected authOK, got %d", result)
+	}
+	if user != "admin" || pass != "secret" {
+		t.Fatalf("got %q:%q, want admin:secret", user, pass)
+	}
+}
+
+func TestParseBasicAuthEmptyHeader(t *testing.T) {
+	_, _, result := parseBasicAuth("")
+	if result != authMissing {
+		t.Fatalf("expected authMissing, got %d", result)
+	}
+}
+
+func TestParseBasicAuthWrongScheme(t *testing.T) {
+	_, _, result := parseBasicAuth("Bearer token")
+	if result != authMissing {
+		t.Fatalf("expected authMissing, got %d", result)
+	}
+}
+
+func TestParseBasicAuthEmptyPayload(t *testing.T) {
+	_, _, result := parseBasicAuth("Basic ")
+	if result != authMissing {
+		t.Fatalf("expected authMissing, got %d", result)
+	}
+}
+
+func TestParseBasicAuthBadBase64(t *testing.T) {
+	_, _, result := parseBasicAuth("Basic !!!bad!!!")
+	if result != authMalformed {
+		t.Fatalf("expected authMalformed, got %d", result)
+	}
+}
+
+func TestParseBasicAuthNoColon(t *testing.T) {
+	// base64("nocolon") = "bm9jb2xvbg=="
+	_, _, result := parseBasicAuth("Basic bm9jb2xvbg==")
+	if result != authMalformed {
+		t.Fatalf("expected authMalformed, got %d", result)
+	}
+}
+
+func TestParseBasicAuthInvalidUTF8(t *testing.T) {
+	// \xff\xfe:password
+	_, _, result := parseBasicAuth("Basic //46cGFzc3dvcmQ=")
+	if result != authMalformed {
+		t.Fatalf("expected authMalformed, got %d", result)
+	}
+}
+
+func TestParseBasicAuthControlChar(t *testing.T) {
+	// admin\t:password
+	_, _, result := parseBasicAuth("Basic YWRtaW4JOnBhc3N3b3Jk")
+	if result != authMalformed {
+		t.Fatalf("expected authMalformed, got %d", result)
+	}
+}
+
+// assertResponseHeader is a test helper that checks a response header on Context.
+func assertResponseHeader(t *testing.T, ctx *celeris.Context, key, want string) {
+	t.Helper()
+	for _, h := range ctx.ResponseHeaders() {
+		if h[0] == key && h[1] == want {
+			return
+		}
+	}
+	t.Fatalf("expected response header %q=%q, got %v", key, want, ctx.ResponseHeaders())
 }

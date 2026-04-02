@@ -47,8 +47,10 @@ type Config struct {
 	HeaderLimit int
 
 	// ErrorHandler handles authentication failures. The err parameter is
-	// the sentinel error that triggered the failure (typically [ErrUnauthorized]).
-	// Default: 401 with WWW-Authenticate header.
+	// the sentinel error that triggered the failure: [ErrUnauthorized] (401)
+	// for missing/invalid credentials, [ErrBadRequest] (400) for malformed
+	// headers, or [ErrHeaderTooLarge] (431) for oversized headers.
+	// Default: 401 with WWW-Authenticate + Cache-Control + Vary headers.
 	ErrorHandler func(c *celeris.Context, err error) error
 }
 

@@ -51,16 +51,33 @@
 // oversized credentials from reaching the base64 decoder or validator.
 // [ErrHeaderTooLarge] is the exported sentinel error for this case.
 //
-// [ErrUnauthorized] is the exported sentinel error (401) returned on
-// authentication failure, usable with errors.Is for error handling in
-// upstream middleware.
+// # Sentinel Errors: 400 vs 401
+//
+// [ErrUnauthorized] (401) is returned when credentials are absent, use
+// the wrong scheme (e.g. Bearer instead of Basic), or fail validation.
+//
+// [ErrBadRequest] (400) is returned when the Authorization header is
+// syntactically malformed: invalid base64 encoding, missing colon
+// separator in the decoded payload, or credentials containing invalid
+// UTF-8 sequences or ASCII control characters. The [Config].ErrorHandler
+// receives the appropriate sentinel so users can distinguish malformed
+// requests from authentication failures.
+//
+// # Cache-Control and Vary Headers
+//
+// The default error handler sets Cache-Control: no-store and
+// Vary: Authorization on both 401 and 400 responses. This prevents
+// browsers and intermediary caches from caching failed authentication
+// responses. Custom error handlers should replicate this behavior when
+// appropriate.
 //
 // # Credential Validation
 //
 // After base64 decoding, the middleware rejects credentials that contain
 // invalid UTF-8 sequences or ASCII control characters (bytes < 0x20 or
 // 0x7F DEL). This prevents injection of binary data or terminal escape
-// sequences through authentication headers.
+// sequences through authentication headers. Such requests receive a 400
+// via [ErrBadRequest] rather than a 401.
 //
 // NFC normalization is intentionally omitted to avoid a dependency on
 // golang.org/x/text. Applications that accept Unicode passwords should
