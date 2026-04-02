@@ -46,24 +46,30 @@ func New(config ...Config) celeris.HandlerFunc {
 
 		path := c.Path()
 
+		var ok bool
 		switch path {
 		case livePath:
-			return respond(c, runChecker(liveChecker, c, checkerTimeout))
+			ok = runChecker(liveChecker, c, checkerTimeout)
 		case readyPath:
-			return respond(c, runChecker(readyChecker, c, checkerTimeout))
+			ok = runChecker(readyChecker, c, checkerTimeout)
 		case startPath:
-			return respond(c, runChecker(startChecker, c, checkerTimeout))
+			ok = runChecker(startChecker, c, checkerTimeout)
 		default:
 			return c.Next()
 		}
+		return respond(c, ok, method == "HEAD")
 	}
 }
 
-// runChecker runs the health checker with a context deadline so that
-// well-behaved checkers (those that respect c.Context().Done()) can
-// terminate early on timeout. The context is cancelled after the
-// result is received or the deadline expires.
+// runChecker runs the health checker. When timeout is positive, the
+// checker runs in a goroutine with a context deadline. When timeout is
+// zero or negative, the checker is called synchronously without
+// goroutine/channel/context overhead (fast-path for trivial checkers).
 func runChecker(checker Checker, c *celeris.Context, timeout time.Duration) bool {
+	if timeout <= 0 {
+		return checker(c)
+	}
+
 	ctx, cancel := context.WithTimeout(c.Context(), timeout)
 	defer cancel()
 	c.SetContext(ctx)
@@ -81,9 +87,16 @@ func runChecker(checker Checker, c *celeris.Context, timeout time.Duration) bool
 	}
 }
 
-func respond(c *celeris.Context, ok bool) error {
+func respond(c *celeris.Context, ok bool, head bool) error {
+	status := 503
 	if ok {
-		return c.JSON(200, responseOK)
+		status = 200
 	}
-	return c.JSON(503, responseUnavailable)
+	if head {
+		return c.NoContent(status)
+	}
+	if ok {
+		return c.JSON(status, responseOK)
+	}
+	return c.JSON(status, responseUnavailable)
 }

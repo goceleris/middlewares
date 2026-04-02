@@ -215,6 +215,7 @@ func TestHEADMethodAllowed(t *testing.T) {
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "HEAD", "/livez")
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertBodyEmpty(t, rec)
 }
 
 func TestExportedPathConstants(t *testing.T) {
@@ -378,5 +379,199 @@ func TestCheckerContextCancellation(t *testing.T) {
 		// Checker observed context cancellation.
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected checker to observe context cancellation")
+	}
+}
+
+// --- Fast-path (no timeout) tests ---
+
+func TestFastPathNoTimeout(t *testing.T) {
+	called := false
+	mw := New(Config{
+		CheckerTimeout: -1, // negative = fast-path, no goroutine
+		LiveChecker: func(_ *celeris.Context) bool {
+			called = true
+			return true
+		},
+	})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/livez")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	if !called {
+		t.Fatal("expected checker to be called synchronously")
+	}
+
+	var resp probeResponse
+	if err := json.Unmarshal(rec.Body, &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("status: got %q, want %q", resp.Status, "ok")
+	}
+}
+
+func TestFastPathReturnsFalse(t *testing.T) {
+	mw := New(Config{
+		CheckerTimeout: -1,
+		ReadyChecker: func(_ *celeris.Context) bool {
+			return false
+		},
+	})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/readyz")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 503)
+
+	var resp probeResponse
+	if err := json.Unmarshal(rec.Body, &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp.Status != "unavailable" {
+		t.Fatalf("status: got %q, want %q", resp.Status, "unavailable")
+	}
+}
+
+func TestFastPathAllProbes(t *testing.T) {
+	mw := New(Config{
+		CheckerTimeout: -1,
+		LiveChecker:    func(_ *celeris.Context) bool { return true },
+		ReadyChecker:   func(_ *celeris.Context) bool { return false },
+		StartChecker:   func(_ *celeris.Context) bool { return true },
+	})
+
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/livez")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+
+	rec, err = testutil.RunMiddlewareWithMethod(t, mw, "GET", "/readyz")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 503)
+
+	rec, err = testutil.RunMiddlewareWithMethod(t, mw, "GET", "/startupz")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+// --- Validation panic tests ---
+
+func TestValidatePanicsOnEmptyPath(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{"empty LivePath", Config{LivePath: "", ReadyPath: "/r", StartPath: "/s"}},
+		{"empty ReadyPath", Config{LivePath: "/l", ReadyPath: "", StartPath: "/s"}},
+		{"empty StartPath", Config{LivePath: "/l", ReadyPath: "/r", StartPath: ""}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic for empty path")
+				}
+			}()
+			tt.cfg.validate()
+		})
+	}
+}
+
+func TestValidatePanicsOnMissingSlash(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{"LivePath no slash", Config{LivePath: "livez", ReadyPath: "/r", StartPath: "/s"}},
+		{"ReadyPath no slash", Config{LivePath: "/l", ReadyPath: "readyz", StartPath: "/s"}},
+		{"StartPath no slash", Config{LivePath: "/l", ReadyPath: "/r", StartPath: "startupz"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic for path without leading /")
+				}
+			}()
+			tt.cfg.validate()
+		})
+	}
+}
+
+func TestValidatePanicsOnOverlappingPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{"live==ready", Config{LivePath: "/health", ReadyPath: "/health", StartPath: "/s"}},
+		{"live==start", Config{LivePath: "/health", ReadyPath: "/r", StartPath: "/health"}},
+		{"ready==start", Config{LivePath: "/l", ReadyPath: "/health", StartPath: "/health"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic for overlapping paths")
+				}
+			}()
+			tt.cfg.validate()
+		})
+	}
+}
+
+func TestValidateAcceptsValidConfig(t *testing.T) {
+	// Should not panic.
+	cfg := Config{
+		LivePath:  "/l",
+		ReadyPath: "/r",
+		StartPath: "/s",
+	}
+	cfg.validate()
+}
+
+// --- HEAD body suppression tests ---
+
+func TestHEADNoBodyLive(t *testing.T) {
+	mw := New()
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "HEAD", "/livez")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertBodyEmpty(t, rec)
+}
+
+func TestHEADNoBodyReady(t *testing.T) {
+	mw := New()
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "HEAD", "/readyz")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertBodyEmpty(t, rec)
+}
+
+func TestHEADNoBodyStartup(t *testing.T) {
+	mw := New()
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "HEAD", "/startupz")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertBodyEmpty(t, rec)
+}
+
+func TestHEADUnavailableNoBody(t *testing.T) {
+	mw := New(Config{
+		LiveChecker: func(_ *celeris.Context) bool { return false },
+	})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "HEAD", "/livez")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 503)
+	testutil.AssertBodyEmpty(t, rec)
+}
+
+func TestGETStillReturnsBody(t *testing.T) {
+	mw := New()
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/livez")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+
+	var resp probeResponse
+	if err := json.Unmarshal(rec.Body, &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("status: got %q, want %q", resp.Status, "ok")
 	}
 }

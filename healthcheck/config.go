@@ -1,6 +1,7 @@
 package healthcheck
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/goceleris/celeris"
@@ -85,10 +86,35 @@ func applyDefaults(cfg Config) Config {
 	if cfg.StartChecker == nil {
 		cfg.StartChecker = DefaultConfig.StartChecker
 	}
-	if cfg.CheckerTimeout <= 0 {
+	if cfg.CheckerTimeout == 0 {
 		cfg.CheckerTimeout = DefaultCheckerTimeout
 	}
 	return cfg
 }
 
-func (cfg Config) validate() {}
+func (cfg Config) validate() {
+	paths := [3]struct {
+		name, value string
+	}{
+		{"LivePath", cfg.LivePath},
+		{"ReadyPath", cfg.ReadyPath},
+		{"StartPath", cfg.StartPath},
+	}
+	for _, p := range paths {
+		if p.value == "" {
+			panic(fmt.Sprintf("healthcheck: %s must not be empty", p.name))
+		}
+		if p.value[0] != '/' {
+			panic(fmt.Sprintf("healthcheck: %s %q must start with '/'", p.name, p.value))
+		}
+	}
+	if cfg.LivePath == cfg.ReadyPath {
+		panic(fmt.Sprintf("healthcheck: LivePath and ReadyPath must differ, both are %q", cfg.LivePath))
+	}
+	if cfg.LivePath == cfg.StartPath {
+		panic(fmt.Sprintf("healthcheck: LivePath and StartPath must differ, both are %q", cfg.LivePath))
+	}
+	if cfg.ReadyPath == cfg.StartPath {
+		panic(fmt.Sprintf("healthcheck: ReadyPath and StartPath must differ, both are %q", cfg.ReadyPath))
+	}
+}
