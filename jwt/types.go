@@ -57,6 +57,7 @@ var (
 	WithLeeway       = jwtparse.WithLeeway
 	WithIssuer       = jwtparse.WithIssuer
 	WithAudience     = jwtparse.WithAudience
+	WithSubject      = jwtparse.WithSubject
 )
 
 // SignToken creates and signs a new JWT.

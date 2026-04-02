@@ -99,6 +99,18 @@ type Config struct {
 	// SuccessHandler is called after successful token validation, before
 	// c.Next(). Use for logging, metrics, or enriching the context.
 	SuccessHandler func(c *celeris.Context)
+
+	// ContinueOnIgnoredError, when true, causes the middleware to call
+	// c.Next() when ErrorHandler returns nil. By default, when
+	// ErrorHandler returns nil the middleware returns nil immediately
+	// (short-circuiting the chain). Enable this to allow downstream
+	// handlers to run after a suppressed authentication error.
+	ContinueOnIgnoredError bool
+
+	// BeforeFunc is called before any JWT processing (token extraction,
+	// parsing, validation). Use it for request decoration, logging, or
+	// other pre-processing that should occur before authentication.
+	BeforeFunc func(c *celeris.Context)
 }
 
 // DefaultConfig is the default JWT configuration.

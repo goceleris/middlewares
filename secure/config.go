@@ -9,78 +9,78 @@ import (
 // Config defines the security headers middleware configuration.
 type Config struct {
 	// Skip defines a function to skip this middleware for certain requests.
-	Skip func(c *celeris.Context) bool
+	Skip func(c *celeris.Context) bool `yaml:"-"`
 
 	// SkipPaths lists paths to skip (exact match).
-	SkipPaths []string
+	SkipPaths []string `yaml:"skip_paths"`
 
 	// XContentTypeOptions sets the X-Content-Type-Options header.
 	// Default: "nosniff".
-	XContentTypeOptions string
+	XContentTypeOptions string `yaml:"x_content_type_options"`
 
 	// XFrameOptions sets the X-Frame-Options header.
 	// Default: "SAMEORIGIN".
-	XFrameOptions string
+	XFrameOptions string `yaml:"x_frame_options"`
 
 	// XSSProtection sets the X-XSS-Protection header.
 	// Default: "0" (disables the XSS auditor, per modern best practice).
-	XSSProtection string
+	XSSProtection string `yaml:"xss_protection"`
 
 	// HSTSMaxAge sets the max-age directive of Strict-Transport-Security in seconds.
 	// Set to -1 to omit the header entirely. Default: 63072000 (2 years).
-	HSTSMaxAge int
+	HSTSMaxAge int `yaml:"hsts_max_age"`
 
 	// HSTSExcludeSubdomains opts out of includeSubDomains in the HSTS header.
 	// By default includeSubDomains is included. Set to true to remove it.
-	HSTSExcludeSubdomains bool
+	HSTSExcludeSubdomains bool `yaml:"hsts_exclude_subdomains"`
 
 	// HSTSPreload adds preload to the HSTS header.
 	// Default: false.
-	HSTSPreload bool
+	HSTSPreload bool `yaml:"hsts_preload"`
 
 	// ContentSecurityPolicy sets the Content-Security-Policy header.
 	// Default: "" (omitted).
-	ContentSecurityPolicy string
+	ContentSecurityPolicy string `yaml:"content_security_policy"`
 
 	// CSPReportOnly uses Content-Security-Policy-Report-Only instead of
 	// Content-Security-Policy when true. Default: false.
-	CSPReportOnly bool
+	CSPReportOnly bool `yaml:"csp_report_only"`
 
 	// ReferrerPolicy sets the Referrer-Policy header.
 	// Default: "strict-origin-when-cross-origin".
-	ReferrerPolicy string
+	ReferrerPolicy string `yaml:"referrer_policy"`
 
 	// PermissionsPolicy sets the Permissions-Policy header.
 	// Default: "" (omitted).
-	PermissionsPolicy string
+	PermissionsPolicy string `yaml:"permissions_policy"`
 
 	// CrossOriginOpenerPolicy sets the Cross-Origin-Opener-Policy header.
 	// Default: "same-origin".
-	CrossOriginOpenerPolicy string
+	CrossOriginOpenerPolicy string `yaml:"cross_origin_opener_policy"`
 
 	// CrossOriginResourcePolicy sets the Cross-Origin-Resource-Policy header.
 	// Default: "same-origin".
-	CrossOriginResourcePolicy string
+	CrossOriginResourcePolicy string `yaml:"cross_origin_resource_policy"`
 
 	// CrossOriginEmbedderPolicy sets the Cross-Origin-Embedder-Policy header.
 	// Default: "require-corp".
-	CrossOriginEmbedderPolicy string
+	CrossOriginEmbedderPolicy string `yaml:"cross_origin_embedder_policy"`
 
 	// XDNSPrefetchControl sets the X-DNS-Prefetch-Control header.
 	// Default: "off".
-	XDNSPrefetchControl string
+	XDNSPrefetchControl string `yaml:"x_dns_prefetch_control"`
 
 	// XPermittedCrossDomain sets the X-Permitted-Cross-Domain-Policies header.
 	// Default: "none".
-	XPermittedCrossDomain string
+	XPermittedCrossDomain string `yaml:"x_permitted_cross_domain"`
 
 	// OriginAgentCluster sets the Origin-Agent-Cluster header.
 	// Default: "?1".
-	OriginAgentCluster string
+	OriginAgentCluster string `yaml:"origin_agent_cluster"`
 
 	// XDownloadOptions sets the X-Download-Options header.
 	// Default: "noopen".
-	XDownloadOptions string
+	XDownloadOptions string `yaml:"x_download_options"`
 }
 
 // DefaultConfig is the default security headers configuration.

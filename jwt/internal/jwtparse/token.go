@@ -66,12 +66,20 @@ func WithAudience(aud string) ParserOption {
 	}
 }
 
+// WithSubject requires the token to have the specified subject.
+func WithSubject(sub string) ParserOption {
+	return func(p *Parser) {
+		p.subject = sub
+	}
+}
+
 // Parser is a JWT token parser.
 type Parser struct {
 	validMethods map[string]struct{}
 	leeway       time.Duration
 	issuer       string
 	audience     string
+	subject      string
 }
 
 // NewParser creates a new JWT parser with the given options.
@@ -211,6 +219,11 @@ func (p *Parser) ParseWithClaims(tokenString string, claims Claims, keyFunc Keyf
 			return token, ErrInvalidAudience
 		}
 	}
+	if p.subject != "" {
+		if !p.checkSubject(claims) {
+			return token, ErrInvalidSubject
+		}
+	}
 
 	token.Valid = true
 	return token, nil
@@ -254,6 +267,19 @@ func (p *Parser) checkAudience(claims Claims) bool {
 				}
 			}
 		}
+	}
+	return false
+}
+
+func (p *Parser) checkSubject(claims Claims) bool {
+	switch c := claims.(type) {
+	case *RegisteredClaims:
+		return c.Subject == p.subject
+	case RegisteredClaims:
+		return c.Subject == p.subject
+	case MapClaims:
+		sub, _ := c["sub"].(string)
+		return sub == p.subject
 	}
 	return false
 }

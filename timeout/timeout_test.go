@@ -3,6 +3,7 @@ package timeout
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -468,6 +469,144 @@ func TestPreemptiveChannelPoolReuse(t *testing.T) {
 	if allocs > maxAllocsPerOp {
 		t.Fatalf("preemptive mode allocs too high: %.0f per op (max %d)", allocs, maxAllocsPerOp)
 	}
+}
+
+// --- TimeoutErrors tests ---
+
+var errDBTimeout = errors.New("database query timeout")
+var errUpstreamTimeout = errors.New("upstream service timeout")
+
+func TestTimeoutErrorsMatchTriggersErrorHandler(t *testing.T) {
+	mw := New(Config{
+		Timeout:       1 * time.Second,
+		TimeoutErrors: []error{errDBTimeout},
+	})
+	handler := func(_ *celeris.Context) error {
+		return errDBTimeout
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/db")
+	testutil.AssertHTTPError(t, err, 503)
+}
+
+func TestTimeoutErrorsWrappedMatchTriggersErrorHandler(t *testing.T) {
+	mw := New(Config{
+		Timeout:       1 * time.Second,
+		TimeoutErrors: []error{errDBTimeout},
+	})
+	handler := func(_ *celeris.Context) error {
+		return fmt.Errorf("query failed: %w", errDBTimeout)
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/db-wrapped")
+	testutil.AssertHTTPError(t, err, 503)
+}
+
+func TestTimeoutErrorsNoMatchPassesThrough(t *testing.T) {
+	mw := New(Config{
+		Timeout:       1 * time.Second,
+		TimeoutErrors: []error{errDBTimeout},
+	})
+	handler := func(_ *celeris.Context) error {
+		return errors.New("some other error")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/other")
+	testutil.AssertError(t, err)
+	// Should NOT be the timeout error (503).
+	var he *celeris.HTTPError
+	if errors.As(err, &he) && he.Code == 503 {
+		t.Fatal("non-matching error should not be treated as timeout")
+	}
+}
+
+func TestTimeoutErrorsMultipleMatches(t *testing.T) {
+	mw := New(Config{
+		Timeout:       1 * time.Second,
+		TimeoutErrors: []error{errDBTimeout, errUpstreamTimeout},
+	})
+	handler := func(_ *celeris.Context) error {
+		return errUpstreamTimeout
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/upstream")
+	testutil.AssertHTTPError(t, err, 503)
+}
+
+func TestTimeoutErrorsNilErrorNotMatched(t *testing.T) {
+	mw := New(Config{
+		Timeout:       1 * time.Second,
+		TimeoutErrors: []error{errDBTimeout},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/ok")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestTimeoutErrorsEmptySliceNoEffect(t *testing.T) {
+	mw := New(Config{
+		Timeout:       1 * time.Second,
+		TimeoutErrors: []error{},
+	})
+	handler := func(_ *celeris.Context) error {
+		return errDBTimeout
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/empty-slice")
+	testutil.AssertError(t, err)
+	// Should pass through as-is, not be converted to 503.
+	var he *celeris.HTTPError
+	if errors.As(err, &he) && he.Code == 503 {
+		t.Fatal("empty TimeoutErrors should not match any error")
+	}
+}
+
+func TestTimeoutErrorsCustomErrorHandler(t *testing.T) {
+	mw := New(Config{
+		Timeout:       1 * time.Second,
+		TimeoutErrors: []error{errDBTimeout},
+		ErrorHandler: func(_ *celeris.Context) error {
+			return celeris.NewHTTPError(504, "Gateway Timeout")
+		},
+	})
+	handler := func(_ *celeris.Context) error {
+		return errDBTimeout
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/custom-te")
+	testutil.AssertHTTPError(t, err, 504)
+}
+
+func TestTimeoutErrorsPreemptiveMode(t *testing.T) {
+	mw := New(Config{
+		Timeout:       1 * time.Second,
+		Preemptive:    true,
+		TimeoutErrors: []error{errDBTimeout},
+	})
+	handler := func(_ *celeris.Context) error {
+		return errDBTimeout
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/preemptive-te")
+	testutil.AssertHTTPError(t, err, 503)
+}
+
+func TestTimeoutErrorsPreemptiveWrapped(t *testing.T) {
+	mw := New(Config{
+		Timeout:       1 * time.Second,
+		Preemptive:    true,
+		TimeoutErrors: []error{errDBTimeout},
+	})
+	handler := func(_ *celeris.Context) error {
+		return fmt.Errorf("db call: %w", errDBTimeout)
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/preemptive-wrapped")
+	testutil.AssertHTTPError(t, err, 503)
 }
 
 func FuzzTimeoutDurations(f *testing.F) {
