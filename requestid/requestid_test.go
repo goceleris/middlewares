@@ -237,6 +237,31 @@ func FuzzGeneratorOutputFormat(f *testing.F) {
 	})
 }
 
+func TestSkipPathsBypassesID(t *testing.T) {
+	mw := New(Config{
+		SkipPaths: []string{"/health", "/ready"},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Skipped path should have no request ID header.
+	rec, err := testutil.RunChain(t, chain, "GET", "/health")
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "x-request-id")
+
+	// Another skipped path.
+	rec, err = testutil.RunChain(t, chain, "GET", "/ready")
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "x-request-id")
+
+	// Non-skipped path should generate an ID.
+	rec, err = testutil.RunChain(t, chain, "GET", "/api/users")
+	testutil.AssertNoError(t, err)
+	id := rec.Header("x-request-id")
+	if id == "" {
+		t.Fatal("expected x-request-id for non-skipped path")
+	}
+}
+
 func TestFromContextReturnsID(t *testing.T) {
 	mw := New()
 	var id string
@@ -334,5 +359,94 @@ func TestRejectsHighBytes(t *testing.T) {
 	id := rec.Header("x-request-id")
 	if id == "id\x7Fhigh" {
 		t.Fatal("expected ID with DEL char to be replaced")
+	}
+}
+
+// --- TrustProxy tests ---
+
+func TestTrustProxyDefaultAcceptsInbound(t *testing.T) {
+	// Default TrustProxy is nil (true): inbound header is accepted.
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-request-id", "from-proxy"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "x-request-id", "from-proxy")
+}
+
+func TestTrustProxyTrueAcceptsInbound(t *testing.T) {
+	tr := true
+	mw := New(Config{TrustProxy: &tr})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-request-id", "from-proxy"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "x-request-id", "from-proxy")
+}
+
+func TestTrustProxyFalseIgnoresInbound(t *testing.T) {
+	f := false
+	mw := New(Config{TrustProxy: &f})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-request-id", "should-be-ignored"))
+	testutil.AssertNoError(t, err)
+	id := rec.Header("x-request-id")
+	if id == "should-be-ignored" {
+		t.Fatal("expected inbound header to be ignored when TrustProxy=false")
+	}
+	if id == "" {
+		t.Fatal("expected a fresh ID to be generated")
+	}
+	if !uuidRe.MatchString(id) {
+		t.Fatalf("expected UUID v4 format, got %q", id)
+	}
+}
+
+func TestTrustProxyFalseNoInboundHeader(t *testing.T) {
+	f := false
+	mw := New(Config{TrustProxy: &f})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	id := rec.Header("x-request-id")
+	if id == "" {
+		t.Fatal("expected a fresh ID to be generated")
+	}
+	if !uuidRe.MatchString(id) {
+		t.Fatalf("expected UUID v4 format, got %q", id)
+	}
+}
+
+func TestTrustProxyFalseWithCustomGenerator(t *testing.T) {
+	f := false
+	mw := New(Config{
+		TrustProxy: &f,
+		Generator:  func() string { return "generated-123" },
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-request-id", "from-proxy"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "x-request-id", "generated-123")
+}
+
+func TestTrustProxyFalseContextStore(t *testing.T) {
+	f := false
+	mw := New(Config{TrustProxy: &f})
+	var stored string
+	handler := func(c *celeris.Context) error {
+		stored = FromContext(c)
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-request-id", "spoofed"))
+	testutil.AssertNoError(t, err)
+	if stored == "spoofed" {
+		t.Fatal("context store should not contain spoofed ID")
+	}
+	if stored == "" {
+		t.Fatal("context store should contain a generated ID")
 	}
 }

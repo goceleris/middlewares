@@ -2,10 +2,13 @@ package timeout
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/goceleris/celeris"
 )
+
+var chanPool = sync.Pool{New: func() any { return make(chan error, 1) }}
 
 // New creates a timeout middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
@@ -22,11 +25,12 @@ func New(config ...Config) celeris.HandlerFunc {
 	}
 
 	dur := cfg.Timeout
+	timeoutFunc := cfg.TimeoutFunc
 	errHandler := cfg.ErrorHandler
 	preemptive := cfg.Preemptive
 
 	if preemptive {
-		return preemptiveHandler(skipMap, dur, errHandler, cfg.Skip)
+		return preemptiveHandler(skipMap, dur, timeoutFunc, errHandler, cfg.Skip)
 	}
 
 	return func(c *celeris.Context) error {
@@ -38,7 +42,14 @@ func New(config ...Config) celeris.HandlerFunc {
 			return c.Next()
 		}
 
-		childCtx, cancel := context.WithTimeout(c.Context(), dur)
+		d := dur
+		if timeoutFunc != nil {
+			if td := timeoutFunc(c); td > 0 {
+				d = td
+			}
+		}
+
+		childCtx, cancel := context.WithTimeout(c.Context(), d)
 		defer cancel()
 
 		c.SetContext(childCtx)
@@ -55,6 +66,7 @@ func New(config ...Config) celeris.HandlerFunc {
 func preemptiveHandler(
 	skipMap map[string]struct{},
 	dur time.Duration,
+	timeoutFunc func(*celeris.Context) time.Duration,
 	errHandler func(*celeris.Context) error,
 	skip func(*celeris.Context) bool,
 ) celeris.HandlerFunc {
@@ -67,13 +79,20 @@ func preemptiveHandler(
 			return c.Next()
 		}
 
-		childCtx, cancel := context.WithTimeout(c.Context(), dur)
+		d := dur
+		if timeoutFunc != nil {
+			if td := timeoutFunc(c); td > 0 {
+				d = td
+			}
+		}
+
+		childCtx, cancel := context.WithTimeout(c.Context(), d)
 		defer cancel()
 
 		c.SetContext(childCtx)
 		c.BufferResponse()
 
-		done := make(chan error, 1)
+		done := chanPool.Get().(chan error)
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -85,6 +104,7 @@ func preemptiveHandler(
 
 		select {
 		case err := <-done:
+			chanPool.Put(done)
 			if flushErr := c.FlushResponse(); flushErr != nil {
 				return flushErr
 			}
@@ -94,6 +114,7 @@ func preemptiveHandler(
 			// touches the Context before we return (prevents data race
 			// with Context pool reclamation).
 			<-done
+			chanPool.Put(done)
 			return errHandler(c)
 		}
 	}

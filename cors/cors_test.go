@@ -484,6 +484,68 @@ func FuzzOriginMatching(f *testing.F) {
 	})
 }
 
+func TestVaryHeaderOnNonPreflight(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://a.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Non-preflight GET with specific origin should set Vary: Origin.
+	rec, err := testutil.RunChain(t, chain, "GET", "/api/data",
+		celeristest.WithHeader("origin", "http://a.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertHeader(t, rec, "vary", "Origin")
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "http://a.com")
+
+	// POST non-preflight should also set Vary: Origin.
+	rec, err = testutil.RunChain(t, chain, "POST", "/api/data",
+		celeristest.WithHeader("origin", "http://a.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertHeader(t, rec, "vary", "Origin")
+
+	// Denied origin should not set Vary.
+	rec, err = testutil.RunChain(t, chain, "GET", "/api/data",
+		celeristest.WithHeader("origin", "http://evil.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "vary")
+}
+
+func TestSkipPaths(t *testing.T) {
+	mw := New(Config{SkipPaths: []string{"/health", "/ready"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Skipped path: no CORS headers.
+	rec, err := testutil.RunChain(t, chain, "GET", "/health",
+		celeristest.WithHeader("origin", "http://example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+
+	// Skipped path: no CORS headers.
+	rec, err = testutil.RunChain(t, chain, "GET", "/ready",
+		celeristest.WithHeader("origin", "http://example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+
+	// Non-skipped path: CORS headers present.
+	rec, err = testutil.RunChain(t, chain, "GET", "/api/data",
+		celeristest.WithHeader("origin", "http://example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "*")
+}
+
+func TestSkipPathsWithPreflight(t *testing.T) {
+	mw := New(Config{SkipPaths: []string{"/health"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Skipped path: preflight should pass through.
+	rec, err := testutil.RunChain(t, chain, "OPTIONS", "/health",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "GET"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-methods")
+}
+
 func FuzzHeaderValues(f *testing.F) {
 	f.Add("X-Custom")
 	f.Add("")

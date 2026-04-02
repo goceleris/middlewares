@@ -23,11 +23,29 @@
 // accepted, with a maximum length of 128 characters. Invalid or
 // oversized IDs are silently replaced with a fresh UUID.
 //
+// # TrustProxy
+//
+// [Config].TrustProxy controls whether the inbound request header is
+// accepted. When true (default), a valid inbound header is propagated
+// as-is. When false, the inbound header is always ignored and a fresh
+// ID is generated. Set to false when running behind untrusted clients
+// to prevent request ID spoofing:
+//
+//	f := false
+//	server.Use(requestid.New(requestid.Config{
+//	    TrustProxy: &f,
+//	}))
+//
 // # Retrieving the Request ID
 //
 // Use [FromContext] to retrieve the request ID from downstream handlers:
 //
 //	id := requestid.FromContext(c) // reads ContextKey from context store
+//
+// # Skipping
+//
+// Use [Config].Skip for dynamic skip logic or [Config].SkipPaths for
+// exact-match path exclusions (e.g., health check endpoints).
 //
 // [CounterGenerator] returns a monotonic ID generator ("{prefix}-{N}")
 // with zero syscalls after initialization.

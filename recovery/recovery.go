@@ -32,6 +32,7 @@ func New(config ...Config) celeris.HandlerFunc {
 	stackSize := cfg.StackSize
 	logStack := cfg.LogStack
 	stackAll := cfg.StackAll
+	disableBrokenPipeLog := cfg.DisableBrokenPipeLog
 	log := cfg.Logger
 
 	return func(c *celeris.Context) (retErr error) {
@@ -46,7 +47,7 @@ func New(config ...Config) celeris.HandlerFunc {
 				}
 
 				if isBrokenPipe(r) {
-					if logStack {
+					if logStack && !disableBrokenPipeLog {
 						log.LogAttrs(c.Context(), slog.LevelWarn, "broken pipe",
 							slog.String("method", c.Method()),
 							slog.String("path", c.Path()),

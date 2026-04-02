@@ -19,6 +19,13 @@ type Config struct {
 	// MaxBytes is the maximum allowed request body size in bytes.
 	// Default: 4 MB (4 * 1024 * 1024).
 	MaxBytes int64
+
+	// SkipPaths lists paths to skip (exact match).
+	SkipPaths []string
+
+	// ErrorHandler handles body-too-large errors. When non-nil, it is
+	// called instead of returning ErrBodyTooLarge directly.
+	ErrorHandler func(c *celeris.Context, err error) error
 }
 
 // DefaultConfig is the default body limit configuration.

@@ -36,10 +36,26 @@
 //	    MaxCaptureBytes:     2048,
 //	}))
 //
+// # Sensitive Header Redaction
+//
+// [Config].SensitiveHeaders lists header names whose values should be
+// redacted in log output. Values are replaced with "[REDACTED]". Header
+// names are matched case-insensitively. Use this to prevent credentials,
+// tokens, or other secrets from appearing in logs:
+//
+//	server.Use(logger.New(logger.Config{
+//	    SensitiveHeaders: []string{"Authorization", "Cookie"},
+//	}))
+//
 // # Request ID Integration
 //
 // The middleware automatically reads the request ID from the context store
 // (key "request_id") first, falling back to the x-request-id header.
 // This integrates seamlessly with the requestid middleware when both are
 // installed. Additional fields can be added via [Config].Fields.
+// # Skipping
+//
+// Set [Config].Skip to bypass the middleware dynamically, or
+// [Config].SkipPaths for exact-match path exclusions.
+//
 package logger

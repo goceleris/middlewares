@@ -24,11 +24,19 @@ type Config struct {
 	StackSize int
 
 	// LogStack controls whether the stack trace is logged. Default: true.
+	// NOTE: Go cannot distinguish an explicit false from an unset bool
+	// zero value. When constructing a partial Config, you must explicitly
+	// set LogStack: true if you want stack logging — otherwise it defaults
+	// to false (the zero value), not the DefaultConfig value.
 	LogStack bool
 
 	// StackAll captures all goroutine stacks, not just the current one.
 	// Default: false (current goroutine only).
 	StackAll bool
+
+	// DisableBrokenPipeLog suppresses the WARN-level log for broken pipe
+	// and ECONNRESET panics. Default: false (log enabled).
+	DisableBrokenPipeLog bool
 
 	// Logger is the slog logger for panic logging. Default: slog.Default().
 	Logger *slog.Logger

@@ -2,6 +2,7 @@ package basicauth
 
 import (
 	"crypto/subtle"
+	"strings"
 	"testing"
 
 	"github.com/goceleris/celeris"
@@ -98,7 +99,7 @@ func TestCustomRealm(t *testing.T) {
 func TestCustomErrorHandler(t *testing.T) {
 	mw := New(Config{
 		Validator: validatorFor("admin", "secret"),
-		ErrorHandler: func(_ *celeris.Context) error {
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
 			return celeris.NewHTTPError(403, "Forbidden")
 		},
 	})
@@ -387,6 +388,105 @@ func TestValidatorWithContextAloneWorks(t *testing.T) {
 	testutil.AssertStatus(t, rec, 200)
 }
 
+func TestRealmQuoteEscaping(t *testing.T) {
+	mw := New(Config{
+		Validator: validatorFor("admin", "secret"),
+		Realm:     `My "App"`,
+	})
+	ctx, _ := celeristest.NewContextT(t, "GET", "/")
+	err := mw(ctx)
+	testutil.AssertHTTPError(t, err, 401)
+	found := false
+	for _, h := range ctx.ResponseHeaders() {
+		if h[0] == "www-authenticate" && h[1] == `Basic realm="My \"App\""` {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected escaped realm, got %v", ctx.ResponseHeaders())
+	}
+}
+
+func TestRealmBackslashEscaping(t *testing.T) {
+	mw := New(Config{
+		Validator: validatorFor("admin", "secret"),
+		Realm:     `Path\to`,
+	})
+	ctx, _ := celeristest.NewContextT(t, "GET", "/")
+	err := mw(ctx)
+	testutil.AssertHTTPError(t, err, 401)
+	found := false
+	for _, h := range ctx.ResponseHeaders() {
+		if h[0] == "www-authenticate" && h[1] == `Basic realm="Path\\to"` {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected escaped backslash in realm, got %v", ctx.ResponseHeaders())
+	}
+}
+
+func TestUsersMapDeepCopy(t *testing.T) {
+	users := map[string]string{"admin": "secret"}
+	mw := New(Config{Users: users})
+
+	// Mutate the original map after New() — should not affect the validator.
+	users["admin"] = "changed"
+	users["hacker"] = "injected"
+
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// Original password should still work.
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithBasicAuth("admin", "secret"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+
+	// Changed password should not work.
+	_, err = testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithBasicAuth("admin", "changed"),
+	)
+	testutil.AssertHTTPError(t, err, 401)
+
+	// Injected user should not work.
+	_, err = testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithBasicAuth("hacker", "injected"),
+	)
+	testutil.AssertHTTPError(t, err, 401)
+}
+
+func TestErrorHandlerReceivesError(t *testing.T) {
+	var receivedErr error
+	mw := New(Config{
+		Validator: validatorFor("admin", "secret"),
+		ErrorHandler: func(c *celeris.Context, err error) error {
+			receivedErr = err
+			c.SetHeader("www-authenticate", `Basic realm="Test"`)
+			return celeris.NewHTTPError(401, "custom")
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithBasicAuth("admin", "wrong"),
+	)
+	testutil.AssertHTTPError(t, err, 401)
+	if receivedErr == nil {
+		t.Fatal("ErrorHandler did not receive error parameter")
+	}
+	if receivedErr != ErrUnauthorized {
+		t.Fatalf("expected ErrUnauthorized, got %v", receivedErr)
+	}
+}
+
 func FuzzBasicAuthHeader(f *testing.F) {
 	f.Add("Basic YWRtaW46c2VjcmV0") // admin:secret
 	f.Add("Basic !!!")
@@ -409,4 +509,105 @@ func FuzzBasicAuthHeader(f *testing.F) {
 		// Must not panic regardless of header value.
 		_, _ = testutil.RunChain(t, chain, "GET", "/fuzz", opts...)
 	})
+}
+
+// --- HeaderLimit tests ---
+
+func TestHeaderLimitRejects431(t *testing.T) {
+	mw := New(Config{
+		Validator:   validatorFor("admin", "secret"),
+		HeaderLimit: 50,
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	// Create a header value that exceeds 50 bytes.
+	longHeader := "Basic " + strings.Repeat("A", 50)
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", longHeader))
+	testutil.AssertHTTPError(t, err, 431)
+}
+
+func TestHeaderLimitDefaultAllowsNormal(t *testing.T) {
+	// Default limit is 4096 -- normal Basic auth header is well under that.
+	mw := New(Config{Validator: validatorFor("admin", "secret")})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithBasicAuth("admin", "secret"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestHeaderLimitExactlyAtLimit(t *testing.T) {
+	// Header exactly at limit should pass through to normal auth flow.
+	mw := New(Config{
+		Validator:   validatorFor("admin", "secret"),
+		HeaderLimit: 100,
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	// Create a header value exactly 100 bytes long.
+	hdr := strings.Repeat("A", 100)
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", hdr))
+	// Should not get 431 -- should get 401 (invalid base64).
+	testutil.AssertHTTPError(t, err, 401)
+}
+
+func TestHeaderLimitOneOverLimit(t *testing.T) {
+	mw := New(Config{
+		Validator:   validatorFor("admin", "secret"),
+		HeaderLimit: 100,
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	hdr := strings.Repeat("A", 101)
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", hdr))
+	testutil.AssertHTTPError(t, err, 431)
+}
+
+func TestHeaderLimitCustomErrorHandler(t *testing.T) {
+	var receivedErr error
+	mw := New(Config{
+		Validator:   validatorFor("admin", "secret"),
+		HeaderLimit: 30,
+		ErrorHandler: func(c *celeris.Context, err error) error {
+			receivedErr = err
+			return celeris.NewHTTPError(413, "too big")
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	longHeader := "Basic " + strings.Repeat("A", 30)
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", longHeader))
+	testutil.AssertHTTPError(t, err, 413)
+	if receivedErr != ErrHeaderTooLarge {
+		t.Fatalf("expected ErrHeaderTooLarge, got %v", receivedErr)
+	}
+}
+
+func TestHeaderLimitSkippedWhenNoHeader(t *testing.T) {
+	mw := New(Config{
+		Validator:   validatorFor("admin", "secret"),
+		HeaderLimit: 10,
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	// No authorization header -- should get 401, not 431.
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertHTTPError(t, err, 401)
 }

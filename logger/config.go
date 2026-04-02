@@ -35,6 +35,11 @@ type Config struct {
 	// MaxCaptureBytes is the maximum number of body bytes to log.
 	// Default: 4096. Prevents OOM on large request/response bodies.
 	MaxCaptureBytes int
+
+	// SensitiveHeaders lists header names whose values should be redacted
+	// in log output. Values are replaced with "[REDACTED]". Header names
+	// are matched case-insensitively.
+	SensitiveHeaders []string
 }
 
 // DefaultConfig is the default logger configuration.

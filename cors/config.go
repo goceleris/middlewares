@@ -12,6 +12,10 @@ type Config struct {
 	// Skip defines a function to skip this middleware for certain requests.
 	Skip func(c *celeris.Context) bool
 
+	// SkipPaths lists paths to skip (exact match on c.Path()).
+	// Requests matching these paths bypass CORS processing entirely.
+	SkipPaths []string
+
 	// AllowOrigins lists allowed origins. Default: ["*"].
 	AllowOrigins []string
 

@@ -7,12 +7,25 @@ type Config struct {
 	// Skip defines a function to skip this middleware for certain requests.
 	Skip func(c *celeris.Context) bool
 
+	// SkipPaths lists paths to skip (exact match).
+	SkipPaths []string
+
 	// Generator returns a new request ID. Default: buffered UUID v4.
 	Generator func() string
 
 	// Header is the header name to read/write. Default: "x-request-id".
 	Header string
+
+	// TrustProxy controls whether the inbound request header is accepted.
+	// When true (default), a valid inbound header is propagated as-is.
+	// When false, the inbound header is always ignored and a fresh ID is
+	// generated. Set to false when running behind untrusted clients to
+	// prevent request ID spoofing.
+	TrustProxy *bool
 }
+
+// boolPtr returns a pointer to b.
+func boolPtr(b bool) *bool { return &b }
 
 // DefaultConfig is the default request ID configuration.
 var DefaultConfig = Config{

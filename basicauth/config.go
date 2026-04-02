@@ -14,6 +14,9 @@ type Config struct {
 	// Skip defines a function to skip this middleware for certain requests.
 	Skip func(c *celeris.Context) bool
 
+	// SkipPaths lists paths to skip (exact match).
+	SkipPaths []string
+
 	// Validator checks credentials. Required if Users is nil -- panics if both are nil.
 	Validator func(user, pass string) bool
 
@@ -29,12 +32,15 @@ type Config struct {
 	// Realm is the authentication realm. Default: "Restricted".
 	Realm string
 
-	// ErrorHandler handles authentication failures.
-	// Default: 401 with WWW-Authenticate header.
-	ErrorHandler func(c *celeris.Context) error
+	// HeaderLimit is the maximum allowed length of the Authorization header
+	// in bytes. Requests exceeding this limit receive a 431 (Request Header
+	// Fields Too Large) response via ErrorHandler. Default: 4096.
+	HeaderLimit int
 
-	// SkipPaths lists paths to skip (exact match).
-	SkipPaths []string
+	// ErrorHandler handles authentication failures. The err parameter is
+	// the sentinel error that triggered the failure (typically [ErrUnauthorized]).
+	// Default: 401 with WWW-Authenticate header.
+	ErrorHandler func(c *celeris.Context, err error) error
 }
 
 // DefaultConfig is the default basic auth configuration.
@@ -45,6 +51,9 @@ var DefaultConfig = Config{
 func applyDefaults(cfg Config) Config {
 	if cfg.Realm == "" {
 		cfg.Realm = DefaultConfig.Realm
+	}
+	if cfg.HeaderLimit <= 0 {
+		cfg.HeaderLimit = 4096
 	}
 	if cfg.Validator == nil && cfg.ValidatorWithContext == nil && len(cfg.Users) > 0 {
 		// Deep-copy the map so post-New() mutations don't affect the validator.

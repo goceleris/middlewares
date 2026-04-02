@@ -1,6 +1,8 @@
 package bodylimit
 
 import (
+	"errors"
+	"sync"
 	"testing"
 
 	"github.com/goceleris/celeris"
@@ -8,6 +10,111 @@ import (
 
 	"github.com/goceleris/middlewares/internal/testutil"
 )
+
+func TestAutoSkipBodylessMethods(t *testing.T) {
+	mw := New(Config{MaxBytes: 10})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	for _, method := range []string{"GET", "HEAD", "DELETE", "OPTIONS"} {
+		t.Run(method, func(t *testing.T) {
+			chain := []celeris.HandlerFunc{mw, handler}
+			rec, err := testutil.RunChain(t, chain, method, "/",
+				celeristest.WithHeader("content-length", "999999"),
+			)
+			testutil.AssertNoError(t, err)
+			testutil.AssertStatus(t, rec, 200)
+		})
+	}
+}
+
+func TestPOSTNotAutoSkipped(t *testing.T) {
+	mw := New(Config{MaxBytes: 10})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/",
+		celeristest.WithHeader("content-length", "999999"),
+	)
+	testutil.AssertHTTPError(t, err, 413)
+}
+
+func TestSkipPathsBodyLimit(t *testing.T) {
+	mw := New(Config{
+		MaxBytes:  10,
+		SkipPaths: []string{"/upload/large"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "POST", "/upload/large",
+		celeristest.WithHeader("content-length", "999999"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestSkipPathsNonMatchStillChecks(t *testing.T) {
+	mw := New(Config{
+		MaxBytes:  10,
+		SkipPaths: []string{"/upload/large"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/upload/small",
+		celeristest.WithHeader("content-length", "999999"),
+	)
+	testutil.AssertHTTPError(t, err, 413)
+}
+
+func TestErrorHandlerContentLength(t *testing.T) {
+	var receivedErr error
+	mw := New(Config{
+		MaxBytes: 10,
+		ErrorHandler: func(_ *celeris.Context, err error) error {
+			receivedErr = err
+			return celeris.NewHTTPError(429, "rate limited")
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/",
+		celeristest.WithHeader("content-length", "999999"),
+	)
+	testutil.AssertHTTPError(t, err, 429)
+	if !errors.Is(receivedErr, ErrBodyTooLarge) {
+		t.Fatalf("expected ErrBodyTooLarge, got %v", receivedErr)
+	}
+}
+
+func TestErrorHandlerOnBodyBytes(t *testing.T) {
+	var called bool
+	mw := New(Config{
+		MaxBytes: 10,
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
+			called = true
+			return celeris.NewHTTPError(413, "custom body too big")
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	body := make([]byte, 20)
+	_, err := testutil.RunChain(t, chain, "POST", "/",
+		celeristest.WithBody(body),
+	)
+	testutil.AssertHTTPError(t, err, 413)
+	if !called {
+		t.Fatal("expected ErrorHandler to be called for body bytes check")
+	}
+}
 
 func TestRequestUnderLimitPasses(t *testing.T) {
 	mw := New(Config{MaxBytes: 1024})
@@ -335,6 +442,56 @@ func TestLimitStringCaseInsensitive(t *testing.T) {
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestTBParsing(t *testing.T) {
+	mw := New(Config{Limit: "1TB"})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// 1GB is well under 1TB.
+	rec, err := testutil.RunChain(t, chain, "POST", "/upload",
+		celeristest.WithHeader("content-length", "1073741824"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+
+	// 2TB exceeds 1TB.
+	_, err = testutil.RunChain(t, chain, "POST", "/upload",
+		celeristest.WithHeader("content-length", "2199023255552"),
+	)
+	testutil.AssertHTTPError(t, err, 413)
+}
+
+func TestConcurrentBodyLimit(t *testing.T) {
+	mw := New(Config{MaxBytes: 1024})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 20 {
+				rec, err := testutil.RunChain(t, chain, "POST", "/upload",
+					celeristest.WithHeader("content-length", "512"))
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+					return
+				}
+				if rec.StatusCode != 200 {
+					t.Errorf("unexpected status: %d", rec.StatusCode)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestBodyLimitRejectNoExtraAlloc(t *testing.T) {

@@ -34,7 +34,20 @@
 //
 //	name := basicauth.UsernameFromContext(c) // reads UsernameKey from context store
 //
+// # Header Size Limit
+//
+// [Config].HeaderLimit (default 4096) caps the Authorization header
+// size in bytes. Requests exceeding this limit receive a 431 (Request
+// Header Fields Too Large) response via the ErrorHandler, preventing
+// oversized credentials from reaching the base64 decoder or validator.
+// [ErrHeaderTooLarge] is the exported sentinel error for this case.
+//
 // [ErrUnauthorized] is the exported sentinel error (401) returned on
 // authentication failure, usable with errors.Is for error handling in
 // upstream middleware.
+// # Skipping
+//
+// Set [Config].Skip to bypass the middleware dynamically, or
+// [Config].SkipPaths for exact-match path exclusions.
+//
 package basicauth
