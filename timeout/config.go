@@ -66,4 +66,8 @@ func defaultErrorHandler(_ *celeris.Context) error {
 	return ErrServiceUnavailable
 }
 
-func (cfg Config) validate() {}
+func (cfg Config) validate() {
+	if cfg.TimeoutFunc == nil && cfg.Timeout <= 0 {
+		panic("timeout: Timeout must be positive or TimeoutFunc must be set")
+	}
+}
