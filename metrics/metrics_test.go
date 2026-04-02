@@ -1107,6 +1107,198 @@ func TestCounterOptsCallback(t *testing.T) {
 	}
 }
 
+func TestIgnoreStatusCodesExcludesFromAllMetrics(t *testing.T) {
+	reg := newIsolatedRegistry()
+	mw := New(Config{
+		Registry:          reg,
+		IgnoreStatusCodes: []int{404},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(404, "not found")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	for range 3 {
+		_, err := runChain(t, chain, "GET", "/scanner/probe")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	count := getCounterValue(t, reg, "celeris_requests_total", map[string]string{
+		"status": "404",
+	})
+	if count != 0 {
+		t.Fatalf("requests_total should not record ignored status 404: got %v", count)
+	}
+
+	histCount := getHistogramCount(t, reg, "celeris_request_duration_seconds", map[string]string{
+		"status": "404",
+	})
+	if histCount != 0 {
+		t.Fatalf("duration histogram should not record ignored status 404: got %d", histCount)
+	}
+}
+
+func TestIgnoreStatusCodesDoesNotAffectOtherCodes(t *testing.T) {
+	reg := newIsolatedRegistry()
+	mw := New(Config{
+		Registry:          reg,
+		IgnoreStatusCodes: []int{404},
+	})
+	chain200 := []celeris.HandlerFunc{mw, func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}}
+	chain500 := []celeris.HandlerFunc{mw, func(c *celeris.Context) error {
+		return c.String(500, "error")
+	}}
+
+	_, _ = runChain(t, chain200, "GET", "/api/data")
+	_, _ = runChain(t, chain500, "GET", "/api/fail")
+
+	ok200 := getCounterValue(t, reg, "celeris_requests_total", map[string]string{
+		"status": "200",
+	})
+	if ok200 != 1 {
+		t.Fatalf("200 should be recorded: got %v, want 1", ok200)
+	}
+
+	ok500 := getCounterValue(t, reg, "celeris_requests_total", map[string]string{
+		"status": "500",
+	})
+	if ok500 != 1 {
+		t.Fatalf("500 should be recorded: got %v, want 1", ok500)
+	}
+}
+
+func TestIgnoreStatusCodesMultiple(t *testing.T) {
+	reg := newIsolatedRegistry()
+	mw := New(Config{
+		Registry:          reg,
+		IgnoreStatusCodes: []int{404, 405},
+	})
+	chain404 := []celeris.HandlerFunc{mw, func(c *celeris.Context) error {
+		return c.String(404, "not found")
+	}}
+	chain405 := []celeris.HandlerFunc{mw, func(c *celeris.Context) error {
+		return c.String(405, "method not allowed")
+	}}
+
+	_, _ = runChain(t, chain404, "GET", "/x")
+	_, _ = runChain(t, chain405, "POST", "/y")
+
+	for _, code := range []int{404, 405} {
+		count := getCounterValue(t, reg, "celeris_requests_total", map[string]string{
+			"status": strconv.Itoa(code),
+		})
+		if count != 0 {
+			t.Fatalf("status %d should be ignored: got %v", code, count)
+		}
+	}
+}
+
+func TestIgnoreStatusCodesEmpty(t *testing.T) {
+	reg := newIsolatedRegistry()
+	mw := New(Config{Registry: reg})
+	handler := func(c *celeris.Context) error {
+		return c.String(404, "not found")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	_, err := runChain(t, chain, "GET", "/probe")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	count := getCounterValue(t, reg, "celeris_requests_total", map[string]string{
+		"status": "404",
+	})
+	if count != 1 {
+		t.Fatalf("404 should be recorded when IgnoreStatusCodes is empty: got %v, want 1", count)
+	}
+}
+
+func TestIgnoreStatusCodesSizeHistograms(t *testing.T) {
+	reg := newIsolatedRegistry()
+	mw := New(Config{
+		Registry:          reg,
+		IgnoreStatusCodes: []int{404},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(404, "not found body")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	_, err := runChain(t, chain, "POST", "/probe",
+		celeristest.WithBody([]byte("req body")),
+		celeristest.WithHeader("content-length", "8"),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	reqCount := getHistogramCount(t, reg, "celeris_request_size_bytes", map[string]string{
+		"status": "404",
+	})
+	if reqCount != 0 {
+		t.Fatalf("request_size_bytes should not record ignored 404: got %d", reqCount)
+	}
+	respCount := getHistogramCount(t, reg, "celeris_response_size_bytes", map[string]string{
+		"status": "404",
+	})
+	if respCount != 0 {
+		t.Fatalf("response_size_bytes should not record ignored 404: got %d", respCount)
+	}
+}
+
+func TestUTF8PathSanitization(t *testing.T) {
+	reg := newIsolatedRegistry()
+	mw := New(Config{Registry: reg})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// Path with invalid UTF-8 byte sequence.
+	invalidPath := "/api/\xff\xfe/data"
+	_, err := runChain(t, chain, "GET", invalidPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	count := getCounterValue(t, reg, "celeris_requests_total", map[string]string{
+		"method": "GET",
+		"path":   "/api//data",
+		"status": "200",
+	})
+	if count != 1 {
+		t.Fatalf("expected sanitized path recorded, got count %v", count)
+	}
+}
+
+func TestValidUTF8PathUnchanged(t *testing.T) {
+	reg := newIsolatedRegistry()
+	mw := New(Config{Registry: reg})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	_, err := runChain(t, chain, "GET", "/api/users")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	count := getCounterValue(t, reg, "celeris_requests_total", map[string]string{
+		"method": "GET",
+		"path":   "/api/users",
+		"status": "200",
+	})
+	if count != 1 {
+		t.Fatalf("valid UTF-8 path should be unchanged: got count %v, want 1", count)
+	}
+}
+
 func TestSizeMetricsVisibleOnEndpoint(t *testing.T) {
 	reg := newIsolatedRegistry()
 	mw := New(Config{Registry: reg})
