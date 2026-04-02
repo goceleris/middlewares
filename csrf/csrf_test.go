@@ -2,6 +2,7 @@ package csrf
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -753,8 +754,8 @@ func TestSecFetchSiteWithErrorHandler(t *testing.T) {
 		celeristest.WithHeader("sec-fetch-site", "cross-site"),
 	)
 	testutil.AssertHTTPError(t, err, 418)
-	if receivedErr != ErrForbidden {
-		t.Fatalf("expected ErrForbidden, got %v", receivedErr)
+	if !errors.Is(receivedErr, ErrSecFetchSite) {
+		t.Fatalf("expected ErrSecFetchSite, got %v", receivedErr)
 	}
 }
 
@@ -774,8 +775,8 @@ func TestOriginMismatchWithErrorHandler(t *testing.T) {
 		celeristest.WithHeader("origin", "https://evil.com"),
 	)
 	testutil.AssertHTTPError(t, err, 418)
-	if receivedErr != ErrForbidden {
-		t.Fatalf("expected ErrForbidden, got %v", receivedErr)
+	if !errors.Is(receivedErr, ErrOriginMismatch) {
+		t.Fatalf("expected ErrOriginMismatch, got %v", receivedErr)
 	}
 }
 
@@ -1735,5 +1736,146 @@ func TestHandlerStoresContextKey(t *testing.T) {
 	testutil.AssertNoError(t, err)
 	if handlerKey != customKey {
 		t.Fatalf("handler contextKey: got %q, want %q", handlerKey, customKey)
+	}
+}
+
+// --- Granular error sentinel tests ---
+
+func TestErrSecFetchSiteOnCrossSite(t *testing.T) {
+	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	mw := New()
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", token),
+		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("sec-fetch-site", "cross-site"),
+	)
+	testutil.AssertHTTPError(t, err, 403)
+	if !errors.Is(err, ErrSecFetchSite) {
+		t.Fatalf("expected ErrSecFetchSite, got %v", err)
+	}
+}
+
+func TestErrOriginMismatchOnBadOrigin(t *testing.T) {
+	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	mw := New()
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", token),
+		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("origin", "https://evil.com"),
+	)
+	testutil.AssertHTTPError(t, err, 403)
+	if !errors.Is(err, ErrOriginMismatch) {
+		t.Fatalf("expected ErrOriginMismatch, got %v", err)
+	}
+}
+
+func TestErrRefererMissingOnHTTPSNoReferer(t *testing.T) {
+	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	mw := New()
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", token),
+		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-forwarded-proto", "https"),
+	)
+	testutil.AssertHTTPError(t, err, 403)
+	if !errors.Is(err, ErrRefererMissing) {
+		t.Fatalf("expected ErrRefererMissing, got %v", err)
+	}
+}
+
+func TestErrRefererMismatchOnHTTPSBadReferer(t *testing.T) {
+	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	mw := New()
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", token),
+		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-forwarded-proto", "https"),
+		celeristest.WithHeader("referer", "https://evil.com/page"),
+	)
+	testutil.AssertHTTPError(t, err, 403)
+	if !errors.Is(err, ErrRefererMismatch) {
+		t.Fatalf("expected ErrRefererMismatch, got %v", err)
+	}
+}
+
+func TestErrSecFetchSitePassedToErrorHandler(t *testing.T) {
+	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	var receivedErr error
+	mw := New(Config{
+		ErrorHandler: func(_ *celeris.Context, err error) error {
+			receivedErr = err
+			return err
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", token),
+		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("sec-fetch-site", "cross-site"),
+	)
+	if !errors.Is(receivedErr, ErrSecFetchSite) {
+		t.Fatalf("ErrorHandler received %v, want ErrSecFetchSite", receivedErr)
+	}
+}
+
+func TestErrOriginMismatchPassedToErrorHandler(t *testing.T) {
+	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	var receivedErr error
+	mw := New(Config{
+		ErrorHandler: func(_ *celeris.Context, err error) error {
+			receivedErr = err
+			return err
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", token),
+		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("origin", "https://evil.com"),
+	)
+	if !errors.Is(receivedErr, ErrOriginMismatch) {
+		t.Fatalf("ErrorHandler received %v, want ErrOriginMismatch", receivedErr)
+	}
+}
+
+func TestGranularErrorSentinelsAreDistinct(t *testing.T) {
+	sentinels := []error{
+		ErrForbidden,
+		ErrMissingToken,
+		ErrTokenNotFound,
+		ErrOriginMismatch,
+		ErrRefererMissing,
+		ErrRefererMismatch,
+		ErrSecFetchSite,
+	}
+	seen := make(map[string]bool, len(sentinels))
+	for _, e := range sentinels {
+		msg := e.Error()
+		if seen[msg] {
+			t.Fatalf("duplicate sentinel message: %q", msg)
+		}
+		seen[msg] = true
 	}
 }

@@ -661,3 +661,110 @@ func TestJWKSECCurveValidation(t *testing.T) {
 		t.Fatal("point not on curve should not be stored")
 	}
 }
+
+// --- Multi-JWKS (JWKSURLs) integration tests ---
+
+func TestMultiJWKSKeyFuncFirstProviderHasKey(t *testing.T) {
+	privKey1, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privKey2, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body1 := rsaJWKSJSON("provider1-kid", &privKey1.PublicKey)
+	ts1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(body1)
+	}))
+	defer ts1.Close()
+
+	body2 := rsaJWKSJSON("provider2-kid", &privKey2.PublicKey)
+	ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(body2)
+	}))
+	defer ts2.Close()
+
+	fetcher1 := newJWKSFetcher(ts1.URL, time.Hour)
+	fetcher2 := newJWKSFetcher(ts2.URL, time.Hour)
+	kf := multiJWKSKeyFunc([]*jwksFetcher{fetcher1, fetcher2})
+
+	// Token from provider 1.
+	claims := jwtparse.MapClaims{"sub": "multi-user-1"}
+	tokenStr := signTokenWithKidAndMethod(jwtparse.SigningMethodRS256, claims, "provider1-kid", privKey1)
+	parser := jwtparse.NewParser(jwtparse.WithValidMethods([]string{"RS256"}))
+	parsed, err := parser.ParseWithClaims(tokenStr, jwtparse.MapClaims{}, kf)
+	if err != nil {
+		t.Fatalf("parse provider1 token: %v", err)
+	}
+	if !parsed.Valid {
+		t.Fatal("token not valid")
+	}
+}
+
+func TestMultiJWKSKeyFuncSecondProviderHasKey(t *testing.T) {
+	privKey1, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privKey2, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body1 := rsaJWKSJSON("provider1-kid", &privKey1.PublicKey)
+	ts1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(body1)
+	}))
+	defer ts1.Close()
+
+	body2 := rsaJWKSJSON("provider2-kid", &privKey2.PublicKey)
+	ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(body2)
+	}))
+	defer ts2.Close()
+
+	fetcher1 := newJWKSFetcher(ts1.URL, time.Hour)
+	fetcher2 := newJWKSFetcher(ts2.URL, time.Hour)
+	kf := multiJWKSKeyFunc([]*jwksFetcher{fetcher1, fetcher2})
+
+	// Token from provider 2 (kid not in provider 1).
+	claims := jwtparse.MapClaims{"sub": "multi-user-2"}
+	tokenStr := signTokenWithKidAndMethod(jwtparse.SigningMethodRS256, claims, "provider2-kid", privKey2)
+	parser := jwtparse.NewParser(jwtparse.WithValidMethods([]string{"RS256"}))
+	parsed, err := parser.ParseWithClaims(tokenStr, jwtparse.MapClaims{}, kf)
+	if err != nil {
+		t.Fatalf("parse provider2 token: %v", err)
+	}
+	if !parsed.Valid {
+		t.Fatal("token not valid")
+	}
+}
+
+func TestMultiJWKSKeyFuncUnknownKidAllProviders(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := rsaJWKSJSON("known-kid", &privKey.PublicKey)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(body)
+	}))
+	defer ts.Close()
+
+	fetcher := newJWKSFetcher(ts.URL, time.Hour)
+	kf := multiJWKSKeyFunc([]*jwksFetcher{fetcher})
+
+	tok := &jwtparse.Token{Header: jwtparse.Header{Kid: "unknown-kid"}}
+	_, err = kf(tok)
+	if err == nil {
+		t.Fatal("expected error for unknown kid across all providers")
+	}
+}

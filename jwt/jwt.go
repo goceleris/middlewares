@@ -57,6 +57,7 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 	}
 	successHandler := cfg.SuccessHandler
+	tokenProcessor := cfg.TokenProcessorFunc
 
 	return func(c *celeris.Context) error {
 		if cfg.Skip != nil && cfg.Skip(c) {
@@ -76,6 +77,14 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 		if tokenStr == "" {
 			return errorHandler(c, ErrTokenMissing)
+		}
+
+		if tokenProcessor != nil {
+			processed, err := tokenProcessor(tokenStr)
+			if err != nil {
+				return errorHandler(c, fmt.Errorf("%w: %w", ErrTokenInvalid, err))
+			}
+			tokenStr = processed
 		}
 
 		claims := newClaims(claimsFactory, claimsTemplate)

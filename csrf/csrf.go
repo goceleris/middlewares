@@ -29,6 +29,22 @@ var ErrMissingToken = celeris.NewHTTPError(403, "Missing CSRF token")
 // ErrTokenNotFound is returned by DeleteToken when no token exists.
 var ErrTokenNotFound = celeris.NewHTTPError(404, "Token not found")
 
+// ErrOriginMismatch is returned when the Origin header does not match
+// the request host or any trusted origin.
+var ErrOriginMismatch = celeris.NewHTTPError(403, "csrf: origin does not match")
+
+// ErrRefererMissing is returned when the Referer header is absent on an
+// HTTPS request with no Origin header.
+var ErrRefererMissing = celeris.NewHTTPError(403, "csrf: referer header missing")
+
+// ErrRefererMismatch is returned when the Referer header does not match
+// the request host or any trusted origin.
+var ErrRefererMismatch = celeris.NewHTTPError(403, "csrf: referer does not match")
+
+// ErrSecFetchSite is returned when the Sec-Fetch-Site header value is
+// "cross-site", indicating a cross-site request.
+var ErrSecFetchSite = celeris.NewHTTPError(403, "csrf: sec-fetch-site is cross-site")
+
 // tokenExtractor extracts a token string from the request.
 type tokenExtractor func(c *celeris.Context) string
 
@@ -196,23 +212,25 @@ func New(config ...Config) celeris.HandlerFunc {
 
 		// Defense-in-depth: reject cross-site requests via Sec-Fetch-Site.
 		if sfs := c.Header("sec-fetch-site"); sfs == "cross-site" {
-			return errorHandler(c, ErrForbidden)
+			return errorHandler(c, ErrSecFetchSite)
 		}
 
 		// Defense-in-depth: validate Origin header against request host.
 		origin := c.Header("origin")
 		if origin != "" {
 			if !isOriginAllowed(origin, c.Host(), trustedOrigins, wildcardOrigins) {
-				return errorHandler(c, ErrForbidden)
+				return errorHandler(c, ErrOriginMismatch)
 			}
 		}
 
 		// Referer fallback when Origin is absent on HTTPS.
 		if origin == "" && c.Scheme() == "https" {
-			if referer := c.Header("referer"); referer != "" {
-				if !isOriginAllowed(referer, c.Host(), trustedOrigins, wildcardOrigins) {
-					return errorHandler(c, ErrForbidden)
-				}
+			referer := c.Header("referer")
+			if referer == "" {
+				return errorHandler(c, ErrRefererMissing)
+			}
+			if !isOriginAllowed(referer, c.Host(), trustedOrigins, wildcardOrigins) {
+				return errorHandler(c, ErrRefererMismatch)
 			}
 		}
 
