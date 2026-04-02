@@ -4,14 +4,24 @@ import (
 	"bytes"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/goceleris/celeris"
 
 	"github.com/goceleris/middlewares/internal/testutil"
 )
+
+// errBrokenPipe implements error and wraps syscall.EPIPE for testing.
+type errBrokenPipe struct{}
+
+func (e *errBrokenPipe) Error() string { return "broken pipe" }
+func (e *errBrokenPipe) Is(target error) bool {
+	return target == syscall.EPIPE
+}
 
 func TestRecoveryFromPanic(t *testing.T) {
 	mw := New()
@@ -187,15 +197,134 @@ func TestRecoveryLogsMethodAndPathNoStack(t *testing.T) {
 func TestStackAllCapturesAllGoroutines(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{Logger: log, StackSize: 8192, LogStack: true, StackAll: true})
+	mw := New(Config{Logger: log, StackSize: 65536, LogStack: true, StackAll: true})
+
+	// Spin up a background goroutine that will show up in the stack dump.
+	ready := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		close(ready)
+		<-done
+	}()
+	<-ready
+
 	handler := func(_ *celeris.Context) error {
 		panic("stack all test")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, _ = testutil.RunChain(t, chain, "GET", "/stackall")
+	close(done)
+
 	output := buf.String()
-	if !strings.Contains(output, "goroutine") {
-		t.Fatalf("expected goroutine in stack: %s", output)
+	// StackAll=true should capture multiple goroutine stacks.
+	count := strings.Count(output, "goroutine")
+	if count < 2 {
+		t.Fatalf("expected multiple goroutine stacks with StackAll=true, found %d occurrences in: %s", count, output)
+	}
+}
+
+func TestNestedRecoveryPanic(t *testing.T) {
+	mw := New(Config{
+		ErrorHandler: func(_ *celeris.Context, _ any) error {
+			panic("error handler panic")
+		},
+	})
+	handler := func(_ *celeris.Context) error {
+		panic("original panic")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/nested")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 500)
+	// Verify the default 500 JSON body is returned when ErrorHandler panics.
+	body := rec.BodyString()
+	if !strings.Contains(body, "Internal Server Error") {
+		t.Fatalf("expected default JSON error body, got: %s", body)
+	}
+	if !strings.Contains(body, "error") {
+		t.Fatalf("expected JSON with 'error' key, got: %s", body)
+	}
+}
+
+func TestBrokenPipeHandlerReceivesError(t *testing.T) {
+	var receivedErr any
+	mw := New(Config{
+		LogStack: false,
+		BrokenPipeHandler: func(c *celeris.Context, err any) error {
+			receivedErr = err
+			return c.NoContent(499)
+		},
+	})
+	handler := func(_ *celeris.Context) error {
+		panic(&net.OpError{Op: "write", Err: &errBrokenPipe{}})
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/broken")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 499)
+	if receivedErr == nil {
+		t.Fatal("expected BrokenPipeHandler to receive the error")
+	}
+	// Verify the error is the correct type (*net.OpError wrapping EPIPE).
+	opErr, ok := receivedErr.(*net.OpError)
+	if !ok {
+		t.Fatalf("expected *net.OpError, got %T", receivedErr)
+	}
+	if opErr.Op != "write" {
+		t.Fatalf("expected Op=write, got %q", opErr.Op)
+	}
+	if !errors.Is(opErr.Err, syscall.EPIPE) {
+		t.Fatalf("expected EPIPE wrapped error, got %v", opErr.Err)
+	}
+}
+
+func TestDisableBrokenPipeLogSuppressesLog(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, nil))
+	mw := New(Config{
+		Logger:               log,
+		LogStack:             true,
+		DisableBrokenPipeLog: true,
+	})
+	handler := func(_ *celeris.Context) error {
+		panic(&net.OpError{Op: "write", Err: &errBrokenPipe{}})
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "GET", "/broken-no-log")
+	if buf.Len() > 0 {
+		t.Fatalf("expected no log with DisableBrokenPipeLog=true, got: %s", buf.String())
+	}
+
+	// Verify that normal (non-broken-pipe) panics are still logged even
+	// when DisableBrokenPipeLog is true.
+	buf.Reset()
+	normalHandler := func(_ *celeris.Context) error {
+		panic("normal panic")
+	}
+	normalChain := []celeris.HandlerFunc{mw, normalHandler}
+	_, _ = testutil.RunChain(t, normalChain, "GET", "/normal-panic")
+	if buf.Len() == 0 {
+		t.Fatal("expected normal panics to still be logged when DisableBrokenPipeLog=true")
+	}
+	if !strings.Contains(buf.String(), "normal panic") {
+		t.Fatalf("expected 'normal panic' in log, got: %s", buf.String())
+	}
+}
+
+func TestBrokenPipeLogEnabledByDefault(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, nil))
+	mw := New(Config{
+		Logger:   log,
+		LogStack: true,
+	})
+	handler := func(_ *celeris.Context) error {
+		panic(&net.OpError{Op: "write", Err: &errBrokenPipe{}})
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "GET", "/broken-log")
+	if !strings.Contains(buf.String(), "broken pipe") {
+		t.Fatalf("expected broken pipe log by default, got: %s", buf.String())
 	}
 }
 

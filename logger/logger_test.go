@@ -361,6 +361,32 @@ func TestFastHandlerColorLatency(t *testing.T) {
 	}
 }
 
+func TestAttrPoolResetOnHandlerError(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log})
+	handler := func(_ *celeris.Context) error {
+		return celeris.NewHTTPError(503, "service unavailable")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// Run three times to exercise the attrPool reuse path after an error.
+	for i := range 3 {
+		buf.Reset()
+		_, err := testutil.RunChain(t, chain, "GET", "/err")
+		testutil.AssertError(t, err)
+		out := buf.String()
+		if !strings.Contains(out, `"error"`) {
+			t.Fatalf("iter %d: missing error field in log: %s", i, out)
+		}
+		// Verify no stale fields leak from a previous iteration by
+		// ensuring the log entry does not contain duplicate method fields.
+		count := strings.Count(out, `"method"`)
+		if count != 1 {
+			t.Fatalf("iter %d: expected 1 method field, got %d: %s", i, count, out)
+		}
+	}
+}
+
 func TestFastHandlerNoColorOnValues(t *testing.T) {
 	buf := &bytes.Buffer{}
 	h := NewFastHandler(buf, &FastHandlerOptions{Color: false})
@@ -370,5 +396,70 @@ func TestFastHandlerNoColorOnValues(t *testing.T) {
 	output := buf.String()
 	if strings.Contains(output, "\033[") {
 		t.Fatalf("expected no color codes with Color=false, got: %q", output)
+	}
+}
+
+func TestSensitiveHeadersRedacted(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{
+		Output:           log,
+		SensitiveHeaders: []string{"Authorization", "X-Api-Key"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/secret",
+		celeristest.WithHeader("authorization", "Bearer token123"),
+		celeristest.WithHeader("x-api-key", "secret-key"),
+		celeristest.WithHeader("content-type", "application/json"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, "[REDACTED]") {
+		t.Fatalf("expected [REDACTED] in log for sensitive headers, got: %s", out)
+	}
+	if strings.Contains(out, "token123") {
+		t.Fatalf("authorization value should be redacted, got: %s", out)
+	}
+	if strings.Contains(out, "secret-key") {
+		t.Fatalf("x-api-key value should be redacted, got: %s", out)
+	}
+}
+
+func TestSensitiveHeadersCaseInsensitive(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{
+		Output:           log,
+		SensitiveHeaders: []string{"AUTHORIZATION"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/case",
+		celeristest.WithHeader("authorization", "Bearer xyz"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, "[REDACTED]") {
+		t.Fatalf("expected case-insensitive redaction, got: %s", out)
+	}
+}
+
+func TestNoSensitiveHeadersNoRedaction(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/no-redact",
+		celeristest.WithHeader("authorization", "Bearer visible"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if strings.Contains(out, "[REDACTED]") {
+		t.Fatalf("expected no redaction without SensitiveHeaders, got: %s", out)
 	}
 }

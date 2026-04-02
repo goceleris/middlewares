@@ -30,10 +30,50 @@
 //	    Preemptive: true,
 //	}))
 //
+// # Per-Request Timeout
+//
+// Set [Config].TimeoutFunc to compute a timeout dynamically per request.
+// The static [Config].Timeout is used as a fallback when TimeoutFunc is
+// nil or returns a non-positive duration.
+//
+//	server.Use(timeout.New(timeout.Config{
+//	    Timeout: 5 * time.Second,
+//	    TimeoutFunc: func(c *celeris.Context) time.Duration {
+//	        if c.Path() == "/upload" {
+//	            return 30 * time.Second
+//	        }
+//	        return 0 // fall back to static Timeout
+//	    },
+//	}))
+//
+// # Cooperative vs Preemptive Tradeoffs
+//
+// In cooperative mode (default), the handler runs in the request
+// goroutine. The context deadline is set, but the handler must check
+// c.Context().Done() or use context-aware I/O to respect the timeout.
+// If the handler blocks on a non-context-aware call (e.g., a raw
+// syscall), the timeout fires after the handler returns. Cooperative
+// mode has no extra goroutine overhead and no response buffering cost.
+//
+// In preemptive mode, the handler runs in a separate goroutine and
+// the response is buffered. When the deadline expires, the middleware
+// immediately returns the timeout error even if the handler is still
+// blocked. The tradeoff is one extra goroutine per request plus memory
+// for response buffering. Panics in the handler goroutine are recovered
+// automatically.
+//
 // Handlers MUST check c.Context().Done() to react promptly to
-// cancellation, especially in non-preemptive mode.
+// cancellation in both modes.
+//
+// In preemptive mode, the done-signal channels are pooled via sync.Pool
+// to avoid allocating a new channel per request.
 //
 // [ErrServiceUnavailable] is the exported sentinel error (503) returned
 // on timeout, usable with errors.Is for error handling in upstream
 // middleware.
+// # Skipping
+//
+// Set [Config].Skip to bypass the middleware dynamically, or
+// [Config].SkipPaths for exact-match path exclusions.
+//
 package timeout

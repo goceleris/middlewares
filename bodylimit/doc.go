@@ -25,6 +25,47 @@
 // [Config].Limit accepts human-readable size strings with units B, KB, MB,
 // GB, and TB (e.g., "1.5GB"). When set, it takes precedence over MaxBytes.
 //
+// # Dual-Check Enforcement
+//
+// The middleware uses a two-phase approach to enforce body size limits:
+//
+//  1. Content-Length pre-check: If the request includes a Content-Length
+//     header and its value exceeds the configured limit, the request is
+//     rejected immediately without reading any body bytes. This provides
+//     an efficient fast path for well-behaved clients that advertise
+//     their payload size up front.
+//
+//  2. Actual body byte count fallback: Regardless of the Content-Length
+//     header, the middleware also checks the actual number of body bytes
+//     received. This catches clients that send a small or missing
+//     Content-Length but transmit a larger payload (a "lying"
+//     Content-Length) as well as chunked-transfer requests that omit the
+//     header entirely.
+//
+// Both checks must pass for the request to proceed. This defense-in-depth
+// approach ensures that the limit is enforced even when the
+// Content-Length header is absent, zero, or deliberately understated.
+//
+// Bodyless HTTP methods (GET, HEAD, DELETE, OPTIONS) are auto-skipped
+// since they never carry a request body, avoiding unnecessary overhead.
+//
+// # Custom Error Handling
+//
+// Set [Config].ErrorHandler to customize the response when the body limit
+// is exceeded:
+//
+//	server.Use(bodylimit.New(bodylimit.Config{
+//	    Limit: "10MB",
+//	    ErrorHandler: func(c *celeris.Context, err error) error {
+//	        return c.JSON(413, map[string]string{"error": "body too large"})
+//	    },
+//	}))
+//
+// # Skipping
+//
+// Use [Config].Skip for dynamic skip logic or [Config].SkipPaths for
+// exact-match path exclusions (e.g., health check endpoints).
+//
 // [ErrBodyTooLarge] is the exported sentinel error (413) returned when the
 // limit is exceeded, usable with errors.Is for error handling in upstream
 // middleware.

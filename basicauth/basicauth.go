@@ -1,9 +1,16 @@
 package basicauth
 
-import "github.com/goceleris/celeris"
+import (
+	"strings"
+
+	"github.com/goceleris/celeris"
+)
 
 // ErrUnauthorized is returned when authentication fails.
 var ErrUnauthorized = celeris.NewHTTPError(401, "Unauthorized")
+
+// ErrHeaderTooLarge is returned when the Authorization header exceeds HeaderLimit.
+var ErrHeaderTooLarge = celeris.NewHTTPError(431, "Request Header Fields Too Large")
 
 // New creates a basic auth middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
@@ -19,13 +26,19 @@ func New(config ...Config) celeris.HandlerFunc {
 		skipMap[p] = struct{}{}
 	}
 
-	realmHeader := `Basic realm="` + cfg.Realm + `"`
+	escapedRealm := strings.ReplaceAll(cfg.Realm, `\`, `\\`)
+	escapedRealm = strings.ReplaceAll(escapedRealm, `"`, `\"`)
+	realmHeader := `Basic realm="` + escapedRealm + `"`
 	validator := cfg.Validator
 	validatorCtx := cfg.ValidatorWithContext
+	headerLimit := cfg.HeaderLimit
 	errorHandler := cfg.ErrorHandler
 
 	if errorHandler == nil {
-		errorHandler = func(c *celeris.Context) error {
+		errorHandler = func(c *celeris.Context, err error) error {
+			if err == ErrHeaderTooLarge {
+				return ErrHeaderTooLarge
+			}
 			c.SetHeader("www-authenticate", realmHeader)
 			return ErrUnauthorized
 		}
@@ -40,6 +53,10 @@ func New(config ...Config) celeris.HandlerFunc {
 			return c.Next()
 		}
 
+		if len(c.Header("authorization")) > headerLimit {
+			return errorHandler(c, ErrHeaderTooLarge)
+		}
+
 		user, pass, ok := c.BasicAuth()
 		var valid bool
 		if ok {
@@ -50,7 +67,7 @@ func New(config ...Config) celeris.HandlerFunc {
 			}
 		}
 		if !ok || !valid {
-			return errorHandler(c)
+			return errorHandler(c, ErrUnauthorized)
 		}
 
 		c.Set(UsernameKey, user)

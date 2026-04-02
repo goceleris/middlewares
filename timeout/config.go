@@ -12,7 +12,14 @@ type Config struct {
 	Skip func(c *celeris.Context) bool
 
 	// Timeout is the request timeout duration. Default: 5s.
+	// Used as the fallback when TimeoutFunc is nil or returns zero.
 	Timeout time.Duration
+
+	// TimeoutFunc computes a per-request timeout duration. When non-nil,
+	// its return value is used instead of the static Timeout. If it
+	// returns zero or a negative duration, the static Timeout is used
+	// as a fallback.
+	TimeoutFunc func(c *celeris.Context) time.Duration
 
 	// ErrorHandler handles timeout errors. Default: 503 Service Unavailable.
 	ErrorHandler func(c *celeris.Context) error

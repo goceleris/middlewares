@@ -41,14 +41,30 @@ func New(config ...Config) celeris.HandlerFunc {
 
 	header := cfg.Header
 	gen := cfg.Generator
+	trustProxy := cfg.TrustProxy == nil || *cfg.TrustProxy
+
+	skipMap := make(map[string]struct{}, len(cfg.SkipPaths))
+	for _, p := range cfg.SkipPaths {
+		skipMap[p] = struct{}{}
+	}
 
 	return func(c *celeris.Context) error {
 		if cfg.Skip != nil && cfg.Skip(c) {
 			return c.Next()
 		}
 
-		id := c.Header(header)
-		if !validID(id) {
+		if _, ok := skipMap[c.Path()]; ok {
+			return c.Next()
+		}
+
+		var id string
+		if trustProxy {
+			id = c.Header(header)
+			if !validID(id) {
+				id = ""
+			}
+		}
+		if id == "" {
 			id = gen()
 		}
 

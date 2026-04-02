@@ -12,8 +12,17 @@ func New(config ...Config) celeris.HandlerFunc {
 	cfg.validate()
 	p := precompute(cfg)
 
+	skipMap := make(map[string]struct{}, len(cfg.SkipPaths))
+	for _, path := range cfg.SkipPaths {
+		skipMap[path] = struct{}{}
+	}
+
 	return func(c *celeris.Context) error {
 		if cfg.Skip != nil && cfg.Skip(c) {
+			return c.Next()
+		}
+
+		if _, ok := skipMap[c.Path()]; ok {
 			return c.Next()
 		}
 

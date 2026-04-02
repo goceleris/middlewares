@@ -24,7 +24,9 @@ func newBufferedGenerator() *bufferedGenerator {
 func (g *bufferedGenerator) UUID() string {
 	g.mu.Lock()
 	if g.pos >= bufSize {
-		_, _ = rand.Read(g.buf[:])
+		if _, err := rand.Read(g.buf[:]); err != nil {
+			panic("requestid: crypto/rand failed: " + err.Error())
+		}
 		g.pos = 0
 	}
 	var raw [uuidBytes]byte

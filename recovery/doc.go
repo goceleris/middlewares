@@ -20,6 +20,13 @@
 // Set [Config].StackSize to 0 to disable stack trace capture.
 // Set [Config].LogStack to false to suppress panic logging entirely.
 //
+// # LogStack Zero-Value Limitation
+//
+// Because Go's bool zero value is false, a partial Config literal such as
+// recovery.Config{StackSize: 8192} will have LogStack=false. This is a
+// fundamental Go limitation (no distinction between unset and explicit false).
+// If you want stack logging, always set LogStack: true explicitly.
+//
 // # Special Panic Types
 //
 // Panics with [http.ErrAbortHandler] (matched via errors.Is) are re-panicked
@@ -28,6 +35,8 @@
 // Broken pipe and ECONNRESET errors are detected automatically and logged
 // at WARN level without a stack trace, since the client has disconnected.
 // Use [Config].BrokenPipeHandler to customize the response for these cases.
+// Set [Config].DisableBrokenPipeLog to true to suppress the WARN log
+// entirely (useful in environments where broken pipes are routine).
 //
 // # Nested Recovery
 //

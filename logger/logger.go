@@ -2,6 +2,7 @@ package logger
 
 import (
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +26,11 @@ func New(config ...Config) celeris.HandlerFunc {
 	skipMap := make(map[string]struct{}, len(cfg.SkipPaths))
 	for _, p := range cfg.SkipPaths {
 		skipMap[p] = struct{}{}
+	}
+
+	sensitiveMap := make(map[string]struct{}, len(cfg.SensitiveHeaders))
+	for _, h := range cfg.SensitiveHeaders {
+		sensitiveMap[strings.ToLower(h)] = struct{}{}
 	}
 
 	handler := cfg.Output.Handler()
@@ -100,6 +106,14 @@ func New(config ...Config) celeris.HandlerFunc {
 				body = body[:maxCapture]
 			}
 			attrs = append(attrs, slog.String("response_body", string(body)))
+		}
+		if len(sensitiveMap) > 0 {
+			for _, kv := range c.RequestHeaders() {
+				key := strings.ToLower(kv[0])
+				if _, ok := sensitiveMap[key]; ok {
+					attrs = append(attrs, slog.String("header."+key, "[REDACTED]"))
+				}
+			}
 		}
 
 		// Call handler directly instead of log.LogAttrs to skip
