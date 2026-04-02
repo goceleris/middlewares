@@ -12,7 +12,7 @@ import (
 )
 
 var attrPool = sync.Pool{New: func() any {
-	s := make([]slog.Attr, 0, 28)
+	s := make([]slog.Attr, 0, 32)
 	return &s
 }}
 
@@ -59,6 +59,22 @@ func New(config ...Config) celeris.HandlerFunc {
 	logQuery := cfg.LogQueryParams
 	logForm := cfg.LogFormValues
 	logCookies := cfg.LogCookies
+	logBytesIn := cfg.LogBytesIn
+	logScheme := cfg.LogScheme
+	logRespHeaders := cfg.LogResponseHeaders
+	// Build lowercased set for response header matching.
+	respHeaderSet := make([]string, len(logRespHeaders))
+	for i, h := range logRespHeaders {
+		respHeaderSet[i] = strings.ToLower(h)
+	}
+	// Build lowercased set for sensitive form field matching.
+	var sensitiveFormSet map[string]struct{}
+	if cfg.SensitiveFormFields != nil {
+		sensitiveFormSet = make(map[string]struct{}, len(cfg.SensitiveFormFields))
+		for _, f := range cfg.SensitiveFormFields {
+			sensitiveFormSet[strings.ToLower(f)] = struct{}{}
+		}
+	}
 	tz := cfg.TimeZone
 
 	return func(c *celeris.Context) error {
@@ -151,6 +167,13 @@ func New(config ...Config) celeris.HandlerFunc {
 			ct := c.Header("content-type")
 			if strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
 				if vals, parseErr := url.ParseQuery(string(c.Body())); parseErr == nil && len(vals) > 0 {
+					if sensitiveFormSet != nil {
+						for k := range vals {
+							if _, ok := sensitiveFormSet[strings.ToLower(k)]; ok {
+								vals.Set(k, "[REDACTED]")
+							}
+						}
+					}
 					attrs = append(attrs, slog.String("form", vals.Encode()))
 				}
 			}
@@ -160,6 +183,27 @@ func New(config ...Config) celeris.HandlerFunc {
 				names := parseCookieNames(raw)
 				if names != "" {
 					attrs = append(attrs, slog.String("cookies", names))
+				}
+			}
+		}
+		if logBytesIn {
+			if cl := c.ContentLength(); cl >= 0 {
+				attrs = append(attrs, slog.Int64("bytes_in", cl))
+			}
+		}
+		if logScheme {
+			if s := c.Scheme(); s != "" {
+				attrs = append(attrs, slog.String("scheme", s))
+			}
+		}
+		if len(respHeaderSet) > 0 {
+			for _, kv := range c.ResponseHeaders() {
+				key := strings.ToLower(kv[0])
+				for _, want := range respHeaderSet {
+					if key == want {
+						attrs = append(attrs, slog.String("resp_header."+key, kv[1]))
+						break
+					}
 				}
 			}
 		}
