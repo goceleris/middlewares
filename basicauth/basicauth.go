@@ -2,6 +2,7 @@ package basicauth
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"github.com/goceleris/celeris"
 )
@@ -58,6 +59,9 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 
 		user, pass, ok := c.BasicAuth()
+		if ok && !validCredentialBytes(user, pass) {
+			ok = false
+		}
 		var valid bool
 		if ok {
 			if validatorCtx != nil {
@@ -73,6 +77,29 @@ func New(config ...Config) celeris.HandlerFunc {
 		c.Set(UsernameKey, user)
 		return c.Next()
 	}
+}
+
+// validCredentialBytes rejects credentials that contain invalid UTF-8
+// sequences or ASCII control characters (bytes < 0x20 or DEL 0x7F).
+//
+// NFC normalization is intentionally omitted to avoid a dependency on
+// golang.org/x/text. Callers storing passwords should normalize to NFC
+// before hashing if Unicode equivalence matters.
+func validCredentialBytes(user, pass string) bool {
+	if !utf8.ValidString(user) || !utf8.ValidString(pass) {
+		return false
+	}
+	for i := 0; i < len(user); i++ {
+		if user[i] < 0x20 || user[i] == 0x7F {
+			return false
+		}
+	}
+	for i := 0; i < len(pass); i++ {
+		if pass[i] < 0x20 || pass[i] == 0x7F {
+			return false
+		}
+	}
+	return true
 }
 
 // UsernameFromContext returns the authenticated username from the context store.

@@ -1,7 +1,9 @@
 package basicauth
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 
 	"github.com/goceleris/celeris"
 )
@@ -28,6 +30,13 @@ type Config struct {
 	// Users maps usernames to passwords. When set and Validator is nil,
 	// a constant-time validator is auto-generated from this map.
 	Users map[string]string
+
+	// HashedUsers maps usernames to hex-encoded SHA-256 password hashes.
+	// When set and Validator, ValidatorWithContext, and Users are all nil,
+	// a constant-time validator is auto-generated that SHA-256 hashes the
+	// incoming password and compares it against the stored hash.
+	// Use [HashPassword] to produce the hex-encoded hash values.
+	HashedUsers map[string]string
 
 	// Realm is the authentication realm. Default: "Restricted".
 	Realm string
@@ -74,11 +83,43 @@ func applyDefaults(cfg Config) Config {
 			return subtle.ConstantTimeCompare([]byte(pass), e.passBytes) == 1
 		}
 	}
+	if cfg.Validator == nil && cfg.ValidatorWithContext == nil && len(cfg.HashedUsers) > 0 {
+		// Deep-copy and decode hex hashes at init time.
+		type hashedEntry struct{ hashBytes [sha256.Size]byte }
+		entries := make(map[string]hashedEntry, len(cfg.HashedUsers))
+		for u, h := range cfg.HashedUsers {
+			b, err := hex.DecodeString(h)
+			if err != nil || len(b) != sha256.Size {
+				panic("basicauth: HashedUsers[" + u + "]: invalid hex-encoded SHA-256 hash")
+			}
+			var entry hashedEntry
+			copy(entry.hashBytes[:], b)
+			entries[u] = entry
+		}
+		// dummy hash for unknown-user timing side-channel prevention.
+		var dummyHash [sha256.Size]byte
+		cfg.Validator = func(user, pass string) bool {
+			e, ok := entries[user]
+			passHash := sha256.Sum256([]byte(pass))
+			if !ok {
+				subtle.ConstantTimeCompare(passHash[:], dummyHash[:])
+				return false
+			}
+			return subtle.ConstantTimeCompare(passHash[:], e.hashBytes[:]) == 1
+		}
+	}
 	return cfg
+}
+
+// HashPassword returns the hex-encoded SHA-256 hash of password.
+// Use this to produce values for [Config].HashedUsers.
+func HashPassword(password string) string {
+	h := sha256.Sum256([]byte(password))
+	return hex.EncodeToString(h[:])
 }
 
 func (cfg Config) validate() {
 	if cfg.Validator == nil && cfg.ValidatorWithContext == nil {
-		panic("basicauth: Validator, ValidatorWithContext, or Users is required")
+		panic("basicauth: Validator, ValidatorWithContext, Users, or HashedUsers is required")
 	}
 }
