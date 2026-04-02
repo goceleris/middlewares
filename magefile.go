@@ -8,19 +8,61 @@ import (
 	"os/exec"
 )
 
-// Lint runs golangci-lint on the codebase.
+// Lint runs golangci-lint on the codebase (root module + sub-modules).
 func Lint() error {
-	return sh("golangci-lint", "run", "./...")
+	if err := sh("golangci-lint", "run", "./..."); err != nil {
+		return err
+	}
+	for _, mod := range []string{"metrics", "otel"} {
+		wd, _ := os.Getwd()
+		if err := os.Chdir(mod); err != nil {
+			return fmt.Errorf("%s: %w", mod, err)
+		}
+		err := sh("golangci-lint", "run", "./...")
+		os.Chdir(wd)
+		if err != nil {
+			return fmt.Errorf("%s lint failed: %w", mod, err)
+		}
+	}
+	return nil
 }
 
-// Test runs all tests with race detection.
+// Test runs all tests with race detection (root module + sub-modules).
 func Test() error {
-	return sh("go", "test", "-race", "-count=1", "-timeout=120s", "./...")
+	if err := sh("go", "test", "-race", "-count=1", "-timeout=120s", "./..."); err != nil {
+		return err
+	}
+	for _, mod := range []string{"metrics", "otel"} {
+		wd, _ := os.Getwd()
+		if err := os.Chdir(mod); err != nil {
+			return fmt.Errorf("%s: %w", mod, err)
+		}
+		err := sh("go", "test", "-race", "-count=1", "-timeout=120s", "./...")
+		os.Chdir(wd)
+		if err != nil {
+			return fmt.Errorf("%s tests failed: %w", mod, err)
+		}
+	}
+	return nil
 }
 
-// Bench runs all benchmarks.
+// Bench runs all benchmarks (root module + sub-modules).
 func Bench() error {
-	return sh("go", "test", "-bench=.", "-benchmem", "-run=^$", "-timeout=300s", "./...")
+	if err := sh("go", "test", "-bench=.", "-benchmem", "-run=^$", "-timeout=300s", "./..."); err != nil {
+		return err
+	}
+	for _, mod := range []string{"metrics", "otel"} {
+		wd, _ := os.Getwd()
+		if err := os.Chdir(mod); err != nil {
+			return fmt.Errorf("%s: %w", mod, err)
+		}
+		err := sh("go", "test", "-bench=.", "-benchmem", "-run=^$", "-timeout=300s", "./...")
+		os.Chdir(wd)
+		if err != nil {
+			return fmt.Errorf("%s benchmarks failed: %w", mod, err)
+		}
+	}
+	return nil
 }
 
 // BenchCmp runs cross-framework comparison benchmarks.
