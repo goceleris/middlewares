@@ -33,6 +33,19 @@ func New(config ...Config) celeris.HandlerFunc {
 			return c.Next()
 		}
 
+		// Reject origins exceeding the maximum length to prevent CPU waste.
+		if len(origin) > maxOriginLength {
+			return c.Next()
+		}
+
+		// Handle the special "null" origin (sandboxed iframes, file:// URLs).
+		if origin == "null" {
+			if !p.nullAllowed && !p.allowAllOrigins {
+				return c.Next()
+			}
+			// Fall through — null is in the allowed set or allowAll is true.
+		}
+
 		// Normalize origin for case-insensitive comparison.
 		normOrigin := normalizeOrigin(origin)
 
@@ -41,6 +54,9 @@ func New(config ...Config) celeris.HandlerFunc {
 		allowed := p.allowAllOrigins
 		if !allowed {
 			_, allowed = p.originSet[normOrigin]
+		}
+		if !allowed && origin == "null" {
+			allowed = p.nullAllowed
 		}
 		if !allowed {
 			for _, wp := range p.wildcardPatterns {
@@ -51,9 +67,15 @@ func New(config ...Config) celeris.HandlerFunc {
 			}
 		}
 		if !allowed && p.allowOriginsFunc != nil {
+			if !isSerializedOrigin(origin) {
+				return c.Next()
+			}
 			allowed = p.allowOriginsFunc(origin)
 		}
 		if !allowed && p.allowOriginRequestFunc != nil {
+			if p.validateOriginFunc && p.allowOriginsFunc == nil && !isSerializedOrigin(origin) {
+				return c.Next()
+			}
 			allowed = p.allowOriginRequestFunc(c, origin)
 		}
 		if !allowed {

@@ -24,6 +24,150 @@ type bucket struct {
 	lastFill int64 // UnixNano
 }
 
+// slidingWindowLimiter uses a sliding window counter algorithm.
+// It tracks the previous window count + current window count, weighted
+// by elapsed fraction of the current window.
+type slidingWindowLimiter struct {
+	shards     []swShard
+	mask       uint64
+	limit      int
+	windowNano int64
+}
+
+type swShard struct {
+	mu      sync.Mutex
+	windows map[string]*swBucket
+}
+
+type swBucket struct {
+	prevCount int
+	currCount int
+	windowStart int64 // UnixNano of current window start
+}
+
+func newSlidingWindowLimiter(ctx context.Context, shardCount int, rps float64, limit int, cleanupInterval time.Duration) *slidingWindowLimiter {
+	n := nextPow2(shardCount)
+	windowNano := int64(float64(limit) / rps * float64(time.Second))
+	if windowNano <= 0 {
+		windowNano = int64(time.Second)
+	}
+	l := &slidingWindowLimiter{
+		shards:     make([]swShard, n),
+		mask:       uint64(n - 1),
+		limit:      limit,
+		windowNano: windowNano,
+	}
+	for i := range l.shards {
+		l.shards[i].windows = make(map[string]*swBucket)
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	go l.cleanup(ctx, cleanupInterval)
+
+	return l
+}
+
+// allow checks if a request for the given key is allowed under the sliding window.
+func (l *slidingWindowLimiter) allow(key string, now int64) (bool, int, int64) {
+	idx := fnv1a(key) & l.mask
+	s := &l.shards[idx]
+	s.mu.Lock()
+
+	w, ok := s.windows[key]
+	if !ok {
+		w = &swBucket{
+			prevCount:   0,
+			currCount:   0,
+			windowStart: now,
+		}
+		s.windows[key] = w
+	}
+
+	l.advanceWindow(w, now)
+
+	elapsed := now - w.windowStart
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	fraction := float64(elapsed) / float64(l.windowNano)
+	if fraction > 1 {
+		fraction = 1
+	}
+
+	// Weighted count: previous window contribution + current window count
+	weight := float64(w.prevCount) * (1 - fraction) + float64(w.currCount)
+	remaining := l.limit - int(weight) - 1
+
+	if weight+1 > float64(l.limit) {
+		resetNano := w.windowStart + l.windowNano
+		if remaining < 0 {
+			remaining = 0
+		}
+		s.mu.Unlock()
+		return false, remaining + 1, resetNano
+	}
+
+	w.currCount++
+	if remaining < 0 {
+		remaining = 0
+	}
+	resetNano := w.windowStart + l.windowNano
+	s.mu.Unlock()
+	return true, remaining, resetNano
+}
+
+// undo removes one count from the current window, clamped at zero.
+func (l *slidingWindowLimiter) undo(key string) {
+	idx := fnv1a(key) & l.mask
+	s := &l.shards[idx]
+	s.mu.Lock()
+	if w, ok := s.windows[key]; ok && w.currCount > 0 {
+		w.currCount--
+	}
+	s.mu.Unlock()
+}
+
+func (l *slidingWindowLimiter) advanceWindow(w *swBucket, now int64) {
+	if now < w.windowStart {
+		return
+	}
+	elapsed := now - w.windowStart
+	if elapsed >= 2*l.windowNano {
+		w.prevCount = 0
+		w.currCount = 0
+		w.windowStart = now
+	} else if elapsed >= l.windowNano {
+		w.prevCount = w.currCount
+		w.currCount = 0
+		w.windowStart = w.windowStart + l.windowNano
+	}
+}
+
+func (l *slidingWindowLimiter) cleanup(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	shardIdx := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			s := &l.shards[shardIdx%len(l.shards)]
+			shardIdx++
+			expiry := now.UnixNano() - 2*l.windowNano
+			s.mu.Lock()
+			for k, w := range s.windows {
+				if w.windowStart < expiry && w.currCount == 0 && w.prevCount == 0 {
+					delete(s.windows, k)
+				}
+			}
+			s.mu.Unlock()
+		}
+	}
+}
+
 func newShardedLimiter(ctx context.Context, shardCount int, rps float64, burst int, cleanupInterval time.Duration) *shardedLimiter {
 	n := nextPow2(shardCount)
 	l := &shardedLimiter{

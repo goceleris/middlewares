@@ -1,6 +1,7 @@
 package cors
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/goceleris/celeris"
@@ -718,4 +719,256 @@ func TestPositiveMaxAgeUnchanged(t *testing.T) {
 		celeristest.WithHeader("access-control-request-method", "GET"))
 	testutil.AssertNoError(t, err)
 	testutil.AssertHeader(t, rec, "access-control-max-age", "600")
+}
+
+// --- Null Origin Handling ---
+
+func TestNullOriginAllowed(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"null", "http://example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "null"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "null")
+}
+
+func TestNullOriginRejected(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "null"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+}
+
+func TestNullOriginWithWildcard(t *testing.T) {
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "null"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "*")
+}
+
+func TestNullOriginPreflightAllowed(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"null"}})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "null"),
+		celeristest.WithHeader("access-control-request-method", "GET"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 204)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "null")
+}
+
+func TestNullOriginNotInFuncList(t *testing.T) {
+	// "null" origin should not be passed to AllowOriginsFunc since it is not
+	// a serialized origin. It should only be allowed via static list.
+	funcCalled := false
+	mw := New(Config{
+		AllowOrigins: []string{"http://example.com"},
+		AllowOriginsFunc: func(origin string) bool {
+			funcCalled = true
+			return true
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "null"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+	if funcCalled {
+		t.Fatal("AllowOriginsFunc should not be called for non-serialized origin 'null'")
+	}
+}
+
+// --- Non-Serialized Origin Rejection ---
+
+func TestMalformedOriginRejectedBeforeFunc(t *testing.T) {
+	funcCalled := false
+	mw := New(Config{
+		AllowOrigins: []string{"http://example.com"},
+		AllowOriginsFunc: func(origin string) bool {
+			funcCalled = true
+			return true
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	tests := []string{
+		"http://example.com/path",
+		"http://user@example.com",
+		"http://example.com?q=1",
+		"http://example.com#frag",
+		"notaurl",
+		"ftp://",
+	}
+
+	for _, origin := range tests {
+		funcCalled = false
+		rec, err := testutil.RunChain(t, chain, "GET", "/",
+			celeristest.WithHeader("origin", origin))
+		testutil.AssertNoError(t, err)
+		if funcCalled {
+			t.Fatalf("AllowOriginsFunc should not be called for malformed origin %q", origin)
+		}
+		_ = rec
+	}
+}
+
+func TestValidOriginPassedToFunc(t *testing.T) {
+	funcCalled := false
+	mw := New(Config{
+		AllowOrigins: []string{"http://static.com"},
+		AllowOriginsFunc: func(origin string) bool {
+			funcCalled = true
+			return origin == "http://dynamic.com"
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "http://dynamic.com"))
+	testutil.AssertNoError(t, err)
+	if !funcCalled {
+		t.Fatal("AllowOriginsFunc should be called for valid serialized origin")
+	}
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "http://dynamic.com")
+}
+
+func TestMalformedOriginRejectedBeforeRequestFunc(t *testing.T) {
+	funcCalled := false
+	mw := New(Config{
+		AllowOrigins: []string{"http://example.com"},
+		AllowOriginRequestFunc: func(c *celeris.Context, origin string) bool {
+			funcCalled = true
+			return true
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "http://example.com/path"))
+	testutil.AssertNoError(t, err)
+	if funcCalled {
+		t.Fatal("AllowOriginRequestFunc should not be called for malformed origin")
+	}
+	_ = rec
+}
+
+func TestOriginWithPortIsValid(t *testing.T) {
+	funcCalled := false
+	mw := New(Config{
+		AllowOrigins: []string{"http://static.com"},
+		AllowOriginsFunc: func(origin string) bool {
+			funcCalled = true
+			return origin == "http://example.com:8080"
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "http://example.com:8080"))
+	testutil.AssertNoError(t, err)
+	if !funcCalled {
+		t.Fatal("AllowOriginsFunc should be called for origin with port")
+	}
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "http://example.com:8080")
+}
+
+// --- Origin Length Limit ---
+
+func TestOriginLengthExceedsMax(t *testing.T) {
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	longOrigin := "http://" + string(make([]byte, 300))
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", longOrigin))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+}
+
+func TestOriginAtMaxLength(t *testing.T) {
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Origin at exactly 256 chars should be accepted (wildcard allows all).
+	origin := "http://example" + string(make([]byte, 256-len("http://example")-4)) + ".com"
+	if len(origin) > 256 {
+		origin = origin[:256]
+	}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", origin))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "*")
+}
+
+func TestOriginLengthExceedsMaxSpecific(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	longOrigin := "http://" + string(make([]byte, 300))
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", longOrigin))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+}
+
+// --- Value Redaction ---
+
+func TestValueRedactionInPanicDefault(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("expected string panic, got %T", r)
+		}
+		if !strings.Contains(msg, "[redacted]") {
+			t.Fatalf("expected [redacted] in panic message, got: %s", msg)
+		}
+		if strings.Contains(msg, "example.com") {
+			t.Fatalf("origin value should be redacted, got: %s", msg)
+		}
+	}()
+	New(Config{
+		AllowOrigins: []string{"https://*.*"},
+	})
+}
+
+func TestValueRedactionDisabled(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("expected string panic, got %T", r)
+		}
+		if !strings.Contains(msg, "https://*.*") {
+			t.Fatalf("expected raw origin in panic message when redaction disabled, got: %s", msg)
+		}
+	}()
+	New(Config{
+		AllowOrigins:          []string{"https://*.*"},
+		DisableValueRedaction: true,
+	})
+}
+
+func TestRedactOriginHelper(t *testing.T) {
+	cfg := Config{}
+	if cfg.redactOrigin("http://example.com") != "[redacted]" {
+		t.Fatal("default should redact")
+	}
+	cfg.DisableValueRedaction = true
+	if cfg.redactOrigin("http://example.com") != "http://example.com" {
+		t.Fatal("disabled redaction should return raw value")
+	}
 }
