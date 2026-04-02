@@ -482,7 +482,7 @@ func TestCustomAttributes(t *testing.T) {
 
 	mw := New(Config{
 		TracerProvider: tp,
-		CustomAttributes: func(c *celeris.Context) []attribute.KeyValue {
+		CustomAttributes: func(_ *celeris.Context) []attribute.KeyValue {
 			return []attribute.KeyValue{
 				attribute.String("custom.key", "custom-value"),
 				attribute.Int("custom.int", 42),
