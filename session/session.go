@@ -34,7 +34,7 @@ func (s *Session) Get(key string) (any, bool) {
 // GetString returns the value for key as a string. Returns "" if the key
 // is missing or the value is not a string.
 func (s *Session) GetString(key string) string {
-	v, _ := s.data[key]
+	v := s.data[key]
 	str, _ := v.(string)
 	return str
 }
@@ -42,7 +42,7 @@ func (s *Session) GetString(key string) string {
 // GetInt returns the value for key as an int. Returns 0 if the key is
 // missing or the value is not an int.
 func (s *Session) GetInt(key string) int {
-	v, _ := s.data[key]
+	v := s.data[key]
 	i, _ := v.(int)
 	return i
 }
@@ -50,7 +50,7 @@ func (s *Session) GetInt(key string) int {
 // GetBool returns the value for key as a bool. Returns false if the key
 // is missing or the value is not a bool.
 func (s *Session) GetBool(key string) bool {
-	v, _ := s.data[key]
+	v := s.data[key]
 	b, _ := v.(bool)
 	return b
 }
@@ -191,7 +191,7 @@ func validSessionID(s string, idLen int) bool {
 	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}

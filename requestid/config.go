@@ -36,9 +36,6 @@ type Config struct {
 	AfterGenerate func(c *celeris.Context, id string)
 }
 
-// boolPtr returns a pointer to b.
-func boolPtr(b bool) *bool { return &b }
-
 // DefaultConfig is the default request ID configuration.
 var DefaultConfig = Config{
 	Header: "x-request-id",

@@ -911,7 +911,7 @@ func TestChallengeErrorURIRelativePanics(t *testing.T) {
 	})
 }
 
-func TestChallengeErrorValidValues(t *testing.T) {
+func TestChallengeErrorValidValues(_ *testing.T) {
 	for _, v := range []string{"invalid_request", "invalid_token", "insufficient_scope"} {
 		// Should not panic.
 		New(Config{

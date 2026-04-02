@@ -7,18 +7,34 @@ import (
 )
 
 // Token and related type aliases re-exported from the internal parser.
-type (
-	Token            = jwtparse.Token
-	Header           = jwtparse.Header
-	Claims           = jwtparse.Claims
-	MapClaims        = jwtparse.MapClaims
-	RegisteredClaims = jwtparse.RegisteredClaims
-	NumericDate      = jwtparse.NumericDate
-	Audience         = jwtparse.Audience
-	SigningMethod    = jwtparse.SigningMethod
-	Keyfunc          = jwtparse.Keyfunc
-	ParserOption     = jwtparse.ParserOption
-)
+type Token = jwtparse.Token
+
+// Header is the parsed JWT JOSE header (alg, typ, kid, etc.).
+type Header = jwtparse.Header
+
+// Claims is the interface satisfied by all JWT claims types.
+type Claims = jwtparse.Claims
+
+// MapClaims is an unstructured claims map.
+type MapClaims = jwtparse.MapClaims
+
+// RegisteredClaims contains the registered (standard) JWT claim fields.
+type RegisteredClaims = jwtparse.RegisteredClaims
+
+// NumericDate represents a JSON numeric date value (Unix timestamp).
+type NumericDate = jwtparse.NumericDate
+
+// Audience is a list of recipients the JWT is intended for.
+type Audience = jwtparse.Audience
+
+// SigningMethod is the interface for JWT signing algorithms.
+type SigningMethod = jwtparse.SigningMethod
+
+// Keyfunc is the callback used to supply the verification key.
+type Keyfunc = jwtparse.Keyfunc
+
+// ParserOption configures the JWT parser.
+type ParserOption = jwtparse.ParserOption
 
 // Signing method singletons.
 var (

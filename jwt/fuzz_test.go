@@ -17,7 +17,7 @@ func FuzzTokenParse(f *testing.F) {
 	f.Add(".......")
 	f.Add("{}")
 
-	f.Fuzz(func(t *testing.T, tokenStr string) {
+	f.Fuzz(func(_ *testing.T, tokenStr string) {
 		// Ensure the parser never panics on arbitrary input.
 		p := jwtparse.NewParser()
 		_, _ = p.Parse(tokenStr, func(_ *jwtparse.Token) (any, error) {

@@ -45,7 +45,6 @@ type MemoryStoreConfig struct {
 type memoryStore struct {
 	shards []msShard
 	mask   uint64
-	expiry time.Duration
 }
 
 type msShard struct {

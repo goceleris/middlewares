@@ -185,22 +185,23 @@ func (p *jsonParser) skipValue() {
 		return
 	}
 	c := p.data[p.pos]
-	switch {
-	case c == '"':
+	switch c {
+	case '"':
 		p.pos++
 		for p.pos < len(p.data) {
-			if p.data[p.pos] == '\\' {
+			switch p.data[p.pos] {
+			case '\\':
 				p.pos += 2
-			} else if p.data[p.pos] == '"' {
+			case '"':
 				p.pos++
 				return
-			} else {
+			default:
 				p.pos++
 			}
 		}
-	case c == '{':
+	case '{':
 		p.skipBraced('{', '}')
-	case c == '[':
+	case '[':
 		p.skipBraced('[', ']')
 	default:
 		for p.pos < len(p.data) {
