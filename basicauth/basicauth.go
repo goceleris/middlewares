@@ -1,14 +1,21 @@
 package basicauth
 
 import (
+	"encoding/base64"
 	"strings"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/goceleris/celeris"
 )
 
 // ErrUnauthorized is returned when authentication fails.
 var ErrUnauthorized = celeris.NewHTTPError(401, "Unauthorized")
+
+// ErrBadRequest is returned when the Authorization header is
+// syntactically malformed: invalid base64, missing colon separator,
+// or credentials containing invalid UTF-8 / control characters.
+var ErrBadRequest = celeris.NewHTTPError(400, "basicauth: bad request")
 
 // ErrHeaderTooLarge is returned when the Authorization header exceeds HeaderLimit.
 var ErrHeaderTooLarge = celeris.NewHTTPError(431, "Request Header Fields Too Large")
@@ -40,7 +47,14 @@ func New(config ...Config) celeris.HandlerFunc {
 			if err == ErrHeaderTooLarge {
 				return ErrHeaderTooLarge
 			}
+			if err == ErrBadRequest {
+				c.SetHeader("cache-control", "no-store")
+				c.SetHeader("vary", "authorization")
+				return ErrBadRequest
+			}
 			c.SetHeader("www-authenticate", realmHeader)
+			c.SetHeader("cache-control", "no-store")
+			c.SetHeader("vary", "authorization")
 			return ErrUnauthorized
 		}
 	}
@@ -58,25 +72,86 @@ func New(config ...Config) celeris.HandlerFunc {
 			return errorHandler(c, ErrHeaderTooLarge)
 		}
 
-		user, pass, ok := c.BasicAuth()
-		if ok && !validCredentialBytes(user, pass) {
-			ok = false
+		user, pass, result := parseBasicAuth(c.Header("authorization"))
+		switch result {
+		case authMalformed:
+			return errorHandler(c, ErrBadRequest)
+		case authMissing:
+			return errorHandler(c, ErrUnauthorized)
 		}
+
 		var valid bool
-		if ok {
-			if validatorCtx != nil {
-				valid = validatorCtx(c, user, pass)
-			} else {
-				valid = validator(user, pass)
-			}
+		if validatorCtx != nil {
+			valid = validatorCtx(c, user, pass)
+		} else {
+			valid = validator(user, pass)
 		}
-		if !ok || !valid {
+		if !valid {
 			return errorHandler(c, ErrUnauthorized)
 		}
 
 		c.Set(UsernameKey, user)
 		return c.Next()
 	}
+}
+
+// authResult distinguishes the reason a credential parse failed.
+type authResult int
+
+const (
+	authOK        authResult = iota // credentials parsed successfully
+	authMissing                     // no header, wrong scheme, or empty payload
+	authMalformed                   // bad base64, no colon, or invalid bytes
+)
+
+// parseBasicAuth extracts and validates Basic credentials from the raw
+// Authorization header value. It returns authMissing when no Basic
+// credentials are present, authMalformed when the payload is
+// syntactically broken, and authOK on success.
+func parseBasicAuth(auth string) (user, pass string, result authResult) {
+	if auth == "" {
+		result = authMissing
+		return
+	}
+	const prefix = "Basic "
+	if len(auth) < len(prefix) || auth[:len(prefix)] != prefix {
+		result = authMissing
+		return
+	}
+	payload := auth[len(prefix):]
+	if payload == "" {
+		result = authMissing
+		return
+	}
+
+	var buf [128]byte
+	if base64.StdEncoding.DecodedLen(len(payload)) > len(buf) {
+		result = authMalformed
+		return
+	}
+	n, err := base64.StdEncoding.Decode(buf[:],
+		unsafe.Slice(unsafe.StringData(payload), len(payload)))
+	if err != nil {
+		result = authMalformed
+		return
+	}
+
+	decoded := string(buf[:n])
+	i := strings.IndexByte(decoded, ':')
+	if i < 0 {
+		result = authMalformed
+		return
+	}
+
+	user = decoded[:i]
+	pass = decoded[i+1:]
+	if !validCredentialBytes(user, pass) {
+		result = authMalformed
+		return
+	}
+
+	result = authOK
+	return
 }
 
 // validCredentialBytes rejects credentials that contain invalid UTF-8
