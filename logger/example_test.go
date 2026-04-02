@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/goceleris/celeris"
+
 	"github.com/goceleris/middlewares/logger"
 )
 

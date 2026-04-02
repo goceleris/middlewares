@@ -2,10 +2,10 @@ package otel_test
 
 import (
 	"github.com/goceleris/celeris"
-	"github.com/goceleris/middlewares/otel"
-
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
+	"github.com/goceleris/middlewares/otel"
 )
 
 func ExampleNew() {

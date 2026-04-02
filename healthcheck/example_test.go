@@ -2,6 +2,7 @@ package healthcheck_test
 
 import (
 	"github.com/goceleris/celeris"
+
 	"github.com/goceleris/middlewares/healthcheck"
 )
 

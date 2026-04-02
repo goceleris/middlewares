@@ -5,6 +5,7 @@ import (
 
 	"github.com/goceleris/celeris"
 	"github.com/goceleris/celeris/celeristest"
+
 	"github.com/goceleris/middlewares/jwt/internal/jwtparse"
 )
 

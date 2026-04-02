@@ -19,20 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goceleris/celeris/celeristest"
-	"github.com/goceleris/middlewares/basicauth"
-	"github.com/goceleris/middlewares/cors"
-	"github.com/goceleris/middlewares/csrf"
-	"github.com/goceleris/middlewares/keyauth"
-	"github.com/goceleris/middlewares/logger"
-	"github.com/goceleris/middlewares/ratelimit"
-	"github.com/goceleris/middlewares/recovery"
-	"github.com/goceleris/middlewares/requestid"
-	"github.com/goceleris/middlewares/secure"
-	"github.com/goceleris/middlewares/timeout"
-
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/goceleris/celeris/celeristest"
 	"github.com/gofiber/fiber/v3"
 	fiberextractors "github.com/gofiber/fiber/v3/extractors"
 	fiberbasicauth "github.com/gofiber/fiber/v3/middleware/basicauth"
@@ -48,6 +37,17 @@ import (
 	"github.com/labstack/echo/v4"
 	echomw "github.com/labstack/echo/v4/middleware"
 	rscors "github.com/rs/cors"
+
+	"github.com/goceleris/middlewares/basicauth"
+	"github.com/goceleris/middlewares/cors"
+	"github.com/goceleris/middlewares/csrf"
+	"github.com/goceleris/middlewares/keyauth"
+	"github.com/goceleris/middlewares/logger"
+	"github.com/goceleris/middlewares/ratelimit"
+	"github.com/goceleris/middlewares/recovery"
+	"github.com/goceleris/middlewares/requestid"
+	"github.com/goceleris/middlewares/secure"
+	"github.com/goceleris/middlewares/timeout"
 )
 
 // ---------------------------------------------------------------------------

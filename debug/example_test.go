@@ -5,6 +5,7 @@ import (
 
 	"github.com/goceleris/celeris"
 	"github.com/goceleris/celeris/observe"
+
 	"github.com/goceleris/middlewares/debug"
 )
 
