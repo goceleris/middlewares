@@ -769,7 +769,7 @@ func TestNullOriginNotInFuncList(t *testing.T) {
 	funcCalled := false
 	mw := New(Config{
 		AllowOrigins: []string{"http://example.com"},
-		AllowOriginsFunc: func(origin string) bool {
+		AllowOriginsFunc: func(_ string) bool {
 			funcCalled = true
 			return true
 		},
@@ -791,7 +791,7 @@ func TestMalformedOriginRejectedBeforeFunc(t *testing.T) {
 	funcCalled := false
 	mw := New(Config{
 		AllowOrigins: []string{"http://example.com"},
-		AllowOriginsFunc: func(origin string) bool {
+		AllowOriginsFunc: func(_ string) bool {
 			funcCalled = true
 			return true
 		},

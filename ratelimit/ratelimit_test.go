@@ -634,7 +634,7 @@ func TestStoreBasicAllow(t *testing.T) {
 	store := newMockStore(3)
 	mw := New(Config{
 		Store:   store,
-		KeyFunc: func(c *celeris.Context) string { return "test" },
+		KeyFunc: func(_ *celeris.Context) string { return "test" },
 	})
 
 	for range 3 {
@@ -651,7 +651,7 @@ func TestStoreHeaders(t *testing.T) {
 	store := newMockStore(5)
 	mw := New(Config{
 		Store:   store,
-		KeyFunc: func(c *celeris.Context) string { return "test" },
+		KeyFunc: func(_ *celeris.Context) string { return "test" },
 	})
 
 	chain := []celeris.HandlerFunc{mw, okHandler}
@@ -672,7 +672,7 @@ func TestStoreDisableHeaders(t *testing.T) {
 	mw := New(Config{
 		Store:          store,
 		DisableHeaders: true,
-		KeyFunc:        func(c *celeris.Context) string { return "test" },
+		KeyFunc:        func(_ *celeris.Context) string { return "test" },
 	})
 
 	c, _ := celeristest.NewContextT(t, "GET", "/")

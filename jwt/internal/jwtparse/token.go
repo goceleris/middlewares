@@ -328,7 +328,7 @@ func validateClaimsWithLeeway(claims Claims, leeway time.Duration) error {
 	now := time.Now()
 	switch c := claims.(type) {
 	case *RegisteredClaims:
-		if c.ExpiresAt != nil && now.After(c.ExpiresAt.Time.Add(leeway)) {
+		if c.ExpiresAt != nil && now.After(c.ExpiresAt.Add(leeway)) {
 			return ErrTokenExpired
 		}
 		if c.NotBefore != nil && now.Add(leeway).Before(c.NotBefore.Time) {
@@ -338,7 +338,7 @@ func validateClaimsWithLeeway(claims Claims, leeway time.Duration) error {
 			return ErrTokenUsedBeforeIssued
 		}
 	case RegisteredClaims:
-		if c.ExpiresAt != nil && now.After(c.ExpiresAt.Time.Add(leeway)) {
+		if c.ExpiresAt != nil && now.After(c.ExpiresAt.Add(leeway)) {
 			return ErrTokenExpired
 		}
 		if c.NotBefore != nil && now.Add(leeway).Before(c.NotBefore.Time) {

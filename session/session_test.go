@@ -2173,10 +2173,6 @@ func TestMemoryStoreResetThenSave(t *testing.T) {
 
 // --- Context propagation tests ---
 
-type ctxKeyType struct{}
-
-var ctxTestKey = ctxKeyType{}
-
 // contextStore records the context passed to each method for verification.
 type contextStore struct {
 	inner    Store

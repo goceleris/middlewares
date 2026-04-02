@@ -93,7 +93,7 @@ func TestJWKSFetchRSA(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *rsa.PublicKey, got %T", key)
 	}
-	if pub.N.Cmp(privKey.PublicKey.N) != 0 {
+	if pub.N.Cmp(privKey.N) != 0 {
 		t.Fatal("RSA modulus mismatch")
 	}
 }
@@ -125,7 +125,7 @@ func TestJWKSFetchEC(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *ecdsa.PublicKey, got %T", key)
 	}
-	if pub.X.Cmp(privKey.PublicKey.X) != 0 || pub.Y.Cmp(privKey.PublicKey.Y) != 0 {
+	if pub.X.Cmp(privKey.X) != 0 || pub.Y.Cmp(privKey.Y) != 0 {
 		t.Fatal("EC key mismatch")
 	}
 }

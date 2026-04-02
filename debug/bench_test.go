@@ -1,4 +1,4 @@
-package debug //nolint:revive // package name intentionally matches middleware convention
+package debug
 
 import (
 	"testing"

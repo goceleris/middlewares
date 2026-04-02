@@ -126,8 +126,8 @@ type Config struct {
 // DefaultConfig is the default JWT configuration.
 var DefaultConfig = Config{
 	SigningMethod: jwtparse.SigningMethodHS256,
-	TokenLookup:  "header:Authorization:Bearer ",
-	JWKSRefresh:  time.Hour,
+	TokenLookup:   "header:Authorization:Bearer ",
+	JWKSRefresh:   time.Hour,
 }
 
 func applyDefaults(cfg Config) Config {

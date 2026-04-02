@@ -84,7 +84,7 @@ func BenchmarkJWTQueryLookup(b *testing.B) {
 	tokenStr, _ := jwtparse.SignToken(jwtparse.SigningMethodHS256, jwtparse.MapClaims{"sub": "1234"}, secret)
 
 	mw := New(Config{
-		SigningKey:   secret,
+		SigningKey:  secret,
 		TokenLookup: "query:token",
 	})
 	noop := func(_ *celeris.Context) error { return nil }
