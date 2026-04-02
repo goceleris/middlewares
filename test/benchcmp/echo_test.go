@@ -151,6 +151,54 @@ func BenchmarkBodyLimit_Echo(b *testing.B) {
 	}
 }
 
+func BenchmarkSecure_Echo(b *testing.B) {
+	e := newEcho()
+	mw := echomw.Secure()
+	handler := mw(echoNoop)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		req := httptest.NewRequest("GET", "/bench", nil)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		_ = handler(c)
+	}
+}
+
+func BenchmarkKeyAuth_Echo(b *testing.B) {
+	e := newEcho()
+	mw := echomw.KeyAuthWithConfig(echomw.KeyAuthConfig{
+		KeyLookup:  "header:X-Api-Key",
+		AuthScheme: "",
+		Validator: func(key string, _ echo.Context) (bool, error) {
+			return subtle.ConstantTimeCompare([]byte(key), []byte("test-api-key")) == 1, nil
+		},
+	})
+	handler := mw(echoNoop)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		req := httptest.NewRequest("GET", "/bench", nil)
+		req.Header.Set("X-Api-Key", "test-api-key")
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		_ = handler(c)
+	}
+}
+
+func BenchmarkCSRF_Echo(b *testing.B) {
+	e := newEcho()
+	e.Use(echomw.CSRF())
+	e.GET("/bench", echoNoop)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		req := httptest.NewRequest("GET", "/bench", nil)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+	}
+}
+
 func BenchmarkBasicAuth_Echo(b *testing.B) {
 	e := newEcho()
 	mw := echomw.BasicAuth(func(user, pass string, _ echo.Context) (bool, error) {

@@ -194,6 +194,40 @@ func BenchmarkBodyLimit_Stdlib(b *testing.B) {
 	}
 }
 
+func BenchmarkSecure_Stdlib(b *testing.B) {
+	handler := stdlibSecureHeaders(stdlibNoop)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		req := httptest.NewRequest("GET", "/bench", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkKeyAuth_Stdlib(b *testing.B) {
+	handler := stdlibKeyAuth("test-api-key", stdlibNoop)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		req := httptest.NewRequest("GET", "/bench", nil)
+		req.Header.Set("X-Api-Key", "test-api-key")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkCSRF_Stdlib(b *testing.B) {
+	handler := stdlibCSRF(stdlibNoop)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		req := httptest.NewRequest("GET", "/bench", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+}
+
 func BenchmarkBasicAuth_Stdlib(b *testing.B) {
 	handler := stdlibBasicAuthMiddleware("admin", "secret")(stdlibNoop)
 	creds := "Basic " + base64.StdEncoding.EncodeToString([]byte("admin:secret"))

@@ -92,6 +92,40 @@ func BenchmarkTimeout_Chi(b *testing.B) {
 	}
 }
 
+func BenchmarkSecure_Chi(b *testing.B) {
+	handler := stdlibSecureHeaders(chiNoop)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		req := httptest.NewRequest("GET", "/bench", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkKeyAuth_Chi(b *testing.B) {
+	handler := chiKeyAuth("test-api-key")(chiNoop)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		req := httptest.NewRequest("GET", "/bench", nil)
+		req.Header.Set("X-Api-Key", "test-api-key")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkCSRF_Chi(b *testing.B) {
+	handler := stdlibCSRF(chiNoop)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		req := httptest.NewRequest("GET", "/bench", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+}
+
 func BenchmarkBasicAuth_Chi(b *testing.B) {
 	// Chi doesn't have built-in basic auth middleware; hand-written for fairness.
 	handler := chiBasicAuthMiddleware("admin", "secret")(chiNoop)
