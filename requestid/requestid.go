@@ -46,7 +46,7 @@ func New(config ...Config) celeris.HandlerFunc {
 
 	header := cfg.Header
 	gen := cfg.Generator
-	trustProxy := cfg.TrustProxy == nil || *cfg.TrustProxy
+	trustProxy := !cfg.DisableTrustProxy
 	afterGenerate := cfg.AfterGenerate
 
 	fallbackGen := defaultGenerator.UUID

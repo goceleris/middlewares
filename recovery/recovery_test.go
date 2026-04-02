@@ -104,7 +104,8 @@ func TestRecoveryCustomHandler(t *testing.T) {
 func TestRecoveryLogsStack(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{Logger: log, StackSize: 4096, LogStack: true})
+	// Zero-value DisableLogStack = false means stacks are logged by default.
+	mw := New(Config{Logger: log, StackSize: 4096})
 	handler := func(_ *celeris.Context) error {
 		panic("stack test")
 	}
@@ -121,7 +122,7 @@ func TestRecoveryLogsStack(t *testing.T) {
 func TestRecoveryNoStack(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{Logger: log, LogStack: false})
+	mw := New(Config{Logger: log, DisableLogStack: true})
 	handler := func(_ *celeris.Context) error {
 		panic("no stack")
 	}
@@ -143,7 +144,7 @@ func TestRecoveryPassesError(t *testing.T) {
 }
 
 func TestErrAbortHandlerRepanics(t *testing.T) {
-	mw := New(Config{LogStack: false})
+	mw := New(Config{DisableLogStack: true})
 	handler := func(_ *celeris.Context) error {
 		panic(http.ErrAbortHandler)
 	}
@@ -161,7 +162,7 @@ func TestErrAbortHandlerRepanics(t *testing.T) {
 func TestRecoveryLogsMethodAndPath(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{Logger: log, StackSize: 4096, LogStack: true})
+	mw := New(Config{Logger: log, StackSize: 4096})
 	handler := func(_ *celeris.Context) error {
 		panic("method path test")
 	}
@@ -179,7 +180,9 @@ func TestRecoveryLogsMethodAndPath(t *testing.T) {
 func TestRecoveryLogsMethodAndPathNoStack(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{Logger: log, LogStack: true, StackSize: 0})
+	// Stacks logged by default (DisableLogStack=false), but StackSize=0
+	// means no stack capture — only error/method/path logged.
+	mw := New(Config{Logger: log, StackSize: 0})
 	handler := func(_ *celeris.Context) error {
 		panic("no stack method path")
 	}
@@ -197,7 +200,7 @@ func TestRecoveryLogsMethodAndPathNoStack(t *testing.T) {
 func TestStackAllCapturesAllGoroutines(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{Logger: log, StackSize: 65536, LogStack: true, StackAll: true})
+	mw := New(Config{Logger: log, StackSize: 65536, StackAll: true})
 
 	// Spin up a background goroutine that will show up in the stack dump.
 	ready := make(chan struct{})
@@ -249,7 +252,7 @@ func TestNestedRecoveryPanic(t *testing.T) {
 func TestBrokenPipeHandlerReceivesError(t *testing.T) {
 	var receivedErr any
 	mw := New(Config{
-		LogStack: false,
+		DisableLogStack: true,
 		BrokenPipeHandler: func(c *celeris.Context, err any) error {
 			receivedErr = err
 			return c.NoContent(499)
@@ -283,7 +286,6 @@ func TestDisableBrokenPipeLogSuppressesLog(t *testing.T) {
 	log := slog.New(slog.NewJSONHandler(buf, nil))
 	mw := New(Config{
 		Logger:               log,
-		LogStack:             true,
 		DisableBrokenPipeLog: true,
 	})
 	handler := func(_ *celeris.Context) error {
@@ -314,10 +316,7 @@ func TestDisableBrokenPipeLogSuppressesLog(t *testing.T) {
 func TestBrokenPipeLogEnabledByDefault(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{
-		Logger:   log,
-		LogStack: true,
-	})
+	mw := New(Config{Logger: log})
 	handler := func(_ *celeris.Context) error {
 		panic(&net.OpError{Op: "write", Err: &errBrokenPipe{}})
 	}
@@ -328,11 +327,51 @@ func TestBrokenPipeLogEnabledByDefault(t *testing.T) {
 	}
 }
 
+// --- DisableLogStack tests ---
+
+func TestDisableLogStackZeroValueLogsStack(t *testing.T) {
+	// The whole point of the rename: zero-value Config should log stacks.
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, nil))
+	mw := New(Config{Logger: log})
+	handler := func(_ *celeris.Context) error { panic("zero-value test") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "GET", "/zero-value")
+	if !strings.Contains(buf.String(), "goroutine") {
+		t.Fatalf("expected stack trace with zero-value DisableLogStack, got: %s", buf.String())
+	}
+}
+
+func TestDisableLogStackTrueSuppressesLog(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, nil))
+	mw := New(Config{Logger: log, DisableLogStack: true})
+	handler := func(_ *celeris.Context) error { panic("suppress test") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "GET", "/suppress")
+	if buf.Len() > 0 {
+		t.Fatalf("expected no log with DisableLogStack=true, got: %s", buf.String())
+	}
+}
+
+func TestDeprecatedLogStackOverridesDisableLogStack(t *testing.T) {
+	// LogStack: true should force DisableLogStack to false even if both are set.
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, nil))
+	mw := New(Config{Logger: log, DisableLogStack: true, LogStack: true})
+	handler := func(_ *celeris.Context) error { panic("compat test") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "GET", "/compat")
+	if !strings.Contains(buf.String(), "goroutine") {
+		t.Fatalf("expected stack trace when LogStack=true overrides DisableLogStack, got: %s", buf.String())
+	}
+}
+
 func FuzzRecoveryPanicValues(f *testing.F) {
 	f.Add("string panic")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, val string) {
-		mw := New(Config{LogStack: false})
+		mw := New(Config{DisableLogStack: true})
 		handler := func(_ *celeris.Context) error {
 			panic(val)
 		}

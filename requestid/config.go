@@ -16,11 +16,18 @@ type Config struct {
 	// Header is the header name to read/write. Default: "x-request-id".
 	Header string
 
-	// TrustProxy controls whether the inbound request header is accepted.
-	// When true (default), a valid inbound header is propagated as-is.
-	// When false, the inbound header is always ignored and a fresh ID is
-	// generated. Set to false when running behind untrusted clients to
-	// prevent request ID spoofing.
+	// DisableTrustProxy, when true, ignores inbound request ID headers
+	// and always generates a fresh ID. This prevents request ID spoofing
+	// from untrusted clients. Default: false (inbound headers are trusted).
+	DisableTrustProxy bool
+
+	// TrustProxy is deprecated: use DisableTrustProxy instead.
+	// When explicitly set to a non-nil *bool, it overrides DisableTrustProxy
+	// in applyDefaults for backward compatibility:
+	//   *TrustProxy == true  → DisableTrustProxy = false
+	//   *TrustProxy == false → DisableTrustProxy = true
+	//
+	// Deprecated: Use DisableTrustProxy.
 	TrustProxy *bool
 
 	// AfterGenerate is called after a request ID is generated or extracted.
@@ -43,6 +50,10 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.Header == "" {
 		cfg.Header = "x-request-id"
+	}
+	// Backward compatibility: TrustProxy (deprecated) overrides DisableTrustProxy.
+	if cfg.TrustProxy != nil {
+		cfg.DisableTrustProxy = !*cfg.TrustProxy
 	}
 	return cfg
 }

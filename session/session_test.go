@@ -2343,3 +2343,144 @@ func TestPooledSessionCtxNilAfterReturn(t *testing.T) {
 		t.Fatal("expected sess.ctx to be nil after pool return")
 	}
 }
+
+// --- Handler.GetByID tests ---
+
+func TestNewHandlerMiddlewareWorks(t *testing.T) {
+	h := NewHandler()
+	mw := h.Middleware()
+	var gotFresh bool
+	handler := func(c *celeris.Context) error {
+		s := FromContext(c)
+		gotFresh = s.IsFresh()
+		s.Set("user", "admin")
+		return nil
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	if !gotFresh {
+		t.Fatal("expected fresh session from NewHandler middleware")
+	}
+}
+
+func TestGetByIDExistingSession(t *testing.T) {
+	store := NewMemoryStore()
+	sid := hexID(0xd1)
+	_ = store.Save(context.Background(), sid, map[string]any{"user": "admin", "role": "editor"}, time.Hour)
+
+	h := NewHandler(Config{Store: store})
+	sess, err := h.GetByID(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected non-nil session")
+	}
+	if sess.ID() != sid {
+		t.Fatalf("ID: got %q, want %q", sess.ID(), sid)
+	}
+	user, ok := sess.Get("user")
+	if !ok || user != "admin" {
+		t.Fatalf("expected user=admin, got (%v, %v)", user, ok)
+	}
+	role, ok := sess.Get("role")
+	if !ok || role != "editor" {
+		t.Fatalf("expected role=editor, got (%v, %v)", role, ok)
+	}
+}
+
+func TestGetByIDNonExistentSession(t *testing.T) {
+	store := NewMemoryStore()
+	h := NewHandler(Config{Store: store})
+	sess, err := h.GetByID(context.Background(), "nonexistent")
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if sess != nil {
+		t.Fatal("expected nil session for nonexistent ID")
+	}
+}
+
+func TestGetByIDStoreError(t *testing.T) {
+	fs := &failStore{getErr: errors.New("store error")}
+	h := NewHandler(Config{Store: fs})
+	sess, err := h.GetByID(context.Background(), "any-id")
+	if err == nil || err.Error() != "store error" {
+		t.Fatalf("expected 'store error', got %v", err)
+	}
+	if sess != nil {
+		t.Fatal("expected nil session on store error")
+	}
+}
+
+func TestGetByIDSessionIsReadOnly(t *testing.T) {
+	store := NewMemoryStore()
+	sid := hexID(0xd2)
+	_ = store.Save(context.Background(), sid, map[string]any{"counter": 1}, time.Hour)
+
+	h := NewHandler(Config{Store: store})
+	sess, err := h.GetByID(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+
+	// Verify session has no store/ctx/keyGen — it is a bare read-only struct.
+	if sess.store != nil {
+		t.Fatal("expected store to be nil on read-only session")
+	}
+	if sess.ctx != nil {
+		t.Fatal("expected ctx to be nil on read-only session")
+	}
+	if sess.keyGen != nil {
+		t.Fatal("expected keyGen to be nil on read-only session")
+	}
+}
+
+func TestGetByIDIntegrationWithMiddleware(t *testing.T) {
+	store := NewMemoryStore()
+	h := NewHandler(Config{Store: store})
+	mw := h.Middleware()
+	var sid string
+
+	// Create a session via the middleware.
+	handler := func(c *celeris.Context) error {
+		s := FromContext(c)
+		s.Set("user", "admin")
+		sid = s.ID()
+		return nil
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+
+	// Read it back via GetByID.
+	sess, err := h.GetByID(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected session created by middleware to be readable via GetByID")
+	}
+	user, ok := sess.Get("user")
+	if !ok || user != "admin" {
+		t.Fatalf("expected user=admin from GetByID, got (%v, %v)", user, ok)
+	}
+}
+
+func TestGetByIDExpiredSession(t *testing.T) {
+	store := NewMemoryStore()
+	sid := hexID(0xd3)
+	_ = store.Save(context.Background(), sid, map[string]any{"k": "v"}, time.Nanosecond)
+
+	h := NewHandler(Config{Store: store})
+	time.Sleep(time.Millisecond)
+
+	sess, err := h.GetByID(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if sess != nil {
+		t.Fatal("expected nil session for expired entry")
+	}
+}

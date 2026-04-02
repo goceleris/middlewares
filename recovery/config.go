@@ -20,14 +20,21 @@ type Config struct {
 	BrokenPipeHandler func(c *celeris.Context, err any) error
 
 	// StackSize is the max bytes for stack trace capture. Default: 4096.
-	// To disable stack capture, set LogStack to false.
+	// To disable stack capture, set DisableLogStack to true.
 	StackSize int
 
-	// LogStack controls whether the stack trace is logged. Default: true.
-	// NOTE: Go cannot distinguish an explicit false from an unset bool
-	// zero value. When constructing a partial Config, you must explicitly
-	// set LogStack: true if you want stack logging — otherwise it defaults
-	// to false (the zero value), not the DefaultConfig value.
+	// DisableLogStack disables stack trace logging on panic recovery.
+	// Default: false (stacks are logged). This replaces the old LogStack
+	// field, fixing the zero-value problem where an unset bool defaulted
+	// to "no logging" instead of "logging enabled".
+	DisableLogStack bool
+
+	// LogStack is deprecated: use DisableLogStack instead. When set to
+	// true explicitly, it overrides DisableLogStack to false (stacks are
+	// logged). When set to false explicitly, it sets DisableLogStack to
+	// true (stacks are suppressed). In new code, use DisableLogStack only.
+	//
+	// Deprecated: Use DisableLogStack.
 	LogStack bool
 
 	// StackAll captures all goroutine stacks, not just the current one.
@@ -45,7 +52,6 @@ type Config struct {
 // DefaultConfig is the default recovery configuration.
 var DefaultConfig = Config{
 	StackSize: 4096,
-	LogStack:  true,
 }
 
 func applyDefaults(cfg Config) Config {
@@ -57,6 +63,10 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	// Backward compatibility: LogStack (deprecated) overrides DisableLogStack.
+	if cfg.LogStack {
+		cfg.DisableLogStack = false
 	}
 	return cfg
 }

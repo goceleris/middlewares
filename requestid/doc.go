@@ -23,18 +23,22 @@
 // accepted, with a maximum length of 128 characters. Invalid or
 // oversized IDs are silently replaced with a fresh UUID.
 //
-// # TrustProxy
+// # DisableTrustProxy (replaces TrustProxy)
 //
-// [Config].TrustProxy controls whether the inbound request header is
-// accepted. When true (default), a valid inbound header is propagated
-// as-is. When false, the inbound header is always ignored and a fresh
-// ID is generated. Set to false when running behind untrusted clients
-// to prevent request ID spoofing:
+// [Config].DisableTrustProxy controls whether the inbound request header
+// is accepted. When false (default), a valid inbound header is propagated
+// as-is. When true, the inbound header is always ignored and a fresh ID
+// is generated. Set to true when running behind untrusted clients to
+// prevent request ID spoofing:
 //
-//	f := false
 //	server.Use(requestid.New(requestid.Config{
-//	    TrustProxy: &f,
+//	    DisableTrustProxy: true,
 //	}))
+//
+// The old [Config].TrustProxy *bool field is retained as a deprecated
+// backward-compatibility alias. When set to a non-nil value, it overrides
+// DisableTrustProxy in applyDefaults (*TrustProxy==false maps to
+// DisableTrustProxy=true and vice versa).
 //
 // # Retrieving the Request ID
 //

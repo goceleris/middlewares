@@ -18,14 +18,18 @@
 //	}))
 //
 // Set [Config].StackSize to 0 to disable stack trace capture.
-// Set [Config].LogStack to false to suppress panic logging entirely.
+// Set [Config].DisableLogStack to true to suppress panic logging entirely.
 //
-// # LogStack Zero-Value Limitation
+// # DisableLogStack (replaces LogStack)
 //
-// Because Go's bool zero value is false, a partial Config literal such as
-// recovery.Config{StackSize: 8192} will have LogStack=false. This is a
-// fundamental Go limitation (no distinction between unset and explicit false).
-// If you want stack logging, always set LogStack: true explicitly.
+// The old [Config].LogStack field suffered from a zero-value problem:
+// because Go's bool zero value is false, a partial Config literal such as
+// recovery.Config{StackSize: 8192} silently disabled stack logging.
+//
+// [Config].DisableLogStack inverts the polarity so the zero value (false)
+// means "stacks are logged" — the desired default. The old LogStack field
+// is retained as a deprecated backward-compatibility alias: setting
+// LogStack: true forces DisableLogStack to false in applyDefaults.
 //
 // # Special Panic Types
 //
