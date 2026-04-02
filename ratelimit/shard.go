@@ -89,6 +89,20 @@ func (l *shardedLimiter) allow(key string, now int64) (bool, int, int64) {
 	return true, remaining, reset
 }
 
+// undo adds a token back to the bucket for the given key, capped at burst.
+func (l *shardedLimiter) undo(key string) {
+	idx := fnv1a(key) & l.mask
+	s := &l.shards[idx]
+	s.mu.Lock()
+	if b, ok := s.buckets[key]; ok {
+		b.tokens++
+		if b.tokens > float64(l.burst) {
+			b.tokens = float64(l.burst)
+		}
+	}
+	s.mu.Unlock()
+}
+
 func (l *shardedLimiter) cleanup(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
