@@ -843,7 +843,7 @@ func TestMalformedOriginRejectedBeforeRequestFunc(t *testing.T) {
 	funcCalled := false
 	mw := New(Config{
 		AllowOrigins: []string{"http://example.com"},
-		AllowOriginRequestFunc: func(c *celeris.Context, origin string) bool {
+		AllowOriginRequestFunc: func(_ *celeris.Context, origin string) bool {
 			funcCalled = true
 			return true
 		},

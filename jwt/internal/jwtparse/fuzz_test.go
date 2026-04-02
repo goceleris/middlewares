@@ -12,9 +12,9 @@ func FuzzParse(f *testing.F) {
 
 	secret := []byte("test-secret-key-32-bytes-long!!!")
 	p := NewParser()
-	kf := func(t *Token) (any, error) { return secret, nil }
+	kf := func(_ *Token) (any, error) { return secret, nil }
 
-	f.Fuzz(func(t *testing.T, s string) {
+	f.Fuzz(func(_ *testing.T, s string) {
 		// Must never panic.
 		_, _ = p.Parse(s, kf)
 	})
