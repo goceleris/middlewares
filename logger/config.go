@@ -40,6 +40,17 @@ type Config struct {
 	// in log output. Values are replaced with "[REDACTED]". Header names
 	// are matched case-insensitively.
 	SensitiveHeaders []string
+
+	// LogHost includes the request Host header.
+	LogHost bool
+	// LogUserAgent includes the User-Agent header.
+	LogUserAgent bool
+	// LogReferer includes the Referer header.
+	LogReferer bool
+	// LogProtocol includes the request protocol (e.g., "HTTP/1.1").
+	LogProtocol bool
+	// LogRoute includes the matched route pattern (FullPath).
+	LogRoute bool
 }
 
 // DefaultConfig is the default logger configuration.

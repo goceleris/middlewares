@@ -243,12 +243,11 @@ func TestAppendDuration_EdgeCases(t *testing.T) {
 		{"very large", 24 * time.Hour, "86400.000s", false},
 		{"sub-microsecond", 500 * time.Nanosecond, "500.0ns", false},
 		{"1.5ms", 1500 * time.Microsecond, "1.5ms", false},
-		// BUG: negative durations fall through to nanoseconds because
-		// comparisons use < which is always true for negative values.
-		{"negative 1ms (BUG)", -time.Millisecond, "-1.0ms", true},
-		{"negative 500ns", -500 * time.Nanosecond, "-500.0ns", false},
-		{"negative 50us (BUG)", -50 * time.Microsecond, "-50.0\u00b5s", true},
-		{"negative 2s (BUG)", -2 * time.Second, "-2.000s", true},
+		// Negative durations fall back to Duration.String().
+		{"negative 1ms", -time.Millisecond, "-1ms", false},
+		{"negative 500ns", -500 * time.Nanosecond, "-500ns", false},
+		{"negative 50us", -50 * time.Microsecond, "-50\u00b5s", false},
+		{"negative 2s", -2 * time.Second, "-2s", false},
 	}
 
 	for _, tc := range tests {
