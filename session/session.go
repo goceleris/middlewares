@@ -13,16 +13,16 @@ var sessionPool = sync.Pool{New: func() any { return &Session{} }}
 
 // Session holds per-request session data backed by a [Store].
 type Session struct {
-	id          string
-	data        map[string]any
-	store       Store
-	ctx         context.Context
-	expiry      time.Duration
+	id           string
+	data         map[string]any
+	store        Store
+	ctx          context.Context
+	expiry       time.Duration
 	idleOverride time.Duration // per-session idle timeout override; 0 = use config default
-	keyGen      func() string
-	modified    bool
-	fresh       bool // true for newly created sessions
-	destroyed   bool
+	keyGen       func() string
+	modified     bool
+	fresh        bool // true for newly created sessions
+	destroyed    bool
 }
 
 // Get returns the value for key from the session data.
