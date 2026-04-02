@@ -30,7 +30,7 @@ func New(config ...Config) celeris.HandlerFunc {
 	handler := cfg.ErrorHandler
 	brokenPipeHandler := cfg.BrokenPipeHandler
 	stackSize := cfg.StackSize
-	logStack := cfg.LogStack
+	logStack := !cfg.DisableLogStack
 	stackAll := cfg.StackAll
 	disableBrokenPipeLog := cfg.DisableBrokenPipeLog
 	log := cfg.Logger

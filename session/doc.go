@@ -112,6 +112,25 @@
 // from the cookie. The cookie then becomes browser-session-scoped and is
 // deleted when the browser closes.
 //
+// # Out-of-Band Access via Handler
+//
+// [NewHandler] returns a [Handler] that provides both the middleware
+// (via [Handler.Middleware]) and out-of-band session access via
+// [Handler.GetByID]. GetByID retrieves a read-only [Session] by its
+// raw ID without an HTTP context, which is useful for admin tools,
+// background jobs, or WebSocket handlers:
+//
+//	h := session.NewHandler(session.Config{...})
+//	server.Use(h.Middleware())
+//
+//	// In an admin endpoint or background job:
+//	s, err := h.GetByID(ctx, sessionID)
+//	if err != nil { /* store error */ }
+//	if s == nil { /* not found */ }
+//	user, _ := s.Get("user")
+//
+// The returned Session is read-only: changes will NOT be auto-saved.
+//
 // # Store.Get by ID
 //
 // The [Store] interface's Get method accepts a raw session ID string,

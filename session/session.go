@@ -198,6 +198,52 @@ func validSessionID(s string, idLen int) bool {
 	return true
 }
 
+// Handler holds the session middleware and provides methods for out-of-band
+// session access (e.g., admin tools, background jobs).
+type Handler struct {
+	store Store
+	mw    celeris.HandlerFunc
+}
+
+// Middleware returns the [celeris.HandlerFunc] to pass to server.Use().
+func (h *Handler) Middleware() celeris.HandlerFunc { return h.mw }
+
+// GetByID retrieves a session by its raw ID without an HTTP context.
+// This is intended for admin tools, background jobs, or WebSocket handlers
+// that need to inspect session data outside of the middleware pipeline.
+//
+// The returned [Session] is read-only: changes will NOT be auto-saved.
+// Callers must not call Set, Delete, Clear, or Save on it.
+// Returns nil and no error if the session does not exist.
+func (h *Handler) GetByID(ctx context.Context, id string) (*Session, error) {
+	data, err := h.store.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, nil
+	}
+	return &Session{
+		id:   id,
+		data: data,
+	}, nil
+}
+
+// NewHandler creates a session [Handler] that exposes both the middleware
+// and out-of-band session access via [Handler.GetByID].
+func NewHandler(config ...Config) *Handler {
+	cfg := DefaultConfig
+	if len(config) > 0 {
+		cfg = config[0]
+	}
+	cfg = applyDefaults(cfg)
+	cfg.validate()
+
+	h := &Handler{store: cfg.Store}
+	h.mw = newMiddleware(cfg)
+	return h
+}
+
 // New creates a session middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
 	cfg := DefaultConfig
@@ -206,7 +252,10 @@ func New(config ...Config) celeris.HandlerFunc {
 	}
 	cfg = applyDefaults(cfg)
 	cfg.validate()
+	return newMiddleware(cfg)
+}
 
+func newMiddleware(cfg Config) celeris.HandlerFunc {
 	skipMap := make(map[string]struct{}, len(cfg.SkipPaths))
 	for _, p := range cfg.SkipPaths {
 		skipMap[p] = struct{}{}
