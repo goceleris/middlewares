@@ -87,6 +87,21 @@ type Config struct {
 	// LogCookies includes cookie names (not values, for security) as
 	// "cookies" attr.
 	LogCookies bool
+	// LogBytesIn includes the request content length as "bytes_in" attr.
+	LogBytesIn bool
+	// LogScheme includes the request scheme (e.g., "https") as "scheme" attr.
+	LogScheme bool
+	// LogResponseHeaders lists specific response header names whose values
+	// should be included in the log entry. Header names are matched
+	// case-insensitively. Each matched header is logged as
+	// "resp_header.<lowercased-name>".
+	LogResponseHeaders []string
+
+	// SensitiveFormFields lists form field names whose values should be
+	// redacted when LogFormValues is true. Values are replaced with
+	// "[REDACTED]". Field names are matched case-insensitively.
+	// Default nil means no redaction.
+	SensitiveFormFields []string
 }
 
 // DefaultConfig is the default logger configuration.

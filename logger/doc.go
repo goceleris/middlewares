@@ -58,4 +58,12 @@
 // Set [Config].Skip to bypass the middleware dynamically, or
 // [Config].SkipPaths for exact-match path exclusions.
 //
+// # Performance
+//
+// [FastHandler] formats log records directly into a pooled byte buffer,
+// avoiding fmt.Sprintf and time.Format entirely. Timestamps are rendered
+// with a hand-rolled RFC 3339 formatter, and integer/duration/bool values
+// use strconv.Append* functions. The default configuration with no opt-in
+// fields (LogHost, LogUserAgent, etc.) achieves zero heap allocations per
+// request in steady state.
 package logger
