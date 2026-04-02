@@ -33,15 +33,18 @@ func New(config ...Config) celeris.HandlerFunc {
 			return c.Next()
 		}
 
+		// Normalize origin for case-insensitive comparison.
+		normOrigin := normalizeOrigin(origin)
+
 		// Check if origin is allowed.
 		// Order: allowAll → exactMap → wildcardPatterns → AllowOriginsFunc → AllowOriginRequestFunc
 		allowed := p.allowAllOrigins
 		if !allowed {
-			_, allowed = p.originSet[origin]
+			_, allowed = p.originSet[normOrigin]
 		}
 		if !allowed {
 			for _, wp := range p.wildcardPatterns {
-				if wp.match(origin) {
+				if wp.match(normOrigin) {
 					allowed = true
 					break
 				}
@@ -76,7 +79,13 @@ func New(config ...Config) celeris.HandlerFunc {
 		// Preflight: OPTIONS with Access-Control-Request-Method header.
 		if c.Method() == "OPTIONS" && c.Header("access-control-request-method") != "" {
 			c.SetHeader("access-control-allow-methods", p.allowMethods)
-			c.SetHeader("access-control-allow-headers", p.allowHeaders)
+			if p.mirrorRequestHeaders {
+				if reqHeaders := c.Header("access-control-request-headers"); reqHeaders != "" {
+					c.SetHeader("access-control-allow-headers", reqHeaders)
+				}
+			} else {
+				c.SetHeader("access-control-allow-headers", p.allowHeaders)
+			}
 			if p.maxAge != "" {
 				c.SetHeader("access-control-max-age", p.maxAge)
 			}

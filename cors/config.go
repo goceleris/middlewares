@@ -1,6 +1,7 @@
 package cors
 
 import (
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -65,9 +66,6 @@ func applyDefaults(cfg Config) Config {
 	if len(cfg.AllowMethods) == 0 {
 		cfg.AllowMethods = DefaultConfig.AllowMethods
 	}
-	if len(cfg.AllowHeaders) == 0 {
-		cfg.AllowHeaders = DefaultConfig.AllowHeaders
-	}
 	return cfg
 }
 
@@ -116,6 +114,7 @@ type precomputed struct {
 	allowOriginRequestFunc func(*celeris.Context, string) bool
 	allowMethods           string
 	allowHeaders           string
+	mirrorRequestHeaders   bool
 	exposeHeaders          string
 	maxAge                 string
 	preflightVary          string
@@ -125,15 +124,24 @@ type precomputed struct {
 func precompute(cfg Config) precomputed {
 	p := precomputed{
 		allowMethods:           strings.Join(cfg.AllowMethods, ", "),
-		allowHeaders:           strings.Join(cfg.AllowHeaders, ", "),
 		allowOriginsFunc:       cfg.AllowOriginsFunc,
 		allowOriginRequestFunc: cfg.AllowOriginRequestFunc,
 		allowPrivateNetwork:    cfg.AllowPrivateNetwork,
 	}
+
+	// Mirror request headers when AllowHeaders is not configured.
+	if len(cfg.AllowHeaders) == 0 {
+		p.mirrorRequestHeaders = true
+	} else {
+		p.allowHeaders = strings.Join(cfg.AllowHeaders, ", ")
+	}
+
 	if len(cfg.ExposeHeaders) > 0 {
 		p.exposeHeaders = strings.Join(cfg.ExposeHeaders, ", ")
 	}
-	if cfg.MaxAge > 0 {
+	if cfg.MaxAge < 0 {
+		p.maxAge = "0"
+	} else if cfg.MaxAge > 0 {
 		p.maxAge = strconv.Itoa(cfg.MaxAge)
 	}
 
@@ -151,13 +159,14 @@ func precompute(cfg Config) precomputed {
 				if strings.Count(o, "*") > 1 {
 					panic("cors: origin pattern must contain at most one wildcard: " + o)
 				}
-				idx := strings.Index(o, "*")
+				norm := normalizeOrigin(o)
+				idx := strings.Index(norm, "*")
 				p.wildcardPatterns = append(p.wildcardPatterns, wildcardPattern{
-					prefix: o[:idx],
-					suffix: o[idx+1:],
+					prefix: norm[:idx],
+					suffix: norm[idx+1:],
 				})
 			} else {
-				p.originSet[o] = struct{}{}
+				p.originSet[normalizeOrigin(o)] = struct{}{}
 			}
 		}
 	}
@@ -169,4 +178,17 @@ func precompute(cfg Config) precomputed {
 	p.preflightVary = vary
 
 	return p
+}
+
+// normalizeOrigin lowercases the scheme and host of a URL-shaped origin.
+// Plain values (e.g. "*") are returned unchanged.
+func normalizeOrigin(raw string) string {
+	if !strings.Contains(raw, "://") {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
 }

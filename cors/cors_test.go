@@ -559,3 +559,163 @@ func FuzzHeaderValues(f *testing.F) {
 		_ = mw(ctx)
 	})
 }
+
+// --- Origin Normalization ---
+
+func TestOriginNormalizationCaseInsensitive(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Uppercase scheme+host should match lowercase configured origin.
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "HTTP://EXAMPLE.COM"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "HTTP://EXAMPLE.COM")
+}
+
+func TestOriginNormalizationMixedCase(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"HTTP://Example.COM"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Lowercase incoming origin should match mixed-case configured origin.
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "http://example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "http://example.com")
+}
+
+func TestOriginNormalizationWildcard(t *testing.T) {
+	// Wildcard "*" should not be affected by normalization.
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "HTTP://ANYTHING.COM"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "*")
+}
+
+func TestOriginNormalizationSubdomainWildcard(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"https://*.EXAMPLE.COM"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "https://api.example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "https://api.example.com")
+}
+
+func TestOriginNormalizationDeniedStillDenied(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "HTTP://EVIL.COM"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+}
+
+func TestOriginNormalizationWithPort(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://LOCALHOST:8080"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "http://localhost:8080"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "http://localhost:8080")
+}
+
+// --- Mirror Access-Control-Request-Headers ---
+
+func TestMirrorRequestHeadersWhenNotConfigured(t *testing.T) {
+	// AllowHeaders not set — should mirror the request headers.
+	mw := New(Config{
+		AllowOrigins: []string{"http://example.com"},
+		AllowHeaders: nil,
+	})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "POST"),
+		celeristest.WithHeader("access-control-request-headers", "X-Custom, X-Token"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 204)
+	testutil.AssertHeader(t, rec, "access-control-allow-headers", "X-Custom, X-Token")
+}
+
+func TestMirrorRequestHeadersNoACRH(t *testing.T) {
+	// AllowHeaders not set and no ACRH header — no allow-headers in response.
+	mw := New(Config{
+		AllowOrigins: []string{"http://example.com"},
+		AllowHeaders: nil,
+	})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "POST"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 204)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-headers")
+}
+
+func TestExplicitAllowHeadersNotMirrored(t *testing.T) {
+	// When AllowHeaders IS configured, mirror should NOT apply.
+	mw := New(Config{
+		AllowOrigins: []string{"http://example.com"},
+		AllowHeaders: []string{"X-Only-This"},
+	})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "POST"),
+		celeristest.WithHeader("access-control-request-headers", "X-Custom, X-Token"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 204)
+	testutil.AssertHeader(t, rec, "access-control-allow-headers", "X-Only-This")
+}
+
+func TestDefaultConfigDoesNotMirror(t *testing.T) {
+	// Default config has AllowHeaders set — should use those, not mirror.
+	mw := New()
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "POST"),
+		celeristest.WithHeader("access-control-request-headers", "X-Custom"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeaderContains(t, rec, "access-control-allow-headers", "Content-Type")
+	testutil.AssertHeaderContains(t, rec, "access-control-allow-headers", "Authorization")
+}
+
+// --- Negative MaxAge ---
+
+func TestNegativeMaxAgeSendsZero(t *testing.T) {
+	mw := New(Config{MaxAge: -1})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "GET"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-max-age", "0")
+}
+
+func TestNegativeMaxAgeLargeValue(t *testing.T) {
+	mw := New(Config{MaxAge: -100})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "GET"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-max-age", "0")
+}
+
+func TestZeroMaxAgeStillOmitted(t *testing.T) {
+	mw := New(Config{MaxAge: 0})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "GET"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-max-age")
+}
+
+func TestPositiveMaxAgeUnchanged(t *testing.T) {
+	mw := New(Config{MaxAge: 600})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "GET"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-max-age", "600")
+}
