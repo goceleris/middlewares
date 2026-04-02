@@ -609,6 +609,34 @@ func TestTimeoutErrorsPreemptiveWrapped(t *testing.T) {
 	testutil.AssertHTTPError(t, err, 503)
 }
 
+func TestValidateTimeoutMustBePositiveOrTimeoutFuncSet(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for zero Timeout without TimeoutFunc")
+		}
+		msg, ok := r.(string)
+		if !ok || msg != "timeout: Timeout must be positive or TimeoutFunc must be set" {
+			t.Fatalf("unexpected panic message: %v", r)
+		}
+	}()
+	// Both applyDefaults and validate run. applyDefaults sets Timeout to 5s
+	// for zero/negative, so we must defeat that. But actually, applyDefaults
+	// runs first and fixes Timeout to 5s, so this won't panic via New().
+	// We call validate() directly to test the guard.
+	cfg := Config{Timeout: 0}
+	cfg.validate()
+}
+
+func TestValidateTimeoutFuncSetBypassesPanic(t *testing.T) {
+	// Should NOT panic: TimeoutFunc is set even though Timeout <= 0.
+	cfg := Config{
+		Timeout:     0,
+		TimeoutFunc: func(_ *celeris.Context) time.Duration { return time.Second },
+	}
+	cfg.validate()
+}
+
 func FuzzTimeoutDurations(f *testing.F) {
 	f.Add(int64(0))
 	f.Add(int64(-1))

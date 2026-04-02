@@ -69,4 +69,11 @@ func applyDefaults(cfg Config) Config {
 	return cfg
 }
 
-func (cfg Config) validate() {}
+func (cfg Config) validate() {
+	if cfg.Prefix != "" && cfg.Prefix[0] != '/' {
+		panic("debug: Prefix must start with /")
+	}
+	if cfg.MemStatsTTL < 0 {
+		panic("debug: MemStatsTTL must not be negative")
+	}
+}

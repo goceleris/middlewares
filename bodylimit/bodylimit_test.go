@@ -785,3 +785,31 @@ func TestErrLengthRequiredSentinel(t *testing.T) {
 		t.Fatalf("ErrLengthRequired code: got %d, want 411", httpErr.Code)
 	}
 }
+
+func TestParseSizeRejectsNegativeMB(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for negative size string")
+		}
+		msg, ok := r.(string)
+		if !ok || msg != "bodylimit: Limit must not be negative" {
+			t.Fatalf("unexpected panic message: %v", r)
+		}
+	}()
+	New(Config{Limit: "-1MB"})
+}
+
+func TestParseSizeRejectsNegativeFractionalGB(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for negative fractional size string")
+		}
+		msg, ok := r.(string)
+		if !ok || msg != "bodylimit: Limit must not be negative" {
+			t.Fatalf("unexpected panic message: %v", r)
+		}
+	}()
+	New(Config{Limit: "-0.5GB"})
+}

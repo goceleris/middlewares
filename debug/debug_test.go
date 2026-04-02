@@ -606,3 +606,31 @@ func TestIndexEndpointRequiresAuth(t *testing.T) {
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 403)
 }
+
+func TestValidatePrefixMustStartWithSlash(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for Prefix not starting with /")
+		}
+		msg, ok := r.(string)
+		if !ok || msg != "debug: Prefix must start with /" {
+			t.Fatalf("unexpected panic message: %v", r)
+		}
+	}()
+	New(Config{Prefix: "no-slash"})
+}
+
+func TestValidateNegativeMemStatsTTL(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for negative MemStatsTTL")
+		}
+		msg, ok := r.(string)
+		if !ok || msg != "debug: MemStatsTTL must not be negative" {
+			t.Fatalf("unexpected panic message: %v", r)
+		}
+	}()
+	New(Config{Prefix: "/debug", MemStatsTTL: -1 * time.Second})
+}

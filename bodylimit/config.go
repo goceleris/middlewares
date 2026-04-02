@@ -86,8 +86,11 @@ func parseSize(s string) int64 {
 		if strings.HasSuffix(upper, sf.name) {
 			numStr := strings.TrimSpace(s[:len(s)-len(sf.name)])
 			val, err := strconv.ParseFloat(numStr, 64)
-			if err != nil || val < 0 {
+			if err != nil {
 				panic("bodylimit: invalid Limit: " + s)
+			}
+			if val < 0 {
+				panic("bodylimit: Limit must not be negative")
 			}
 			n := int64(val * sf.mult)
 			if n <= 0 {
