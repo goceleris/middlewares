@@ -5,9 +5,11 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/goceleris/middlewares)](https://goreportcard.com/report/github.com/goceleris/middlewares)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-Production-ready middleware for [celeris](https://github.com/goceleris/celeris). Every middleware targets **zero allocations** on the hot path — 5 of 8 achieve 0 allocs/op. **#1 on all 11 benchmarks** across Fiber v3, Echo v4, Chi v5, Gin, and net/http.
+Production-ready middleware for [celeris](https://github.com/goceleris/celeris). 17 middleware packages covering logging, recovery, CORS, rate limiting, authentication, CSRF, sessions, JWT, security headers, health checks, debugging, Prometheus metrics, and OpenTelemetry. Every middleware targets **zero allocations** on the hot path. **#1 on all benchmarks** across Fiber v3, Echo v4, Chi v5, and net/http.
 
 ## Middleware
+
+### Core (root module)
 
 | Package | Description | Allocs | Key Features |
 |---------|-------------|--------|--------------|
@@ -19,11 +21,30 @@ Production-ready middleware for [celeris](https://github.com/goceleris/celeris).
 | [timeout](./timeout/) | Request timeout with preemptive mode | 8 | Cooperative + preemptive dual mode, goroutine panic recovery |
 | [bodylimit](./bodylimit/) | Request body size enforcement | 0 | `Limit: "1.5GB"`, Content-Length + body dual check |
 | [basicauth](./basicauth/) | HTTP Basic Authentication | 2 | `Users` map, `ValidatorWithContext`, timing-safe username miss |
+| [secure](./secure/) | OWASP security headers | 0 | 13 pre-computed headers (HSTS, CSP, COOP/CORP/COEP, XSS, Referrer, Permissions, Origin-Agent-Cluster, X-Download-Options) |
+| [keyauth](./keyauth/) | API key authentication | 1 | `StaticKeys()` timing-safe, Bearer prefix, multi-source, `WWW-Authenticate`, `SuccessHandler` |
+| [csrf](./csrf/) | CSRF protection | 4 | Double-submit + server-side `Storage`, `SingleUseToken`, Origin/Sec-Fetch-Site/Referer, wildcard `TrustedOrigins`, `DeleteToken` |
+| [session](./session/) | Session management | 5 | Pluggable `Store` + `Extractor` (cookie/header/query), absolute + idle timeout, `SetIdleTimeout`, `Reset` |
+| [debug](./debug/) | Debug endpoints | 0† | Status, metrics, memory, build, routes; localhost-only by default |
+| [healthcheck](./healthcheck/) | Kubernetes probes | 0 | Liveness `/livez`, readiness `/readyz`, startup `/startupz` |
+
+| [jwt](./jwt/) | JWT authentication | 8 | Custom zero-dep parser, HMAC/RSA/ECDSA/EdDSA, JWKS auto-refresh, `ClaimsFromContext[T]()` |
+
+### Observability (separate modules)
+
+| Package | Description | External Dep | Install |
+|---------|-------------|-------------|---------|
+| [metrics](./metrics/) | Prometheus metrics | `prometheus/client_golang` | `go get github.com/goceleris/middlewares/metrics` |
+| [otel](./otel/) | OpenTelemetry tracing + metrics | `go.opentelemetry.io/otel` | `go get github.com/goceleris/middlewares/otel` |
+
+†debug endpoints are not hot-path; 0 allocs on passthrough.
 
 ## Quick Start
 
 ```
-go get github.com/goceleris/middlewares
+go get github.com/goceleris/middlewares              # core middleware (includes JWT)
+go get github.com/goceleris/middlewares/metrics       # Prometheus (separate module)
+go get github.com/goceleris/middlewares/otel          # OpenTelemetry (separate module)
 ```
 
 Requires **Go 1.26+** and `github.com/goceleris/celeris` v1.2.2+.
@@ -103,10 +124,29 @@ ratelimit.New(ratelimit.Config{Rate: "1000-H"})            // 1000 per hour
 ### Exported Error Sentinels
 
 ```go
-if errors.Is(err, ratelimit.ErrTooManyRequests) { /* 429 */ }
-if errors.Is(err, basicauth.ErrUnauthorized)    { /* 401 */ }
-if errors.Is(err, bodylimit.ErrBodyTooLarge)    { /* 413 */ }
-if errors.Is(err, timeout.ErrServiceUnavailable){ /* 503 */ }
+if errors.Is(err, ratelimit.ErrTooManyRequests)    { /* 429 */ }
+if errors.Is(err, basicauth.ErrUnauthorized)       { /* 401 */ }
+if errors.Is(err, basicauth.ErrHeaderTooLarge)    { /* 431 */ }
+if errors.Is(err, keyauth.ErrUnauthorized)         { /* 401 */ }
+if errors.Is(err, keyauth.ErrMissingKey)           { /* 401 */ }
+if errors.Is(err, csrf.ErrForbidden)               { /* 403 */ }
+if errors.Is(err, csrf.ErrMissingToken)            { /* 403 */ }
+if errors.Is(err, csrf.ErrTokenNotFound)           { /* storage miss */ }
+if errors.Is(err, jwt.ErrUnauthorized)             { /* 401 */ }
+if errors.Is(err, jwt.ErrTokenInvalid)             { /* 401 */ }
+if errors.Is(err, jwt.ErrTokenMissing)             { /* 401 */ }
+if errors.Is(err, jwt.ErrTokenExpired)             { /* 401 */ }
+if errors.Is(err, jwt.ErrTokenSignatureInvalid)    { /* 401 */ }
+if errors.Is(err, jwt.ErrTokenMalformed)           { /* parse error */ }
+if errors.Is(err, jwt.ErrTokenNotValidYet)         { /* nbf check */ }
+if errors.Is(err, jwt.ErrTokenUnverifiable)        { /* no key */ }
+if errors.Is(err, jwt.ErrTokenUsedBeforeIssued)    { /* iat check */ }
+if errors.Is(err, jwt.ErrAlgNone)                  { /* alg:none attack */ }
+if errors.Is(err, jwt.ErrInvalidIssuer)            { /* iss mismatch */ }
+if errors.Is(err, jwt.ErrInvalidAudience)          { /* aud mismatch */ }
+if errors.Is(err, jwt.ErrInvalidSubject)           { /* sub mismatch */ }
+if errors.Is(err, bodylimit.ErrBodyTooLarge)       { /* 413 */ }
+if errors.Is(err, timeout.ErrServiceUnavailable)   { /* 503 */ }
 ```
 
 ### Preemptive Timeout
@@ -122,10 +162,16 @@ Race-free goroutine drain, panic recovery in the handler goroutine, depth-tracke
 
 ### Security
 
-- **BasicAuth**: Timing-safe username-miss protection (fixed-length dummy compare), deep-copied credential maps, `ValidatorWithContext` for per-request auth decisions
-- **Recovery**: Broken pipe / ECONNRESET detection (WARN-level, no stack trace), nested recovery catches ErrorHandler panics, `errors.Is` for `http.ErrAbortHandler`
-- **CORS**: Multi-wildcard validation (panics on `https://*.*.example.com`), three wildcard conflict guards, spec-correct preflight detection
-- **RateLimit**: NTP clock-step protection, sharded locks prevent single-mutex bottleneck
+- **Secure**: OWASP headers (HSTS HTTPS-only, CSP, COOP/CORP/COEP, X-XSS-Protection:0) pre-computed at init, zero allocs
+- **KeyAuth**: `StaticKeys()` timing-safe with length-padded comparison, Bearer prefix stripping, multi-source fallback
+- **CSRF**: Double-submit cookie with token reuse, Origin/Referer/Sec-Fetch-Site defense-in-depth, `TrustedOrigins`, buffered `crypto/rand`
+- **JWT**: HMAC/RSA/ECDSA/EdDSA signing, kid rotation, JWKS auto-refresh (HTTPS-enforced, singleflight), ECDSA JWKS, `ClaimsFromContext[T]()`, `ClaimsFactory` for custom types, error wrapping
+- **Session**: Pluggable `Store`, sharded `MemoryStore`, absolute + idle timeout, zero-arg `Regenerate`, cookie expiry on `Destroy`
+- **Debug**: Localhost-only by default, memory stats, build info, route introspection
+- **BasicAuth**: Timing-safe username-miss protection, deep-copied credential maps
+- **Recovery**: Broken pipe detection, nested recovery catches ErrorHandler panics
+- **CORS**: Multi-wildcard validation, spec-correct preflight detection
+- **RateLimit**: NTP clock-step protection, sharded locks
 - **RequestID**: Input validation (printable ASCII, 128 char max) prevents header/log injection
 - **Logger**: Control character escaping (`\xHH`) prevents terminal escape injection
 
@@ -165,7 +211,21 @@ Every `Config` struct supports:
 | Field | Type | Description |
 |-------|------|-------------|
 | `Skip` | `func(*celeris.Context) bool` | Conditionally bypass the middleware |
-| `SkipPaths` | `[]string` | Skip exact path matches (logger, ratelimit, basicauth, timeout) |
+| `SkipPaths` | `[]string` | Skip exact path matches (most middleware -- see individual package docs) |
+
+## Testing
+
+Use `celeristest` from the core framework for zero-overhead middleware testing:
+
+```go
+ctx, rec := celeristest.NewContextT(t, "GET", "/",
+    celeristest.WithHeader("authorization", "Bearer "+token),
+    celeristest.WithHandlers(myMiddleware, handler),
+)
+err := ctx.Next()
+```
+
+See the `*_test.go` files in each middleware package for comprehensive examples.
 
 ## Writing Custom Middleware
 
@@ -193,6 +253,15 @@ requestid/      Request ID generation with input validation
 timeout/        Request timeout with cooperative + preemptive modes
 bodylimit/      Request body size enforcement with human-readable sizes
 basicauth/      HTTP Basic auth with timing-safe comparison
+secure/         OWASP security headers (0 allocs)
+keyauth/        API key authentication with constant-time validation
+csrf/           CSRF protection with double-submit cookie
+session/        Session management with pluggable Store
+debug/          Debug endpoints (localhost-only, memory, build, routes)
+healthcheck/    Kubernetes liveness/readiness/startup probes
+metrics/        Prometheus metrics [separate module]
+jwt/            JWT authentication with zero-dep custom parser
+otel/           OpenTelemetry tracing + metrics [separate module]
 internal/       Shared test utilities
 test/benchcmp/  Cross-framework benchmark comparison
 ```
