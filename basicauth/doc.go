@@ -6,8 +6,9 @@
 // in the context store under [UsernameKey] ("basicauth_username"). Failed
 // authentication returns 401 with a WWW-Authenticate header.
 //
-// One of [Config].Validator, [Config].ValidatorWithContext, or
-// [Config].Users is required; omitting all three panics at initialization.
+// One of [Config].Validator, [Config].ValidatorWithContext, [Config].Users,
+// or [Config].HashedUsers is required; omitting all four panics at
+// initialization.
 //
 // Simple usage with a Users map (auto-generates a constant-time validator):
 //
@@ -15,6 +16,14 @@
 //	    Users: map[string]string{
 //	        "admin": "secret",
 //	        "user":  "pass",
+//	    },
+//	}))
+//
+// Hashed passwords with SHA-256 (avoids storing plaintext):
+//
+//	server.Use(basicauth.New(basicauth.Config{
+//	    HashedUsers: map[string]string{
+//	        "admin": basicauth.HashPassword("secret"),
 //	    },
 //	}))
 //
@@ -45,6 +54,18 @@
 // [ErrUnauthorized] is the exported sentinel error (401) returned on
 // authentication failure, usable with errors.Is for error handling in
 // upstream middleware.
+//
+// # Credential Validation
+//
+// After base64 decoding, the middleware rejects credentials that contain
+// invalid UTF-8 sequences or ASCII control characters (bytes < 0x20 or
+// 0x7F DEL). This prevents injection of binary data or terminal escape
+// sequences through authentication headers.
+//
+// NFC normalization is intentionally omitted to avoid a dependency on
+// golang.org/x/text. Applications that accept Unicode passwords should
+// normalize to NFC before hashing if equivalence matters.
+//
 // # Skipping
 //
 // Set [Config].Skip to bypass the middleware dynamically, or

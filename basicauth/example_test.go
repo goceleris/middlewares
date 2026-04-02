@@ -26,6 +26,16 @@ func ExampleNew_validator() {
 	})
 }
 
+func ExampleNew_hashedUsers() {
+	// SHA-256 hashed passwords — avoids storing plaintext in source/config.
+	_ = basicauth.New(basicauth.Config{
+		HashedUsers: map[string]string{
+			"admin": basicauth.HashPassword("secret"),
+			"user":  basicauth.HashPassword("password"),
+		},
+	})
+}
+
 func ExampleNew_contextValidator() {
 	// Context-aware validator for per-request auth decisions.
 	_ = basicauth.New(basicauth.Config{
