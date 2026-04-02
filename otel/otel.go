@@ -1,10 +1,12 @@
 package otel
 
 import (
+	"strings"
 	"time"
 
 	"github.com/goceleris/celeris"
 
+	otelglobal "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
@@ -16,6 +18,39 @@ const (
 	tracerName             = "github.com/goceleris/middlewares/otel"
 	instrumentationVersion = "0.2.0"
 )
+
+// standardMethods is the set of HTTP methods recognized by the OTel semconv spec.
+// Non-standard methods are normalized to "_OTHER".
+var standardMethods = map[string]struct{}{
+	"GET":     {},
+	"HEAD":    {},
+	"POST":    {},
+	"PUT":     {},
+	"DELETE":  {},
+	"PATCH":   {},
+	"OPTIONS": {},
+	"TRACE":   {},
+	"CONNECT": {},
+}
+
+// normalizeMethod returns the method if it is a standard HTTP method,
+// or "_OTHER" per the OTel semconv specification.
+func normalizeMethod(method string) string {
+	if _, ok := standardMethods[method]; ok {
+		return method
+	}
+	return "_OTHER"
+}
+
+// isSSE reports whether the response Content-Type indicates a Server-Sent Events stream.
+func isSSE(c *celeris.Context) bool {
+	for _, h := range c.ResponseHeaders() {
+		if strings.EqualFold(h[0], "content-type") && strings.HasPrefix(h[1], "text/event-stream") {
+			return true
+		}
+	}
+	return false
+}
 
 // SpanFromContext returns the active OpenTelemetry span from the request context.
 // This is a convenience wrapper around trace.SpanFromContext(c.Context()).
@@ -45,25 +80,38 @@ func New(config ...Config) celeris.HandlerFunc {
 		meter := cfg.MeterProvider.Meter(tracerName,
 			metric.WithInstrumentationVersion(instrumentationVersion),
 		)
-		requestDuration, _ = meter.Float64Histogram(
+		var err error
+		requestDuration, err = meter.Float64Histogram(
 			"http.server.request.duration",
 			metric.WithUnit("s"),
 			metric.WithDescription("Duration of HTTP server requests"),
 		)
-		activeRequests, _ = meter.Int64UpDownCounter(
+		if err != nil {
+			otelglobal.Handle(err)
+		}
+		activeRequests, err = meter.Int64UpDownCounter(
 			"http.server.active_requests",
 			metric.WithDescription("Number of active HTTP server requests"),
 		)
-		requestBodySize, _ = meter.Int64Histogram(
+		if err != nil {
+			otelglobal.Handle(err)
+		}
+		requestBodySize, err = meter.Int64Histogram(
 			"http.server.request.body.size",
 			metric.WithUnit("By"),
 			metric.WithDescription("Size of HTTP server request bodies"),
 		)
-		responseBodySize, _ = meter.Int64Histogram(
+		if err != nil {
+			otelglobal.Handle(err)
+		}
+		responseBodySize, err = meter.Int64Histogram(
 			"http.server.response.body.size",
 			metric.WithUnit("By"),
 			metric.WithDescription("Size of HTTP server response bodies"),
 		)
+		if err != nil {
+			otelglobal.Handle(err)
+		}
 	}
 
 	skipMap := make(map[string]struct{}, len(cfg.SkipPaths))
@@ -78,6 +126,7 @@ func New(config ...Config) celeris.HandlerFunc {
 	customMetricAttrs := cfg.CustomMetricAttributes
 	collectClientIP := cfg.CollectClientIP
 	collectUserAgent := cfg.CollectUserAgent == nil || *cfg.CollectUserAgent
+	serverPort := cfg.ServerPort
 
 	return func(c *celeris.Context) error {
 		if cfg.Skip != nil && cfg.Skip(c) {
@@ -101,9 +150,11 @@ func New(config ...Config) celeris.HandlerFunc {
 			spanName = spanNameFmt(c)
 		}
 
-		var spanBuf [12]attribute.KeyValue
+		method := normalizeMethod(c.Method())
+
+		var spanBuf [13]attribute.KeyValue
 		n := 0
-		spanBuf[n] = semconv.HTTPRequestMethodKey.String(c.Method())
+		spanBuf[n] = semconv.HTTPRequestMethodKey.String(method)
 		n++
 		spanBuf[n] = semconv.HTTPRoute(c.FullPath())
 		n++
@@ -121,6 +172,10 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 		spanBuf[n] = semconv.ServerAddress(c.Host())
 		n++
+		if serverPort > 0 {
+			spanBuf[n] = semconv.ServerPort(serverPort)
+			n++
+		}
 		if collectUserAgent {
 			spanBuf[n] = semconv.UserAgentOriginal(c.Header("user-agent"))
 			n++
@@ -140,9 +195,9 @@ func New(config ...Config) celeris.HandlerFunc {
 		propagators.Inject(spanCtx, carrier)
 
 		if metricsEnabled {
-			var metricBuf [6]attribute.KeyValue
+			var metricBuf [7]attribute.KeyValue
 			mn := 0
-			metricBuf[mn] = semconv.HTTPRequestMethodKey.String(c.Method())
+			metricBuf[mn] = semconv.HTTPRequestMethodKey.String(method)
 			mn++
 			metricBuf[mn] = semconv.HTTPRoute(c.FullPath())
 			mn++
@@ -150,6 +205,10 @@ func New(config ...Config) celeris.HandlerFunc {
 			mn++
 			metricBuf[mn] = semconv.ServerAddress(c.Host())
 			mn++
+			if serverPort > 0 {
+				metricBuf[mn] = semconv.ServerPort(serverPort)
+				mn++
+			}
 			metricBaseAttrs := metricBuf[:mn]
 			if customMetricAttrs != nil {
 				metricBaseAttrs = append(metricBaseAttrs, customMetricAttrs(c)...)
@@ -185,7 +244,7 @@ func New(config ...Config) celeris.HandlerFunc {
 			if reqSize := c.ContentLength(); reqSize > 0 {
 				requestBodySize.Record(spanCtx, reqSize, fullAttrSet)
 			}
-			if respSize := int64(c.BytesWritten()); respSize > 0 {
+			if respSize := int64(c.BytesWritten()); respSize > 0 && !isSSE(c) {
 				responseBodySize.Record(spanCtx, respSize, fullAttrSet)
 			}
 

@@ -57,6 +57,9 @@ type Config struct {
 
 	// CustomMetricAttributes is called per-request and appended to the metric attributes.
 	CustomMetricAttributes func(c *celeris.Context) []attribute.KeyValue
+
+	// ServerPort, when > 0, adds the "server.port" attribute to spans and metrics.
+	ServerPort int
 }
 
 // DefaultConfig is the default OpenTelemetry middleware configuration.

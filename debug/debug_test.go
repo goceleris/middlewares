@@ -2,7 +2,9 @@ package debug
 
 import (
 	"encoding/json"
+	"errors"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -296,8 +298,8 @@ func TestPrefixOnlyServesIndex(t *testing.T) {
 	if err := json.Unmarshal(rec.Body, &endpoints); err != nil {
 		t.Fatalf("failed to unmarshal index response: %v", err)
 	}
-	if len(endpoints) != 6 {
-		t.Fatalf("expected 6 endpoints in index, got %d", len(endpoints))
+	if len(endpoints) != 7 {
+		t.Fatalf("expected 7 endpoints in index, got %d", len(endpoints))
 	}
 }
 
@@ -397,7 +399,7 @@ func TestEndpointsFilterDisable(t *testing.T) {
 func TestEndpointsFilterNilAllEnabled(t *testing.T) {
 	mw := New(Config{AuthFunc: openAuth()})
 
-	for _, ep := range []string{"status", "metrics", "config", "routes", "memory", "build"} {
+	for _, ep := range []string{"status", "metrics", "config", "routes", "memory", "build", "runtime"} {
 		t.Run(ep, func(t *testing.T) {
 			rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/debug/celeris/"+ep)
 			testutil.AssertNoError(t, err)
@@ -418,8 +420,8 @@ func TestIndexEndpoint(t *testing.T) {
 	if err := json.Unmarshal(rec.Body, &endpoints); err != nil {
 		t.Fatalf("failed to unmarshal index response: %v", err)
 	}
-	if len(endpoints) != 6 {
-		t.Fatalf("expected 6 endpoints, got %d: %v", len(endpoints), endpoints)
+	if len(endpoints) != 7 {
+		t.Fatalf("expected 7 endpoints, got %d: %v", len(endpoints), endpoints)
 	}
 }
 
@@ -433,8 +435,8 @@ func TestIndexEndpointTrailingSlash(t *testing.T) {
 	if err := json.Unmarshal(rec.Body, &endpoints); err != nil {
 		t.Fatalf("failed to unmarshal index response: %v", err)
 	}
-	if len(endpoints) != 6 {
-		t.Fatalf("expected 6 endpoints, got %d: %v", len(endpoints), endpoints)
+	if len(endpoints) != 7 {
+		t.Fatalf("expected 7 endpoints, got %d: %v", len(endpoints), endpoints)
 	}
 }
 
@@ -489,6 +491,110 @@ func TestMemStatsTTLCaching(t *testing.T) {
 	// the second call did not re-read MemStats.
 	if resp1.NumGC != resp2.NumGC || resp1.TotalAlloc != resp2.TotalAlloc {
 		t.Fatalf("expected cached response, got different values:\n  first:  %+v\n  second: %+v", resp1, resp2)
+	}
+}
+
+func TestRuntimeEndpoint(t *testing.T) {
+	mw := New(Config{AuthFunc: openAuth()})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/debug/celeris/runtime")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+
+	var resp runtimeResponse
+	if err := json.Unmarshal(rec.Body, &resp); err != nil {
+		t.Fatalf("failed to unmarshal runtime response: %v", err)
+	}
+	if resp.Goroutines < 1 {
+		t.Fatal("expected goroutines >= 1")
+	}
+	if resp.NumCPU < 1 {
+		t.Fatal("expected num_cpu >= 1")
+	}
+	if resp.GOMAXPROCS < 1 {
+		t.Fatal("expected gomaxprocs >= 1")
+	}
+	if resp.NumCPU != runtime.NumCPU() {
+		t.Fatalf("num_cpu: got %d, want %d", resp.NumCPU, runtime.NumCPU())
+	}
+	if resp.GOMAXPROCS != runtime.GOMAXPROCS(0) {
+		t.Fatalf("gomaxprocs: got %d, want %d", resp.GOMAXPROCS, runtime.GOMAXPROCS(0))
+	}
+}
+
+func TestRuntimeEndpointDisabled(t *testing.T) {
+	mw := New(Config{
+		AuthFunc: openAuth(),
+		Endpoints: map[string]bool{
+			"status":  true,
+			"runtime": false,
+		},
+	})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/debug/celeris/runtime")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 404)
+}
+
+func TestRuntimeEndpointInIndex(t *testing.T) {
+	mw := New(Config{AuthFunc: openAuth()})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/debug/celeris")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+
+	var endpoints []string
+	if err := json.Unmarshal(rec.Body, &endpoints); err != nil {
+		t.Fatalf("failed to unmarshal index response: %v", err)
+	}
+	found := false
+	for _, ep := range endpoints {
+		if ep == "/debug/celeris/runtime" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected /debug/celeris/runtime in index, got %v", endpoints)
+	}
+}
+
+func TestMemStatsCacheConcurrent(t *testing.T) {
+	mw := New(Config{
+		AuthFunc:    openAuth(),
+		MemStatsTTL: 5 * time.Second,
+	})
+
+	const goroutines = 10
+	errs := make(chan error, goroutines)
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/debug/celeris/memory")
+			if err != nil {
+				errs <- err
+				return
+			}
+			if rec.StatusCode != 200 {
+				errs <- errors.New("expected status 200, got " + string(rune(rec.StatusCode+'0')))
+				return
+			}
+			var resp memoryResponse
+			if err := json.Unmarshal(rec.Body, &resp); err != nil {
+				errs <- err
+				return
+			}
+			if resp.Sys == 0 {
+				errs <- errors.New("expected non-zero sys")
+				return
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent memory endpoint error: %v", err)
 	}
 }
 

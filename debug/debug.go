@@ -39,8 +39,14 @@ type buildResponse struct {
 	VCS       map[string]string `json:"vcs,omitempty"`
 }
 
+type runtimeResponse struct {
+	Goroutines int `json:"goroutines"`
+	NumCPU     int `json:"num_cpu"`
+	GOMAXPROCS int `json:"gomaxprocs"`
+}
+
 // allEndpoints is the canonical list of endpoint names.
-var allEndpoints = [...]string{"status", "metrics", "config", "routes", "memory", "build"}
+var allEndpoints = [...]string{"status", "metrics", "config", "routes", "memory", "build", "runtime"}
 
 func isEndpointEnabled(endpoints map[string]bool, name string) bool {
 	if endpoints == nil {
@@ -69,6 +75,7 @@ func New(config ...Config) celeris.HandlerFunc {
 	routesPath := prefix + "/routes"
 	memoryPath := prefix + "/memory"
 	buildPath := prefix + "/build"
+	runtimePath := prefix + "/runtime"
 
 	endpoints := cfg.Endpoints
 	msCache := &memStatsCache{ttl: cfg.MemStatsTTL}
@@ -134,6 +141,11 @@ func New(config ...Config) celeris.HandlerFunc {
 				return c.NoContent(404)
 			}
 			return handleBuild(c)
+		case runtimePath:
+			if !isEndpointEnabled(endpoints, "runtime") {
+				return c.NoContent(404)
+			}
+			return handleRuntime(c)
 		default:
 			return c.NoContent(404)
 		}
@@ -205,6 +217,14 @@ func handleMemory(c *celeris.Context, cache *memStatsCache) error {
 	cache.cachedAt = time.Now()
 	cache.mu.Unlock()
 	return c.JSON(200, resp)
+}
+
+func handleRuntime(c *celeris.Context) error {
+	return c.JSON(200, runtimeResponse{
+		Goroutines: runtime.NumGoroutine(),
+		NumCPU:     runtime.NumCPU(),
+		GOMAXPROCS: runtime.GOMAXPROCS(0),
+	})
 }
 
 func handleBuild(c *celeris.Context) error {
