@@ -719,18 +719,18 @@ func TestCustomRealm(t *testing.T) {
 
 func TestWWWAuthenticateValue(t *testing.T) {
 	tests := []struct {
-		scheme string
-		realm  string
-		want   string
+		name string
+		cfg  Config
+		want string
 	}{
-		{"", "Restricted", `ApiKey realm="Restricted"`},
-		{"Bearer", "MyApp", `Bearer realm="MyApp"`},
-		{"Token", "API", `Token realm="API"`},
+		{"default scheme", Config{Realm: "Restricted"}, `ApiKey realm="Restricted"`},
+		{"bearer", Config{AuthScheme: "Bearer", Realm: "MyApp"}, `Bearer realm="MyApp"`},
+		{"token", Config{AuthScheme: "Token", Realm: "API"}, `Token realm="API"`},
 	}
 	for _, tt := range tests {
-		got := wwwAuthenticateValue(tt.scheme, tt.realm)
+		got := wwwAuthenticateValue(tt.cfg)
 		if got != tt.want {
-			t.Errorf("wwwAuthenticateValue(%q, %q) = %q, want %q", tt.scheme, tt.realm, got, tt.want)
+			t.Errorf("wwwAuthenticateValue(%s) = %q, want %q", tt.name, got, tt.want)
 		}
 	}
 }
@@ -756,6 +756,307 @@ func TestMultiSourceWithFormFallback(t *testing.T) {
 	testutil.AssertStatus(t, rec, 200)
 	if storedKey != "fallback-key" {
 		t.Fatalf("key from form fallback: got %q, want %q", storedKey, "fallback-key")
+	}
+}
+
+// --- RFC 6750 WWW-Authenticate error field tests ---
+
+func TestWWWAuthenticateRFC6750AllFields(t *testing.T) {
+	mw := New(Config{
+		Validator:                 validatorFor("correct"),
+		AuthScheme:                "Bearer",
+		Realm:                     "MyAPI",
+		ChallengeError:            "invalid_token",
+		ChallengeErrorDescription: "The access token expired",
+		ChallengeErrorURI:         "https://example.com/error",
+		ChallengeScope:            "read write",
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	ctx, _ := celeristest.NewContextT(t, "GET", "/",
+		celeristest.WithHandlers(chain...),
+	)
+	err := ctx.Next()
+	testutil.AssertHTTPError(t, err, 401)
+
+	expected := `Bearer realm="MyAPI", scope="read write", error="invalid_token", error_description="The access token expired", error_uri="https://example.com/error"`
+	found := false
+	for _, h := range ctx.ResponseHeaders() {
+		if h[0] == "www-authenticate" {
+			if h[1] != expected {
+				t.Fatalf("www-authenticate:\n  got  %q\n  want %q", h[1], expected)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected www-authenticate header")
+	}
+}
+
+func TestWWWAuthenticateRFC6750ErrorOnly(t *testing.T) {
+	mw := New(Config{
+		Validator:      validatorFor("correct"),
+		ChallengeError: "insufficient_scope",
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	ctx, _ := celeristest.NewContextT(t, "GET", "/",
+		celeristest.WithHandlers(chain...),
+	)
+	err := ctx.Next()
+	testutil.AssertHTTPError(t, err, 401)
+
+	expected := `ApiKey realm="Restricted", error="insufficient_scope"`
+	found := false
+	for _, h := range ctx.ResponseHeaders() {
+		if h[0] == "www-authenticate" {
+			if h[1] != expected {
+				t.Fatalf("www-authenticate:\n  got  %q\n  want %q", h[1], expected)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected www-authenticate header")
+	}
+}
+
+func TestWWWAuthenticateRFC6750ScopeOnly(t *testing.T) {
+	mw := New(Config{
+		Validator:      validatorFor("correct"),
+		AuthScheme:     "Bearer",
+		ChallengeScope: "admin",
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	ctx, _ := celeristest.NewContextT(t, "GET", "/",
+		celeristest.WithHandlers(chain...),
+	)
+	err := ctx.Next()
+	testutil.AssertHTTPError(t, err, 401)
+
+	expected := `Bearer realm="Restricted", scope="admin"`
+	found := false
+	for _, h := range ctx.ResponseHeaders() {
+		if h[0] == "www-authenticate" {
+			if h[1] != expected {
+				t.Fatalf("www-authenticate:\n  got  %q\n  want %q", h[1], expected)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected www-authenticate header")
+	}
+}
+
+func TestWWWAuthenticateValueRFC6750(t *testing.T) {
+	got := wwwAuthenticateValue(Config{
+		AuthScheme:                "Bearer",
+		Realm:                     "API",
+		ChallengeError:            "invalid_request",
+		ChallengeErrorDescription: "missing token",
+		ChallengeErrorURI:         "https://docs.example.com/auth",
+		ChallengeScope:            "read",
+	})
+	expected := `Bearer realm="API", scope="read", error="invalid_request", error_description="missing token", error_uri="https://docs.example.com/auth"`
+	if got != expected {
+		t.Fatalf("wwwAuthenticateValue:\n  got  %q\n  want %q", got, expected)
+	}
+}
+
+func TestChallengeErrorInvalidValuePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for invalid ChallengeError")
+		}
+	}()
+	New(Config{
+		Validator:      validatorFor("x"),
+		ChallengeError: "bad_value",
+	})
+}
+
+func TestChallengeErrorURIInvalidPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for invalid ChallengeErrorURI")
+		}
+	}()
+	New(Config{
+		Validator:         validatorFor("x"),
+		ChallengeErrorURI: "not-a-uri",
+	})
+}
+
+func TestChallengeErrorURIRelativePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for relative ChallengeErrorURI")
+		}
+	}()
+	New(Config{
+		Validator:         validatorFor("x"),
+		ChallengeErrorURI: "/relative/path",
+	})
+}
+
+func TestChallengeErrorValidValues(t *testing.T) {
+	for _, v := range []string{"invalid_request", "invalid_token", "insufficient_scope"} {
+		// Should not panic.
+		New(Config{
+			Validator:      validatorFor("x"),
+			ChallengeError: v,
+		})
+	}
+}
+
+// --- ContinueOnIgnoredError tests ---
+
+func TestContinueOnIgnoredErrorMissingKey(t *testing.T) {
+	mw := New(Config{
+		Validator: validatorFor("test-key"),
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
+			return nil // ignore the error
+		},
+		ContinueOnIgnoredError: true,
+	})
+	var reached bool
+	handler := func(c *celeris.Context) error {
+		reached = true
+		return c.String(200, "public")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertBodyContains(t, rec, "public")
+	if !reached {
+		t.Fatal("expected handler to be reached with ContinueOnIgnoredError")
+	}
+}
+
+func TestContinueOnIgnoredErrorInvalidKey(t *testing.T) {
+	mw := New(Config{
+		Validator: validatorFor("correct"),
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
+			return nil
+		},
+		ContinueOnIgnoredError: true,
+	})
+	var reached bool
+	handler := func(c *celeris.Context) error {
+		reached = true
+		return c.String(200, "public")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-api-key", "wrong"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	if !reached {
+		t.Fatal("expected handler to be reached")
+	}
+}
+
+func TestContinueOnIgnoredErrorNotSetAborts(t *testing.T) {
+	mw := New(Config{
+		Validator: validatorFor("test-key"),
+		ErrorHandler: func(c *celeris.Context, _ error) error {
+			c.Abort()
+			return nil
+		},
+		ContinueOnIgnoredError: false,
+	})
+	var reached bool
+	handler := func(c *celeris.Context) error {
+		reached = true
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	if reached {
+		t.Fatal("expected handler NOT to be reached when ErrorHandler aborts")
+	}
+}
+
+func TestContinueOnIgnoredErrorHandlerReturnsError(t *testing.T) {
+	mw := New(Config{
+		Validator: validatorFor("correct"),
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
+			return celeris.NewHTTPError(403, "Forbidden")
+		},
+		ContinueOnIgnoredError: true,
+	})
+	var reached bool
+	handler := func(c *celeris.Context) error {
+		reached = true
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertHTTPError(t, err, 403)
+	if reached {
+		t.Fatal("expected handler NOT to be reached when ErrorHandler returns non-nil")
+	}
+}
+
+func TestContinueOnIgnoredErrorKeyNotStored(t *testing.T) {
+	mw := New(Config{
+		Validator: validatorFor("correct"),
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
+			return nil
+		},
+		ContinueOnIgnoredError: true,
+	})
+	var key string
+	handler := func(c *celeris.Context) error {
+		key = KeyFromContext(c)
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-api-key", "wrong"),
+	)
+	testutil.AssertNoError(t, err)
+	if key != "" {
+		t.Fatalf("expected empty key when auth failed but continued, got %q", key)
+	}
+}
+
+func TestContinueOnIgnoredErrorValidKeyStillWorks(t *testing.T) {
+	mw := New(Config{
+		Validator: validatorFor("correct"),
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
+			return nil
+		},
+		ContinueOnIgnoredError: true,
+	})
+	var key string
+	handler := func(c *celeris.Context) error {
+		key = KeyFromContext(c)
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-api-key", "correct"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	if key != "correct" {
+		t.Fatalf("expected key %q, got %q", "correct", key)
 	}
 }
 

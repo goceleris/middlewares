@@ -3,6 +3,7 @@ package keyauth
 import (
 	"crypto/subtle"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/goceleris/celeris"
@@ -49,6 +50,24 @@ type Config struct {
 	// AuthScheme is the authentication scheme used in the WWW-Authenticate
 	// header (e.g. "Bearer"). When empty, "ApiKey" is used as the scheme.
 	AuthScheme string
+
+	// ChallengeError is the RFC 6750 error code for WWW-Authenticate.
+	// Valid values: "invalid_request", "invalid_token", "insufficient_scope".
+	ChallengeError string
+
+	// ChallengeErrorDescription is the RFC 6750 error_description for WWW-Authenticate.
+	ChallengeErrorDescription string
+
+	// ChallengeErrorURI is the RFC 6750 error_uri for WWW-Authenticate.
+	ChallengeErrorURI string
+
+	// ChallengeScope is the RFC 6750 scope for WWW-Authenticate.
+	ChallengeScope string
+
+	// ContinueOnIgnoredError, when true, allows the request to proceed
+	// if ErrorHandler returns nil. This enables mixed public/private routes
+	// where authentication is optional.
+	ContinueOnIgnoredError bool
 }
 
 // DefaultConfig is the default key auth configuration.
@@ -69,6 +88,19 @@ func applyDefaults(cfg Config) Config {
 func (cfg Config) validate() {
 	if cfg.Validator == nil {
 		panic("keyauth: Validator is required")
+	}
+	if cfg.ChallengeError != "" {
+		switch cfg.ChallengeError {
+		case "invalid_request", "invalid_token", "insufficient_scope":
+		default:
+			panic("keyauth: ChallengeError must be \"invalid_request\", \"invalid_token\", or \"insufficient_scope\"")
+		}
+	}
+	if cfg.ChallengeErrorURI != "" {
+		u, err := url.Parse(cfg.ChallengeErrorURI)
+		if err != nil || !u.IsAbs() {
+			panic("keyauth: ChallengeErrorURI must be a valid absolute URI")
+		}
 	}
 }
 
@@ -127,11 +159,27 @@ func padTo(b []byte, n int) []byte {
 	return out
 }
 
-func wwwAuthenticateValue(scheme, realm string) string {
-	if scheme != "" {
-		return fmt.Sprintf(`%s realm="%s"`, scheme, realm)
+func wwwAuthenticateValue(cfg Config) string {
+	var b strings.Builder
+	if cfg.AuthScheme != "" {
+		b.WriteString(cfg.AuthScheme)
+	} else {
+		b.WriteString("ApiKey")
 	}
-	return fmt.Sprintf(`ApiKey realm="%s"`, realm)
+	fmt.Fprintf(&b, ` realm="%s"`, cfg.Realm)
+	if cfg.ChallengeScope != "" {
+		fmt.Fprintf(&b, `, scope="%s"`, cfg.ChallengeScope)
+	}
+	if cfg.ChallengeError != "" {
+		fmt.Fprintf(&b, `, error="%s"`, cfg.ChallengeError)
+	}
+	if cfg.ChallengeErrorDescription != "" {
+		fmt.Fprintf(&b, `, error_description="%s"`, cfg.ChallengeErrorDescription)
+	}
+	if cfg.ChallengeErrorURI != "" {
+		fmt.Fprintf(&b, `, error_uri="%s"`, cfg.ChallengeErrorURI)
+	}
+	return b.String()
 }
 
 type extractor func(c *celeris.Context) string

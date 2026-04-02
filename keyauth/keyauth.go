@@ -26,12 +26,22 @@ func New(config ...Config) celeris.HandlerFunc {
 	validator := cfg.Validator
 	successHandler := cfg.SuccessHandler
 	errorHandler := cfg.ErrorHandler
-	wwwAuth := wwwAuthenticateValue(cfg.AuthScheme, cfg.Realm)
+	continueOnIgnored := cfg.ContinueOnIgnoredError
+	wwwAuth := wwwAuthenticateValue(cfg)
 
 	if errorHandler == nil {
 		errorHandler = func(_ *celeris.Context, err error) error {
 			return err
 		}
+	}
+
+	handleError := func(c *celeris.Context, err error) error {
+		c.SetHeader("www-authenticate", wwwAuth)
+		herr := errorHandler(c, err)
+		if herr == nil && continueOnIgnored {
+			return c.Next()
+		}
+		return herr
 	}
 
 	return func(c *celeris.Context) error {
@@ -45,18 +55,15 @@ func New(config ...Config) celeris.HandlerFunc {
 
 		key := extract(c)
 		if key == "" {
-			c.SetHeader("www-authenticate", wwwAuth)
-			return errorHandler(c, ErrMissingKey)
+			return handleError(c, ErrMissingKey)
 		}
 
 		valid, err := validator(c, key)
 		if err != nil {
-			c.SetHeader("www-authenticate", wwwAuth)
-			return errorHandler(c, err)
+			return handleError(c, err)
 		}
 		if !valid {
-			c.SetHeader("www-authenticate", wwwAuth)
-			return errorHandler(c, ErrUnauthorized)
+			return handleError(c, ErrUnauthorized)
 		}
 
 		c.Set(ContextKey, key)
