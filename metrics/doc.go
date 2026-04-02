@@ -9,8 +9,8 @@
 //	server.Use(metrics.New())
 //
 // Requests to "/metrics" return Prometheus-formatted output. All other
-// requests are instrumented with request count, duration, and active
-// request tracking.
+// requests are instrumented with request count, duration, active request
+// tracking, and request/response body sizes.
 //
 // Custom configuration:
 //
@@ -43,9 +43,40 @@
 //
 //   - {namespace}_{subsystem}_requests_total (CounterVec): Total HTTP requests, labeled by method, path, status.
 //   - {namespace}_{subsystem}_request_duration_seconds (HistogramVec): Request latency, labeled by method, path, status.
+//   - {namespace}_{subsystem}_request_size_bytes (HistogramVec): Request body size in bytes (recorded only when Content-Length > 0), labeled by method, path, status.
+//   - {namespace}_{subsystem}_response_size_bytes (HistogramVec): Response body size in bytes (recorded only when BytesWritten > 0), labeled by method, path, status.
 //   - {namespace}_{subsystem}_active_requests (Gauge): Currently in-flight requests.
 //
 // The subsystem segment is omitted when [Config].Subsystem is empty (the default).
+//
+// # Custom Labels
+//
+// Use [Config].LabelFuncs to add custom label dimensions to all metrics.
+// Each key becomes a label name; the function extracts the value per-request.
+// Label functions are called after c.Next() returns, so response-derived
+// values are available:
+//
+//	server.Use(metrics.New(metrics.Config{
+//	    LabelFuncs: map[string]func(*celeris.Context) string{
+//	        "region": func(c *celeris.Context) string {
+//	            return c.Header("x-region")
+//	        },
+//	    },
+//	}))
+//
+// # Metric Customization
+//
+// Use [Config].HistogramOpts and [Config].CounterOpts to customize
+// Prometheus metric options during initialization (e.g., custom bucket
+// boundaries per-histogram):
+//
+//	server.Use(metrics.New(metrics.Config{
+//	    HistogramOpts: func(opts *prometheus.HistogramOpts) {
+//	        if opts.Name == "request_size_bytes" {
+//	            opts.Buckets = []float64{256, 1024, 4096, 65536}
+//	        }
+//	    },
+//	}))
 //
 // # Cardinality Protection
 //
@@ -88,6 +119,10 @@
 //	server.Use(metrics.New(metrics.Config{
 //	    Buckets: []float64{0.01, 0.05, 0.1, 0.5, 1, 5, 10},
 //	}))
+//
+// [DefaultSizeBuckets] provides histogram boundaries for body size metrics:
+//
+//	[]float64{100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000}
 //
 // # Registry Isolation
 //

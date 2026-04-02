@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"bytes"
+	"sort"
 	"strconv"
 	"time"
 
@@ -10,6 +11,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/common/expfmt"
 )
+
+// DefaultSizeBuckets provides histogram bucket boundaries for request and
+// response body sizes in bytes.
+var DefaultSizeBuckets = []float64{100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000}
 
 // New creates a Prometheus metrics middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
@@ -29,22 +34,72 @@ func New(config ...Config) celeris.HandlerFunc {
 
 	constLabels := prometheus.Labels(cfg.ConstLabels)
 
-	requestsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+	// Build sorted custom label names for deterministic label order.
+	customLabelNames := make([]string, 0, len(cfg.LabelFuncs))
+	for name := range cfg.LabelFuncs {
+		customLabelNames = append(customLabelNames, name)
+	}
+	sort.Strings(customLabelNames)
+
+	// Build ordered label funcs matching the sorted names.
+	customLabelFuncs := make([]func(*celeris.Context) string, len(customLabelNames))
+	for i, name := range customLabelNames {
+		customLabelFuncs[i] = cfg.LabelFuncs[name]
+	}
+
+	baseLabels := []string{"method", "path", "status"}
+	allLabels := append(baseLabels, customLabelNames...)
+
+	counterOpts := prometheus.CounterOpts{
 		Namespace:   cfg.Namespace,
 		Subsystem:   cfg.Subsystem,
 		Name:        "requests_total",
 		Help:        "Total number of HTTP requests.",
 		ConstLabels: constLabels,
-	}, []string{"method", "path", "status"})
+	}
+	if cfg.CounterOpts != nil {
+		cfg.CounterOpts(&counterOpts)
+	}
+	requestsTotal := prometheus.NewCounterVec(counterOpts, allLabels)
 
-	requestDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+	durationOpts := prometheus.HistogramOpts{
 		Namespace:   cfg.Namespace,
 		Subsystem:   cfg.Subsystem,
 		Name:        "request_duration_seconds",
 		Help:        "HTTP request duration in seconds.",
 		Buckets:     cfg.Buckets,
 		ConstLabels: constLabels,
-	}, []string{"method", "path", "status"})
+	}
+	if cfg.HistogramOpts != nil {
+		cfg.HistogramOpts(&durationOpts)
+	}
+	requestDuration := prometheus.NewHistogramVec(durationOpts, allLabels)
+
+	reqSizeOpts := prometheus.HistogramOpts{
+		Namespace:   cfg.Namespace,
+		Subsystem:   cfg.Subsystem,
+		Name:        "request_size_bytes",
+		Help:        "HTTP request body size in bytes.",
+		Buckets:     DefaultSizeBuckets,
+		ConstLabels: constLabels,
+	}
+	if cfg.HistogramOpts != nil {
+		cfg.HistogramOpts(&reqSizeOpts)
+	}
+	requestSize := prometheus.NewHistogramVec(reqSizeOpts, allLabels)
+
+	respSizeOpts := prometheus.HistogramOpts{
+		Namespace:   cfg.Namespace,
+		Subsystem:   cfg.Subsystem,
+		Name:        "response_size_bytes",
+		Help:        "HTTP response body size in bytes.",
+		Buckets:     DefaultSizeBuckets,
+		ConstLabels: constLabels,
+	}
+	if cfg.HistogramOpts != nil {
+		cfg.HistogramOpts(&respSizeOpts)
+	}
+	responseSize := prometheus.NewHistogramVec(respSizeOpts, allLabels)
 
 	activeRequests := prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace:   cfg.Namespace,
@@ -54,7 +109,7 @@ func New(config ...Config) celeris.HandlerFunc {
 		ConstLabels: constLabels,
 	})
 
-	reg.MustRegister(requestsTotal, requestDuration, activeRequests)
+	reg.MustRegister(requestsTotal, requestDuration, requestSize, responseSize, activeRequests)
 
 	skipMap := make(map[string]struct{}, len(cfg.SkipPaths))
 	for _, p := range cfg.SkipPaths {
@@ -74,6 +129,7 @@ func New(config ...Config) celeris.HandlerFunc {
 
 	metricsPath := cfg.Path
 	authFunc := cfg.AuthFunc
+	nCustom := len(customLabelNames)
 
 	return func(c *celeris.Context) error {
 		if c.Path() == metricsPath {
@@ -119,8 +175,24 @@ func New(config ...Config) celeris.HandlerFunc {
 			}
 		}
 
-		requestsTotal.WithLabelValues(c.Method(), path, statusStr).Inc()
-		requestDuration.WithLabelValues(c.Method(), path, statusStr).Observe(duration)
+		// Build label values: method, path, status + custom labels.
+		lv := make([]string, 3, 3+nCustom)
+		lv[0] = c.Method()
+		lv[1] = path
+		lv[2] = statusStr
+		for i := range nCustom {
+			lv = append(lv, customLabelFuncs[i](c))
+		}
+
+		requestsTotal.WithLabelValues(lv...).Inc()
+		requestDuration.WithLabelValues(lv...).Observe(duration)
+
+		if cl := c.ContentLength(); cl > 0 {
+			requestSize.WithLabelValues(lv...).Observe(float64(cl))
+		}
+		if bw := c.BytesWritten(); bw > 0 {
+			responseSize.WithLabelValues(lv...).Observe(float64(bw))
+		}
 
 		return err
 	}

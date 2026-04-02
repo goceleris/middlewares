@@ -1,6 +1,7 @@
 package metrics //nolint:revive // package name intentionally matches the middleware domain
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -839,5 +840,301 @@ func TestHandlerErrorPropagated(t *testing.T) {
 	})
 	if count != 1 {
 		t.Fatalf("request should still be recorded on error: got %v, want 1", count)
+	}
+}
+
+func getHistogramSum(t *testing.T, reg *prometheus.Registry, name string, labels map[string]string) float64 {
+	t.Helper()
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			if matchLabels(m.GetLabel(), labels) {
+				if m.GetHistogram() != nil {
+					return m.GetHistogram().GetSampleSum()
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func TestRequestSizeRecorded(t *testing.T) {
+	reg := newIsolatedRegistry()
+	mw := New(Config{Registry: reg})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	body := []byte(`{"key":"value"}`)
+	_, err := runChain(t, chain, "POST", "/api/upload",
+		celeristest.WithBody(body),
+		celeristest.WithHeader("content-length", fmt.Sprintf("%d", len(body))),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	labels := map[string]string{"method": "POST", "path": "/api/upload", "status": "200"}
+	count := getHistogramCount(t, reg, "celeris_request_size_bytes", labels)
+	if count != 1 {
+		t.Fatalf("request_size_bytes count: got %d, want 1", count)
+	}
+	sum := getHistogramSum(t, reg, "celeris_request_size_bytes", labels)
+	if sum != float64(len(body)) {
+		t.Fatalf("request_size_bytes sum: got %v, want %v", sum, float64(len(body)))
+	}
+}
+
+func TestResponseSizeRecorded(t *testing.T) {
+	reg := newIsolatedRegistry()
+	mw := New(Config{Registry: reg})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "hello world response")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	_, err := runChain(t, chain, "GET", "/api/data")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	labels := map[string]string{"method": "GET", "path": "/api/data", "status": "200"}
+	count := getHistogramCount(t, reg, "celeris_response_size_bytes", labels)
+	if count != 1 {
+		t.Fatalf("response_size_bytes count: got %d, want 1", count)
+	}
+	sum := getHistogramSum(t, reg, "celeris_response_size_bytes", labels)
+	wantSize := float64(len("hello world response"))
+	if sum != wantSize {
+		t.Fatalf("response_size_bytes sum: got %v, want %v", sum, wantSize)
+	}
+}
+
+func TestZeroBodyNotRecorded(t *testing.T) {
+	reg := newIsolatedRegistry()
+	mw := New(Config{Registry: reg})
+	handler := func(c *celeris.Context) error {
+		return c.NoContent(204)
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// No body, no content-length header.
+	_, err := runChain(t, chain, "GET", "/api/empty")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	labels := map[string]string{"method": "GET", "path": "/api/empty", "status": "204"}
+	reqCount := getHistogramCount(t, reg, "celeris_request_size_bytes", labels)
+	if reqCount != 0 {
+		t.Fatalf("request_size_bytes should not record zero body: got count %d", reqCount)
+	}
+	respCount := getHistogramCount(t, reg, "celeris_response_size_bytes", labels)
+	if respCount != 0 {
+		t.Fatalf("response_size_bytes should not record zero body: got count %d", respCount)
+	}
+}
+
+func TestLabelFuncsCustomLabels(t *testing.T) {
+	reg := newIsolatedRegistry()
+	mw := New(Config{
+		Registry: reg,
+		LabelFuncs: map[string]func(*celeris.Context) string{
+			"region": func(c *celeris.Context) string {
+				v := c.Header("x-region")
+				if v == "" {
+					return "unknown"
+				}
+				return v
+			},
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	_, err := runChain(t, chain, "GET", "/api/region",
+		celeristest.WithHeader("x-region", "us-east-1"),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	labels := map[string]string{
+		"method": "GET",
+		"path":   "/api/region",
+		"status": "200",
+		"region": "us-east-1",
+	}
+	count := getCounterValue(t, reg, "celeris_requests_total", labels)
+	if count != 1 {
+		t.Fatalf("requests_total with custom label: got %v, want 1", count)
+	}
+	histCount := getHistogramCount(t, reg, "celeris_request_duration_seconds", labels)
+	if histCount != 1 {
+		t.Fatalf("duration histogram with custom label: got %d, want 1", histCount)
+	}
+}
+
+func TestLabelFuncsMultipleLabels(t *testing.T) {
+	reg := newIsolatedRegistry()
+	mw := New(Config{
+		Registry: reg,
+		LabelFuncs: map[string]func(*celeris.Context) string{
+			"az": func(c *celeris.Context) string {
+				v := c.Header("x-az")
+				if v == "" {
+					return "unknown"
+				}
+				return v
+			},
+			"region": func(c *celeris.Context) string {
+				v := c.Header("x-region")
+				if v == "" {
+					return "unknown"
+				}
+				return v
+			},
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	_, err := runChain(t, chain, "GET", "/api/multi",
+		celeristest.WithHeader("x-region", "eu-west-1"),
+		celeristest.WithHeader("x-az", "a"),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	labels := map[string]string{
+		"method": "GET",
+		"path":   "/api/multi",
+		"status": "200",
+		"region": "eu-west-1",
+		"az":     "a",
+	}
+	count := getCounterValue(t, reg, "celeris_requests_total", labels)
+	if count != 1 {
+		t.Fatalf("requests_total with multiple custom labels: got %v, want 1", count)
+	}
+}
+
+func TestHistogramOptsCallback(t *testing.T) {
+	reg := newIsolatedRegistry()
+	customBuckets := []float64{256, 1024, 4096}
+	mw := New(Config{
+		Registry: reg,
+		HistogramOpts: func(opts *prometheus.HistogramOpts) {
+			if opts.Name == "request_size_bytes" {
+				opts.Buckets = customBuckets
+			}
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	body := []byte("x")
+	_, err := runChain(t, chain, "POST", "/api/opts",
+		celeristest.WithBody(body),
+		celeristest.WithHeader("content-length", "1"),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mfs, gatherErr := reg.Gather()
+	if gatherErr != nil {
+		t.Fatalf("gather: %v", gatherErr)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "celeris_request_size_bytes" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			h := m.GetHistogram()
+			if h == nil {
+				continue
+			}
+			buckets := h.GetBucket()
+			if len(buckets) != len(customBuckets) {
+				t.Fatalf("expected %d buckets, got %d", len(customBuckets), len(buckets))
+			}
+			for i, b := range buckets {
+				if b.GetUpperBound() != customBuckets[i] {
+					t.Fatalf("bucket %d: got %v, want %v", i, b.GetUpperBound(), customBuckets[i])
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("request_size_bytes metric not found")
+}
+
+func TestCounterOptsCallback(t *testing.T) {
+	reg := newIsolatedRegistry()
+	var callbackCalled bool
+	mw := New(Config{
+		Registry: reg,
+		CounterOpts: func(opts *prometheus.CounterOpts) {
+			callbackCalled = true
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	_, err := runChain(t, chain, "GET", "/api/counter-opts")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !callbackCalled {
+		t.Fatal("CounterOpts callback was not invoked")
+	}
+}
+
+func TestSizeMetricsVisibleOnEndpoint(t *testing.T) {
+	reg := newIsolatedRegistry()
+	mw := New(Config{Registry: reg})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "response body here")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// Generate a request with body to produce size metrics.
+	body := []byte("request body")
+	_, err := runChain(t, chain, "POST", "/api/data",
+		celeristest.WithBody(body),
+		celeristest.WithHeader("content-length", fmt.Sprintf("%d", len(body))),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Fetch the metrics endpoint.
+	rec, err := runChain(t, chain, "GET", "/metrics")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := rec.BodyString()
+	if !strings.Contains(output, "celeris_request_size_bytes") {
+		t.Fatalf("metrics output missing celeris_request_size_bytes:\n%s", output)
+	}
+	if !strings.Contains(output, "celeris_response_size_bytes") {
+		t.Fatalf("metrics output missing celeris_response_size_bytes:\n%s", output)
 	}
 }

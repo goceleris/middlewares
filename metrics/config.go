@@ -47,6 +47,21 @@ type Config struct {
 	// endpoint. If it returns false, the middleware responds with 403 Forbidden.
 	// Default: nil (no auth, all requests to the metrics endpoint are served).
 	AuthFunc func(c *celeris.Context) bool
+
+	// LabelFuncs defines custom label dimensions appended to all metric
+	// label sets. Each map key becomes a label name and the function extracts
+	// the label value from the request context. The functions are called
+	// after c.Next() returns, so response-derived values are available.
+	LabelFuncs map[string]func(*celeris.Context) string
+
+	// HistogramOpts is an optional callback invoked during initialization for
+	// each histogram metric. Use it to customize bucket boundaries or other
+	// histogram options per-metric.
+	HistogramOpts func(*prometheus.HistogramOpts)
+
+	// CounterOpts is an optional callback invoked during initialization for
+	// each counter metric. Use it to customize counter options per-metric.
+	CounterOpts func(*prometheus.CounterOpts)
 }
 
 // DefaultConfig is the default metrics configuration.
