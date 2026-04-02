@@ -59,11 +59,24 @@ type Config struct {
 	KeyFunc jwtparse.Keyfunc
 
 	// JWKSURL is a URL for JWKS auto-discovery (e.g. Auth0, Keycloak).
+	// When JWKSURLs is also set, this URL is prepended to that list.
 	JWKSURL string
+
+	// JWKSURLs is a list of JWKS URLs for multi-provider federation.
+	// When a token's kid is not found in one provider's keyset, the
+	// next URL's keys are tried in order. If JWKSURL is also set, it
+	// is treated as the first entry.
+	JWKSURLs []string
 
 	// JWKSRefresh is the interval for re-fetching the JWKS keyset.
 	// Default: 1h.
 	JWKSRefresh time.Duration
+
+	// TokenProcessorFunc is called on the raw token string after extraction
+	// but before parsing. Use it for decryption, decompression, or other
+	// transformations. If it returns an error, the middleware returns
+	// ErrTokenInvalid wrapping that error.
+	TokenProcessorFunc func(token string) (string, error)
 
 	// TokenContextKey overrides the context store key for the parsed token.
 	// Default: "jwt_token" (TokenKey).
@@ -118,11 +131,14 @@ func applyDefaults(cfg Config) Config {
 }
 
 func (cfg Config) validate() {
-	if cfg.SigningKey == nil && len(cfg.SigningKeys) == 0 && cfg.KeyFunc == nil && cfg.JWKSURL == "" {
-		panic("jwt: one of SigningKey, SigningKeys, KeyFunc, or JWKSURL is required")
+	if cfg.SigningKey == nil && len(cfg.SigningKeys) == 0 && cfg.KeyFunc == nil && cfg.JWKSURL == "" && len(cfg.JWKSURLs) == 0 {
+		panic("jwt: one of SigningKey, SigningKeys, KeyFunc, JWKSURL, or JWKSURLs is required")
 	}
 	if cfg.JWKSURL != "" {
 		validateJWKSURL(cfg.JWKSURL)
+	}
+	for _, u := range cfg.JWKSURLs {
+		validateJWKSURL(u)
 	}
 }
 
@@ -220,9 +236,16 @@ func resolveKeyFunc(cfg Config, customValidMethods bool) jwtparse.Keyfunc {
 	if cfg.KeyFunc != nil {
 		return cfg.KeyFunc
 	}
-	if cfg.JWKSURL != "" {
-		fetcher := newJWKSFetcher(cfg.JWKSURL, cfg.JWKSRefresh)
-		return fetcher.keyFunc
+	jwksURLs := buildJWKSURLs(cfg)
+	if len(jwksURLs) > 0 {
+		fetchers := make([]*jwksFetcher, len(jwksURLs))
+		for i, u := range jwksURLs {
+			fetchers[i] = newJWKSFetcher(u, cfg.JWKSRefresh)
+		}
+		if len(fetchers) == 1 {
+			return fetchers[0].keyFunc
+		}
+		return multiJWKSKeyFunc(fetchers)
 	}
 	if len(cfg.SigningKeys) > 0 {
 		return func(t *jwtparse.Token) (any, error) {
@@ -244,5 +267,41 @@ func resolveKeyFunc(cfg Config, customValidMethods bool) jwtparse.Keyfunc {
 			return nil, fmt.Errorf("jwt: unexpected signing method: %v", t.Header.Alg)
 		}
 		return cfg.SigningKey, nil
+	}
+}
+
+// buildJWKSURLs merges JWKSURL and JWKSURLs into a single deduplicated list.
+func buildJWKSURLs(cfg Config) []string {
+	if cfg.JWKSURL == "" && len(cfg.JWKSURLs) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, 1+len(cfg.JWKSURLs))
+	urls := make([]string, 0, 1+len(cfg.JWKSURLs))
+	if cfg.JWKSURL != "" {
+		seen[cfg.JWKSURL] = struct{}{}
+		urls = append(urls, cfg.JWKSURL)
+	}
+	for _, u := range cfg.JWKSURLs {
+		if _, dup := seen[u]; !dup {
+			seen[u] = struct{}{}
+			urls = append(urls, u)
+		}
+	}
+	return urls
+}
+
+// multiJWKSKeyFunc creates a key function that tries multiple JWKS fetchers
+// in order. The first fetcher that returns a key for the token's kid wins.
+func multiJWKSKeyFunc(fetchers []*jwksFetcher) jwtparse.Keyfunc {
+	return func(t *jwtparse.Token) (any, error) {
+		var lastErr error
+		for _, f := range fetchers {
+			key, err := f.keyFunc(t)
+			if err == nil {
+				return key, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
 	}
 }

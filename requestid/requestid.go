@@ -30,18 +30,26 @@ func validID(id string) bool {
 	return true
 }
 
+// maxGeneratorRetries is the number of times a custom generator is retried
+// if it returns an empty string, before falling back to the built-in UUID.
+const maxGeneratorRetries = 3
+
 // New creates a request ID middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
 	cfg := DefaultConfig
 	if len(config) > 0 {
 		cfg = config[0]
 	}
+	isCustomGen := cfg.Generator != nil
 	cfg = applyDefaults(cfg)
 	cfg.validate()
 
 	header := cfg.Header
 	gen := cfg.Generator
 	trustProxy := cfg.TrustProxy == nil || *cfg.TrustProxy
+	afterGenerate := cfg.AfterGenerate
+
+	fallbackGen := defaultGenerator.UUID
 
 	skipMap := make(map[string]struct{}, len(cfg.SkipPaths))
 	for _, p := range cfg.SkipPaths {
@@ -66,10 +74,26 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 		if id == "" {
 			id = gen()
+			if id == "" && isCustomGen {
+				for range maxGeneratorRetries - 1 {
+					id = gen()
+					if id != "" {
+						break
+					}
+				}
+				if id == "" {
+					id = fallbackGen()
+				}
+			}
 		}
 
 		c.SetHeader(header, id)
 		c.Set(ContextKey, id)
+
+		if afterGenerate != nil {
+			afterGenerate(c, id)
+		}
+
 		return c.Next()
 	}
 }

@@ -22,6 +22,11 @@ type Config struct {
 	// generated. Set to false when running behind untrusted clients to
 	// prevent request ID spoofing.
 	TrustProxy *bool
+
+	// AfterGenerate is called after a request ID is generated or extracted.
+	// It receives the context and the request ID. Use it for logging, tracing,
+	// or storing the ID in additional locations.
+	AfterGenerate func(c *celeris.Context, id string)
 }
 
 // boolPtr returns a pointer to b.

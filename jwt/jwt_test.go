@@ -1017,3 +1017,159 @@ func TestRSAPSSSigningMethodReExported(t *testing.T) {
 		}
 	}
 }
+
+// --- TokenProcessorFunc tests ---
+
+func TestTokenProcessorFuncTransformsToken(t *testing.T) {
+	tokenStr := signToken(jwtparse.MapClaims{"sub": "processor-user"})
+	// Prepend "enc:" to the token, then strip it in the processor.
+	encToken := "enc:" + tokenStr
+	mw := New(Config{
+		SigningKey: testSecret,
+		TokenProcessorFunc: func(token string) (string, error) {
+			if len(token) > 4 && token[:4] == "enc:" {
+				return token[4:], nil
+			}
+			return token, nil
+		},
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+encToken),
+	)
+	assertNoError(t, err)
+	assertStatus(t, rec, 200)
+}
+
+func TestTokenProcessorFuncErrorReturnsErrTokenInvalid(t *testing.T) {
+	tokenStr := signToken(jwtparse.MapClaims{"sub": "1"})
+	mw := New(Config{
+		SigningKey: testSecret,
+		TokenProcessorFunc: func(_ string) (string, error) {
+			return "", errors.New("decryption failed")
+		},
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertHTTPError(t, err, 401)
+	if !errors.Is(err, ErrTokenInvalid) {
+		t.Fatalf("expected ErrTokenInvalid, got %v", err)
+	}
+}
+
+func TestTokenProcessorFuncNilPassesThrough(t *testing.T) {
+	tokenStr := signToken(jwtparse.MapClaims{"sub": "no-processor"})
+	mw := New(Config{
+		SigningKey:         testSecret,
+		TokenProcessorFunc: nil,
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+	assertStatus(t, rec, 200)
+}
+
+func TestTokenProcessorFuncIdentity(t *testing.T) {
+	tokenStr := signToken(jwtparse.MapClaims{"sub": "identity"})
+	mw := New(Config{
+		SigningKey: testSecret,
+		TokenProcessorFunc: func(token string) (string, error) {
+			return token, nil
+		},
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+	assertStatus(t, rec, 200)
+}
+
+// --- JWKSURLs (multi-JWKS) tests ---
+
+func TestBuildJWKSURLsSingleURL(t *testing.T) {
+	urls := buildJWKSURLs(Config{JWKSURL: "https://a.com/jwks"})
+	if len(urls) != 1 || urls[0] != "https://a.com/jwks" {
+		t.Fatalf("expected [https://a.com/jwks], got %v", urls)
+	}
+}
+
+func TestBuildJWKSURLsMultipleURLs(t *testing.T) {
+	urls := buildJWKSURLs(Config{JWKSURLs: []string{"https://a.com/jwks", "https://b.com/jwks"}})
+	if len(urls) != 2 {
+		t.Fatalf("expected 2 URLs, got %d", len(urls))
+	}
+}
+
+func TestBuildJWKSURLsMergesSingleAndMultiple(t *testing.T) {
+	urls := buildJWKSURLs(Config{
+		JWKSURL:  "https://a.com/jwks",
+		JWKSURLs: []string{"https://b.com/jwks", "https://c.com/jwks"},
+	})
+	if len(urls) != 3 {
+		t.Fatalf("expected 3 URLs, got %d", len(urls))
+	}
+	if urls[0] != "https://a.com/jwks" {
+		t.Fatalf("expected JWKSURL first, got %v", urls)
+	}
+}
+
+func TestBuildJWKSURLsDeduplicates(t *testing.T) {
+	urls := buildJWKSURLs(Config{
+		JWKSURL:  "https://a.com/jwks",
+		JWKSURLs: []string{"https://a.com/jwks", "https://b.com/jwks"},
+	})
+	if len(urls) != 2 {
+		t.Fatalf("expected 2 URLs (deduplicated), got %d: %v", len(urls), urls)
+	}
+}
+
+func TestBuildJWKSURLsEmpty(t *testing.T) {
+	urls := buildJWKSURLs(Config{})
+	if urls != nil {
+		t.Fatalf("expected nil, got %v", urls)
+	}
+}
+
+func TestJWKSURLsOnlyValidation(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for empty config")
+		}
+	}()
+	New(Config{})
+}
+
+func TestJWKSURLsAcceptedAsOnlyKeySource(t *testing.T) {
+	// Should not panic when JWKSURLs is the only key source.
+	defer func() {
+		if r := recover(); r != nil {
+			msg, _ := r.(string)
+			if contains(msg, "required") {
+				t.Fatalf("JWKSURLs should be accepted as key source, got panic: %v", r)
+			}
+		}
+	}()
+	validateJWKSURL("http://localhost:8080/jwks")
+	_ = buildJWKSURLs(Config{JWKSURLs: []string{"http://localhost:8080/jwks"}})
+}
+
+func TestJWKSURLsHTTPSEnforcement(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for non-HTTPS JWKSURLs entry")
+		}
+	}()
+	New(Config{
+		JWKSURLs: []string{"http://external.example.com/jwks"},
+	})
+}

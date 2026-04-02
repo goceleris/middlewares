@@ -450,3 +450,164 @@ func TestTrustProxyFalseContextStore(t *testing.T) {
 		t.Fatal("context store should contain a generated ID")
 	}
 }
+
+// --- AfterGenerate callback tests ---
+
+func TestAfterGenerateCalledWithGeneratedID(t *testing.T) {
+	var callbackID string
+	var callbackCalled bool
+	mw := New(Config{
+		AfterGenerate: func(_ *celeris.Context, id string) {
+			callbackCalled = true
+			callbackID = id
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	if !callbackCalled {
+		t.Fatal("AfterGenerate was not called")
+	}
+	if callbackID == "" {
+		t.Fatal("AfterGenerate received empty ID")
+	}
+	headerID := rec.Header("x-request-id")
+	if callbackID != headerID {
+		t.Fatalf("AfterGenerate ID %q != response header ID %q", callbackID, headerID)
+	}
+}
+
+func TestAfterGenerateCalledWithPropagatedID(t *testing.T) {
+	var callbackID string
+	mw := New(Config{
+		AfterGenerate: func(_ *celeris.Context, id string) {
+			callbackID = id
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-request-id", "propagated-123"))
+	testutil.AssertNoError(t, err)
+	if callbackID != "propagated-123" {
+		t.Fatalf("AfterGenerate got %q, want %q", callbackID, "propagated-123")
+	}
+}
+
+func TestAfterGenerateNotCalledOnSkip(t *testing.T) {
+	var called bool
+	mw := New(Config{
+		Skip: func(_ *celeris.Context) bool { return true },
+		AfterGenerate: func(_ *celeris.Context, _ string) {
+			called = true
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	if called {
+		t.Fatal("AfterGenerate should not be called on skipped requests")
+	}
+}
+
+func TestAfterGenerateNilDoesNotPanic(t *testing.T) {
+	mw := New(Config{AfterGenerate: nil})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+}
+
+// --- Generator retry with fallback tests ---
+
+func TestGeneratorRetryOnEmptyString(t *testing.T) {
+	var callCount int
+	mw := New(Config{
+		Generator: func() string {
+			callCount++
+			if callCount <= 2 {
+				return ""
+			}
+			return "retry-success"
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "x-request-id", "retry-success")
+	if callCount != 3 {
+		t.Fatalf("expected 3 generator calls, got %d", callCount)
+	}
+}
+
+func TestGeneratorFallbackToUUIDAfterMaxRetries(t *testing.T) {
+	var callCount int
+	mw := New(Config{
+		Generator: func() string {
+			callCount++
+			return ""
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	id := rec.Header("x-request-id")
+	if id == "" {
+		t.Fatal("expected fallback UUID, got empty string")
+	}
+	if !uuidRe.MatchString(id) {
+		t.Fatalf("expected fallback UUID format, got %q", id)
+	}
+	if callCount != 3 {
+		t.Fatalf("expected 3 generator calls (1 initial + 2 retries), got %d", callCount)
+	}
+}
+
+func TestGeneratorSuccessOnFirstCallNoRetry(t *testing.T) {
+	var callCount int
+	mw := New(Config{
+		Generator: func() string {
+			callCount++
+			return "first-try"
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "x-request-id", "first-try")
+	if callCount != 1 {
+		t.Fatalf("expected 1 generator call, got %d", callCount)
+	}
+}
+
+func TestDefaultGeneratorNoRetry(t *testing.T) {
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	id := rec.Header("x-request-id")
+	if id == "" {
+		t.Fatal("expected UUID")
+	}
+	if !uuidRe.MatchString(id) {
+		t.Fatalf("expected UUID format, got %q", id)
+	}
+}
+
+func TestGeneratorRetrySucceedsOnSecondAttempt(t *testing.T) {
+	var callCount int
+	mw := New(Config{
+		Generator: func() string {
+			callCount++
+			if callCount == 1 {
+				return ""
+			}
+			return "second-attempt"
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "x-request-id", "second-attempt")
+	if callCount != 2 {
+		t.Fatalf("expected 2 generator calls, got %d", callCount)
+	}
+}
