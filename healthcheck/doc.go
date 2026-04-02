@@ -51,6 +51,26 @@
 // path matching occurs. This is useful for conditional healthcheck
 // routing based on request properties.
 //
+// # Performance
+//
+// When [Config].CheckerTimeout is zero or negative (after applyDefaults,
+// set it to -1 to opt in), the checker runs synchronously inline with
+// zero goroutine, channel, or context overhead. Use this fast-path for
+// trivial checkers that cannot block:
+//
+//	healthcheck.New(healthcheck.Config{CheckerTimeout: -1})
+//
+// # Disabling Probes
+//
+// Setting a probe path to the empty string disables that probe entirely.
+// Requests to the disabled path pass through to the next handler:
+//
+//	healthcheck.New(healthcheck.Config{
+//	    LivePath:  "/livez",
+//	    ReadyPath: "/readyz",
+//	    StartPath: "", // startup probe disabled
+//	})
+//
 // # Response Format
 //
 // 200: {"status": "ok"}

@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ func okHandler(c *celeris.Context) error {
 }
 
 func TestLivenessDefault(t *testing.T) {
+	t.Parallel()
 	mw := New()
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/livez")
 	testutil.AssertNoError(t, err)
@@ -31,6 +33,7 @@ func TestLivenessDefault(t *testing.T) {
 }
 
 func TestReadinessDefault(t *testing.T) {
+	t.Parallel()
 	mw := New()
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/readyz")
 	testutil.AssertNoError(t, err)
@@ -46,6 +49,7 @@ func TestReadinessDefault(t *testing.T) {
 }
 
 func TestStartupDefault(t *testing.T) {
+	t.Parallel()
 	mw := New()
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/startupz")
 	testutil.AssertNoError(t, err)
@@ -61,14 +65,15 @@ func TestStartupDefault(t *testing.T) {
 }
 
 func TestCheckerReturnsFalse(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		cfg  Config
 		path string
 	}{
-		{"live", Config{LiveChecker: func(_ *celeris.Context) bool { return false }}, "/livez"},
-		{"ready", Config{ReadyChecker: func(_ *celeris.Context) bool { return false }}, "/readyz"},
-		{"start", Config{StartChecker: func(_ *celeris.Context) bool { return false }}, "/startupz"},
+		{"live", Config{LivePath: "/livez", ReadyPath: "/readyz", StartPath: "/startupz", LiveChecker: func(_ *celeris.Context) bool { return false }}, "/livez"},
+		{"ready", Config{LivePath: "/livez", ReadyPath: "/readyz", StartPath: "/startupz", ReadyChecker: func(_ *celeris.Context) bool { return false }}, "/readyz"},
+		{"start", Config{LivePath: "/livez", ReadyPath: "/readyz", StartPath: "/startupz", StartChecker: func(_ *celeris.Context) bool { return false }}, "/startupz"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -89,6 +94,7 @@ func TestCheckerReturnsFalse(t *testing.T) {
 }
 
 func TestNonProbePath(t *testing.T) {
+	t.Parallel()
 	mw := New()
 	chain := []celeris.HandlerFunc{mw, okHandler}
 	rec, err := testutil.RunChain(t, chain, "GET", "/api/users")
@@ -98,6 +104,7 @@ func TestNonProbePath(t *testing.T) {
 }
 
 func TestCustomPaths(t *testing.T) {
+	t.Parallel()
 	mw := New(Config{
 		LivePath:  "/health/live",
 		ReadyPath: "/health/ready",
@@ -125,6 +132,7 @@ func TestCustomPaths(t *testing.T) {
 }
 
 func TestDefaultConfigPaths(t *testing.T) {
+	t.Parallel()
 	if DefaultConfig.LivePath != "/livez" {
 		t.Fatalf("DefaultConfig.LivePath: got %q, want %q", DefaultConfig.LivePath, "/livez")
 	}
@@ -137,6 +145,7 @@ func TestDefaultConfigPaths(t *testing.T) {
 }
 
 func TestDefaultConfigCheckers(t *testing.T) {
+	t.Parallel()
 	if DefaultConfig.LiveChecker == nil {
 		t.Fatal("DefaultConfig.LiveChecker should not be nil")
 	}
@@ -157,20 +166,22 @@ func TestDefaultConfigCheckers(t *testing.T) {
 	}
 }
 
-func TestApplyDefaultsFillsPaths(t *testing.T) {
+func TestApplyDefaultsLeavesEmptyPaths(t *testing.T) {
+	t.Parallel()
 	cfg := applyDefaults(Config{})
-	if cfg.LivePath != "/livez" {
-		t.Fatalf("applyDefaults LivePath: got %q, want %q", cfg.LivePath, "/livez")
+	if cfg.LivePath != "" {
+		t.Fatalf("applyDefaults LivePath: got %q, want empty", cfg.LivePath)
 	}
-	if cfg.ReadyPath != "/readyz" {
-		t.Fatalf("applyDefaults ReadyPath: got %q, want %q", cfg.ReadyPath, "/readyz")
+	if cfg.ReadyPath != "" {
+		t.Fatalf("applyDefaults ReadyPath: got %q, want empty", cfg.ReadyPath)
 	}
-	if cfg.StartPath != "/startupz" {
-		t.Fatalf("applyDefaults StartPath: got %q, want %q", cfg.StartPath, "/startupz")
+	if cfg.StartPath != "" {
+		t.Fatalf("applyDefaults StartPath: got %q, want empty", cfg.StartPath)
 	}
 }
 
 func TestApplyDefaultsFillsCheckers(t *testing.T) {
+	t.Parallel()
 	cfg := applyDefaults(Config{})
 	if cfg.LiveChecker == nil || cfg.ReadyChecker == nil || cfg.StartChecker == nil {
 		t.Fatal("applyDefaults should fill nil checkers")
@@ -178,6 +189,7 @@ func TestApplyDefaultsFillsCheckers(t *testing.T) {
 }
 
 func TestApplyDefaultsPreservesCustom(t *testing.T) {
+	t.Parallel()
 	custom := func(_ *celeris.Context) bool { return false }
 	cfg := applyDefaults(Config{
 		LivePath:     "/l",
@@ -202,6 +214,7 @@ func TestApplyDefaultsPreservesCustom(t *testing.T) {
 }
 
 func TestPOSTMethodPassesThrough(t *testing.T) {
+	t.Parallel()
 	mw := New()
 	chain := []celeris.HandlerFunc{mw, okHandler}
 	rec, err := testutil.RunChain(t, chain, "POST", "/livez")
@@ -211,6 +224,7 @@ func TestPOSTMethodPassesThrough(t *testing.T) {
 }
 
 func TestHEADMethodAllowed(t *testing.T) {
+	t.Parallel()
 	mw := New()
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "HEAD", "/livez")
 	testutil.AssertNoError(t, err)
@@ -219,6 +233,7 @@ func TestHEADMethodAllowed(t *testing.T) {
 }
 
 func TestExportedPathConstants(t *testing.T) {
+	t.Parallel()
 	if DefaultLivePath != "/livez" {
 		t.Fatalf("DefaultLivePath: got %q, want %q", DefaultLivePath, "/livez")
 	}
@@ -246,6 +261,7 @@ func FuzzHealthcheckPaths(f *testing.F) {
 }
 
 func TestContentTypeJSON(t *testing.T) {
+	t.Parallel()
 	mw := New()
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/livez")
 	testutil.AssertNoError(t, err)
@@ -254,8 +270,12 @@ func TestContentTypeJSON(t *testing.T) {
 }
 
 func TestCheckerReceivesContext(t *testing.T) {
+	t.Parallel()
 	var received bool
 	mw := New(Config{
+		LivePath:  "/livez",
+		ReadyPath: "/readyz",
+		StartPath: "/startupz",
 		LiveChecker: func(c *celeris.Context) bool {
 			received = c != nil
 			return true
@@ -270,8 +290,12 @@ func TestCheckerReceivesContext(t *testing.T) {
 }
 
 func TestSkipBypassesHealthcheck(t *testing.T) {
+	t.Parallel()
 	mw := New(Config{
-		Skip: func(_ *celeris.Context) bool { return true },
+		LivePath:  "/livez",
+		ReadyPath: "/readyz",
+		StartPath: "/startupz",
+		Skip:      func(_ *celeris.Context) bool { return true },
 	})
 	chain := []celeris.HandlerFunc{mw, okHandler}
 	rec, err := testutil.RunChain(t, chain, "GET", "/livez")
@@ -281,8 +305,12 @@ func TestSkipBypassesHealthcheck(t *testing.T) {
 }
 
 func TestSkipFalseStillMatchesProbe(t *testing.T) {
+	t.Parallel()
 	mw := New(Config{
-		Skip: func(_ *celeris.Context) bool { return false },
+		LivePath:  "/livez",
+		ReadyPath: "/readyz",
+		StartPath: "/startupz",
+		Skip:      func(_ *celeris.Context) bool { return false },
 	})
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/livez")
 	testutil.AssertNoError(t, err)
@@ -298,6 +326,7 @@ func TestSkipFalseStillMatchesProbe(t *testing.T) {
 }
 
 func TestCheckerTimeoutDefault(t *testing.T) {
+	t.Parallel()
 	cfg := applyDefaults(Config{})
 	if cfg.CheckerTimeout != 5*time.Second {
 		t.Fatalf("default CheckerTimeout: got %v, want 5s", cfg.CheckerTimeout)
@@ -305,7 +334,11 @@ func TestCheckerTimeoutDefault(t *testing.T) {
 }
 
 func TestCheckerTimeoutExceeded(t *testing.T) {
+	t.Parallel()
 	mw := New(Config{
+		LivePath:       "/livez",
+		ReadyPath:      "/readyz",
+		StartPath:      "/startupz",
 		CheckerTimeout: 10 * time.Millisecond,
 		LiveChecker: func(_ *celeris.Context) bool {
 			time.Sleep(100 * time.Millisecond)
@@ -326,7 +359,11 @@ func TestCheckerTimeoutExceeded(t *testing.T) {
 }
 
 func TestCheckerCompletesWithinTimeout(t *testing.T) {
+	t.Parallel()
 	mw := New(Config{
+		LivePath:       "/livez",
+		ReadyPath:      "/readyz",
+		StartPath:      "/startupz",
 		CheckerTimeout: 1 * time.Second,
 		LiveChecker: func(_ *celeris.Context) bool {
 			return true
@@ -338,7 +375,11 @@ func TestCheckerCompletesWithinTimeout(t *testing.T) {
 }
 
 func TestCheckerTimeoutAppliedToReady(t *testing.T) {
+	t.Parallel()
 	mw := New(Config{
+		LivePath:       "/livez",
+		ReadyPath:      "/readyz",
+		StartPath:      "/startupz",
 		CheckerTimeout: 10 * time.Millisecond,
 		ReadyChecker: func(_ *celeris.Context) bool {
 			time.Sleep(100 * time.Millisecond)
@@ -351,6 +392,7 @@ func TestCheckerTimeoutAppliedToReady(t *testing.T) {
 }
 
 func TestCheckerTimeoutCustomValue(t *testing.T) {
+	t.Parallel()
 	cfg := applyDefaults(Config{CheckerTimeout: 10 * time.Second})
 	if cfg.CheckerTimeout != 10*time.Second {
 		t.Fatalf("custom CheckerTimeout: got %v, want 10s", cfg.CheckerTimeout)
@@ -358,8 +400,12 @@ func TestCheckerTimeoutCustomValue(t *testing.T) {
 }
 
 func TestCheckerContextCancellation(t *testing.T) {
+	t.Parallel()
 	ctxDone := make(chan struct{})
 	mw := New(Config{
+		LivePath:       "/livez",
+		ReadyPath:      "/readyz",
+		StartPath:      "/startupz",
 		CheckerTimeout: 50 * time.Millisecond,
 		LiveChecker: func(c *celeris.Context) bool {
 			// Capture the context immediately to avoid racing with
@@ -385,8 +431,12 @@ func TestCheckerContextCancellation(t *testing.T) {
 // --- Fast-path (no timeout) tests ---
 
 func TestFastPathNoTimeout(t *testing.T) {
+	t.Parallel()
 	called := false
 	mw := New(Config{
+		LivePath:       "/livez",
+		ReadyPath:      "/readyz",
+		StartPath:      "/startupz",
 		CheckerTimeout: -1, // negative = fast-path, no goroutine
 		LiveChecker: func(_ *celeris.Context) bool {
 			called = true
@@ -410,7 +460,11 @@ func TestFastPathNoTimeout(t *testing.T) {
 }
 
 func TestFastPathReturnsFalse(t *testing.T) {
+	t.Parallel()
 	mw := New(Config{
+		LivePath:       "/livez",
+		ReadyPath:      "/readyz",
+		StartPath:      "/startupz",
 		CheckerTimeout: -1,
 		ReadyChecker: func(_ *celeris.Context) bool {
 			return false
@@ -430,7 +484,11 @@ func TestFastPathReturnsFalse(t *testing.T) {
 }
 
 func TestFastPathAllProbes(t *testing.T) {
+	t.Parallel()
 	mw := New(Config{
+		LivePath:       "/livez",
+		ReadyPath:      "/readyz",
+		StartPath:      "/startupz",
 		CheckerTimeout: -1,
 		LiveChecker:    func(_ *celeris.Context) bool { return true },
 		ReadyChecker:   func(_ *celeris.Context) bool { return false },
@@ -452,7 +510,8 @@ func TestFastPathAllProbes(t *testing.T) {
 
 // --- Validation panic tests ---
 
-func TestValidatePanicsOnEmptyPath(t *testing.T) {
+func TestValidateAcceptsEmptyPaths(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		cfg  Config
@@ -460,20 +519,18 @@ func TestValidatePanicsOnEmptyPath(t *testing.T) {
 		{"empty LivePath", Config{LivePath: "", ReadyPath: "/r", StartPath: "/s"}},
 		{"empty ReadyPath", Config{LivePath: "/l", ReadyPath: "", StartPath: "/s"}},
 		{"empty StartPath", Config{LivePath: "/l", ReadyPath: "/r", StartPath: ""}},
+		{"all empty", Config{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			defer func() {
-				if r := recover(); r == nil {
-					t.Fatal("expected panic for empty path")
-				}
-			}()
-			tt.cfg.validate()
+			t.Parallel()
+			tt.cfg.validate() // should not panic
 		})
 	}
 }
 
 func TestValidatePanicsOnMissingSlash(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		cfg  Config
@@ -495,6 +552,7 @@ func TestValidatePanicsOnMissingSlash(t *testing.T) {
 }
 
 func TestValidatePanicsOnOverlappingPaths(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		cfg  Config
@@ -516,6 +574,7 @@ func TestValidatePanicsOnOverlappingPaths(t *testing.T) {
 }
 
 func TestValidateAcceptsValidConfig(t *testing.T) {
+	t.Parallel()
 	// Should not panic.
 	cfg := Config{
 		LivePath:  "/l",
@@ -528,6 +587,7 @@ func TestValidateAcceptsValidConfig(t *testing.T) {
 // --- HEAD body suppression tests ---
 
 func TestHEADNoBodyLive(t *testing.T) {
+	t.Parallel()
 	mw := New()
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "HEAD", "/livez")
 	testutil.AssertNoError(t, err)
@@ -536,6 +596,7 @@ func TestHEADNoBodyLive(t *testing.T) {
 }
 
 func TestHEADNoBodyReady(t *testing.T) {
+	t.Parallel()
 	mw := New()
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "HEAD", "/readyz")
 	testutil.AssertNoError(t, err)
@@ -544,6 +605,7 @@ func TestHEADNoBodyReady(t *testing.T) {
 }
 
 func TestHEADNoBodyStartup(t *testing.T) {
+	t.Parallel()
 	mw := New()
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "HEAD", "/startupz")
 	testutil.AssertNoError(t, err)
@@ -552,7 +614,11 @@ func TestHEADNoBodyStartup(t *testing.T) {
 }
 
 func TestHEADUnavailableNoBody(t *testing.T) {
+	t.Parallel()
 	mw := New(Config{
+		LivePath:    "/livez",
+		ReadyPath:   "/readyz",
+		StartPath:   "/startupz",
 		LiveChecker: func(_ *celeris.Context) bool { return false },
 	})
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "HEAD", "/livez")
@@ -562,6 +628,7 @@ func TestHEADUnavailableNoBody(t *testing.T) {
 }
 
 func TestGETStillReturnsBody(t *testing.T) {
+	t.Parallel()
 	mw := New()
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/livez")
 	testutil.AssertNoError(t, err)
@@ -574,4 +641,108 @@ func TestGETStillReturnsBody(t *testing.T) {
 	if resp.Status != "ok" {
 		t.Fatalf("status: got %q, want %q", resp.Status, "ok")
 	}
+}
+
+// --- Disabled probe tests ---
+
+func TestDisabledStartupProbePassesThrough(t *testing.T) {
+	t.Parallel()
+	mw := New(Config{
+		LivePath:  "/livez",
+		ReadyPath: "/readyz",
+		StartPath: "", // disabled
+	})
+
+	// Enabled probes still work.
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/livez")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+
+	rec, err = testutil.RunMiddlewareWithMethod(t, mw, "GET", "/readyz")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+
+	// Disabled probe path passes through to next handler.
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err = testutil.RunChain(t, chain, "GET", "/startupz")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertBodyContains(t, rec, "ok")
+}
+
+func TestDisabledLiveProbePassesThrough(t *testing.T) {
+	t.Parallel()
+	mw := New(Config{
+		LivePath:  "", // disabled
+		ReadyPath: "/readyz",
+		StartPath: "/startupz",
+	})
+
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/livez")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertBodyContains(t, rec, "ok")
+
+	// Enabled probes still respond.
+	rec, err = testutil.RunMiddlewareWithMethod(t, mw, "GET", "/readyz")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestDisabledAllProbesPassesThrough(t *testing.T) {
+	t.Parallel()
+	mw := New(Config{
+		LivePath:  "",
+		ReadyPath: "",
+		StartPath: "",
+	})
+
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	for _, path := range []string{"/livez", "/readyz", "/startupz", "/other"} {
+		rec, err := testutil.RunChain(t, chain, "GET", path)
+		testutil.AssertNoError(t, err)
+		testutil.AssertStatus(t, rec, 200)
+		testutil.AssertBodyContains(t, rec, "ok")
+	}
+}
+
+func TestValidateAcceptsDisabledWithEnabled(t *testing.T) {
+	t.Parallel()
+	// Two enabled probes with same path should still panic.
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for overlapping enabled paths")
+		}
+	}()
+	cfg := Config{LivePath: "/health", ReadyPath: "/health", StartPath: ""}
+	cfg.validate()
+}
+
+// --- Concurrent access test ---
+
+func TestConcurrentAccess(t *testing.T) {
+	t.Parallel()
+	mw := New()
+
+	var wg sync.WaitGroup
+	const goroutines = 10
+	const iterations = 100
+
+	wg.Add(goroutines)
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			for range iterations {
+				ctx, _ := celeristest.NewContext("GET", "/livez")
+				err := mw(ctx)
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+					return
+				}
+				celeristest.ReleaseContext(ctx)
+			}
+		}()
+	}
+	wg.Wait()
 }

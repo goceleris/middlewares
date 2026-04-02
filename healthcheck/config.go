@@ -68,15 +68,7 @@ var DefaultConfig = Config{
 }
 
 func applyDefaults(cfg Config) Config {
-	if cfg.LivePath == "" {
-		cfg.LivePath = DefaultConfig.LivePath
-	}
-	if cfg.ReadyPath == "" {
-		cfg.ReadyPath = DefaultConfig.ReadyPath
-	}
-	if cfg.StartPath == "" {
-		cfg.StartPath = DefaultConfig.StartPath
-	}
+	// Paths: empty string means "disabled" — do not fill with default.
 	if cfg.LiveChecker == nil {
 		cfg.LiveChecker = DefaultConfig.LiveChecker
 	}
@@ -102,19 +94,20 @@ func (cfg Config) validate() {
 	}
 	for _, p := range paths {
 		if p.value == "" {
-			panic(fmt.Sprintf("healthcheck: %s must not be empty", p.name))
+			continue // disabled probe
 		}
 		if p.value[0] != '/' {
 			panic(fmt.Sprintf("healthcheck: %s %q must start with '/'", p.name, p.value))
 		}
 	}
-	if cfg.LivePath == cfg.ReadyPath {
+	// Overlap checks only apply to enabled (non-empty) probes.
+	if cfg.LivePath != "" && cfg.LivePath == cfg.ReadyPath {
 		panic(fmt.Sprintf("healthcheck: LivePath and ReadyPath must differ, both are %q", cfg.LivePath))
 	}
-	if cfg.LivePath == cfg.StartPath {
+	if cfg.LivePath != "" && cfg.LivePath == cfg.StartPath {
 		panic(fmt.Sprintf("healthcheck: LivePath and StartPath must differ, both are %q", cfg.LivePath))
 	}
-	if cfg.ReadyPath == cfg.StartPath {
+	if cfg.ReadyPath != "" && cfg.ReadyPath == cfg.StartPath {
 		panic(fmt.Sprintf("healthcheck: ReadyPath and StartPath must differ, both are %q", cfg.ReadyPath))
 	}
 }

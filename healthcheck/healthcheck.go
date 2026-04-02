@@ -47,12 +47,12 @@ func New(config ...Config) celeris.HandlerFunc {
 		path := c.Path()
 
 		var ok bool
-		switch path {
-		case livePath:
+		switch {
+		case livePath != "" && path == livePath:
 			ok = runChecker(liveChecker, c, checkerTimeout)
-		case readyPath:
+		case readyPath != "" && path == readyPath:
 			ok = runChecker(readyChecker, c, checkerTimeout)
-		case startPath:
+		case startPath != "" && path == startPath:
 			ok = runChecker(startChecker, c, checkerTimeout)
 		default:
 			return c.Next()
