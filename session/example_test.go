@@ -1,6 +1,7 @@
 package session_test
 
 import (
+	"context"
 	"time"
 
 	"github.com/goceleris/celeris"
@@ -88,5 +89,25 @@ func ExampleNew_customStore() {
 	var myStore session.Store // = redis.NewStore(...)
 	_ = session.New(session.Config{
 		Store: myStore,
+	})
+}
+
+func ExampleStore_Reset() {
+	store := session.NewMemoryStore()
+	// Wipe all sessions (e.g., admin "log out all users").
+	_ = store.Reset(context.Background())
+}
+
+func ExampleNew_contextAwareStore() {
+	// The middleware passes the request context to every Store method,
+	// so network-backed stores can respect cancellation and deadlines.
+	_ = session.New(session.Config{
+		Store: session.NewMemoryStore(), // swap with a Redis/SQL store
+	})
+	_ = celeris.HandlerFunc(func(c *celeris.Context) error {
+		s := session.FromContext(c)
+		// Store.Save receives c.Context() automatically on post-handler save.
+		s.Set("user", "admin")
+		return nil
 	})
 }

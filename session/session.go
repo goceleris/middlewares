@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"sort"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ type Session struct {
 	id          string
 	data        map[string]any
 	store       Store
+	ctx         context.Context
 	expiry      time.Duration
 	idleOverride time.Duration // per-session idle timeout override; 0 = use config default
 	keyGen      func() string
@@ -123,7 +125,7 @@ func (s *Session) Len() int {
 // after the handler chain when the session has been modified; call it
 // explicitly only if you need to guarantee persistence mid-handler.
 func (s *Session) Save() error {
-	return s.store.Save(s.id, s.data, s.expiry)
+	return s.store.Save(s.ctx, s.id, s.data, s.expiry)
 }
 
 // Destroy invalidates the session by clearing data and deleting it from
@@ -132,7 +134,7 @@ func (s *Session) Destroy() error {
 	s.data = make(map[string]any)
 	s.modified = false
 	s.destroyed = true
-	return s.store.Delete(s.id)
+	return s.store.Delete(s.ctx, s.id)
 }
 
 // Regenerate issues a new session ID while preserving data. The old session
@@ -142,7 +144,7 @@ func (s *Session) Destroy() error {
 func (s *Session) Regenerate() error {
 	oldID := s.id
 	s.id = s.keyGen()
-	if err := s.store.Delete(oldID); err != nil {
+	if err := s.store.Delete(s.ctx, oldID); err != nil {
 		return err
 	}
 	s.modified = true
@@ -248,8 +250,11 @@ func New(config ...Config) celeris.HandlerFunc {
 			return c.Next()
 		}
 
+		reqCtx := c.Context()
+
 		sess := sessionPool.Get().(*Session)
 		sess.store = store
+		sess.ctx = reqCtx
 		sess.expiry = idleTimeout
 		sess.keyGen = keyGen
 		sess.data = make(map[string]any)
@@ -265,7 +270,7 @@ func New(config ...Config) celeris.HandlerFunc {
 			sid = ""
 		}
 		if sid != "" {
-			data, loadErr := store.Get(sid)
+			data, loadErr := store.Get(reqCtx, sid)
 			if loadErr != nil {
 				return errorHandler(c, loadErr)
 			}
@@ -275,7 +280,7 @@ func New(config ...Config) celeris.HandlerFunc {
 					if created, ok := ts.(int64); ok {
 						if time.Since(time.Unix(0, created)) > absTimeout {
 							// Session exceeded absolute timeout; destroy and create fresh.
-							_ = store.Delete(sid)
+							_ = store.Delete(reqCtx, sid)
 							data = nil
 						}
 					}
@@ -314,7 +319,7 @@ func New(config ...Config) celeris.HandlerFunc {
 			if sess.idleOverride > 0 {
 				expiry = sess.idleOverride
 			}
-			saveErr := store.Save(sess.id, sess.data, expiry)
+			saveErr := store.Save(reqCtx, sess.id, sess.data, expiry)
 			if saveErr != nil {
 				return errorHandler(c, saveErr)
 			}
@@ -331,6 +336,7 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 
 		sess.data = nil
+		sess.ctx = nil
 		sessionPool.Put(sess)
 
 		return chainErr

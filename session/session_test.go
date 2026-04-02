@@ -93,11 +93,11 @@ func TestSessionIsFresh(t *testing.T) {
 
 func TestSessionSave(t *testing.T) {
 	store := NewMemoryStore()
-	s := &Session{id: "save-test", data: map[string]any{"k": "v"}, store: store, expiry: time.Hour}
+	s := &Session{id: "save-test", data: map[string]any{"k": "v"}, store: store, ctx: context.Background(), expiry: time.Hour}
 	if err := s.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	data, err := store.Get("save-test")
+	data, err := store.Get(context.Background(), "save-test")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -108,12 +108,12 @@ func TestSessionSave(t *testing.T) {
 
 func TestSessionSaveUsesExpiry(t *testing.T) {
 	store := NewMemoryStore()
-	s := &Session{id: "exp-test", data: map[string]any{"k": "v"}, store: store, expiry: time.Nanosecond}
+	s := &Session{id: "exp-test", data: map[string]any{"k": "v"}, store: store, ctx: context.Background(), expiry: time.Nanosecond}
 	if err := s.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	time.Sleep(time.Millisecond)
-	data, _ := store.Get("exp-test")
+	data, _ := store.Get(context.Background(), "exp-test")
 	if data != nil {
 		t.Fatal("expected session to be expired after Save with short expiry")
 	}
@@ -121,8 +121,8 @@ func TestSessionSaveUsesExpiry(t *testing.T) {
 
 func TestSessionDestroy(t *testing.T) {
 	store := NewMemoryStore()
-	_ = store.Save("destroy-test", map[string]any{"k": "v"}, time.Hour)
-	s := &Session{id: "destroy-test", data: map[string]any{"k": "v"}, store: store, modified: true}
+	_ = store.Save(context.Background(), "destroy-test", map[string]any{"k": "v"}, time.Hour)
+	s := &Session{id: "destroy-test", data: map[string]any{"k": "v"}, store: store, ctx: context.Background(), modified: true}
 	if err := s.Destroy(); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestSessionDestroy(t *testing.T) {
 	if !s.destroyed {
 		t.Fatal("expected destroyed=true after Destroy")
 	}
-	data, _ := store.Get("destroy-test")
+	data, _ := store.Get(context.Background(), "destroy-test")
 	if data != nil {
 		t.Fatal("expected session deleted from store")
 	}
@@ -143,11 +143,12 @@ func TestSessionDestroy(t *testing.T) {
 
 func TestSessionRegenerate(t *testing.T) {
 	store := NewMemoryStore()
-	_ = store.Save("old-id", map[string]any{"user": "admin"}, time.Hour)
+	_ = store.Save(context.Background(), "old-id", map[string]any{"user": "admin"}, time.Hour)
 	s := &Session{
 		id:     "old-id",
 		data:   map[string]any{"user": "admin"},
 		store:  store,
+		ctx:    context.Background(),
 		expiry: time.Hour,
 		keyGen: func() string { return "new-id" },
 	}
@@ -162,7 +163,7 @@ func TestSessionRegenerate(t *testing.T) {
 		t.Fatal("expected modified=true after Regenerate")
 	}
 	// Old session should be deleted.
-	old, _ := store.Get("old-id")
+	old, _ := store.Get(context.Background(), "old-id")
 	if old != nil {
 		t.Fatal("expected old session deleted")
 	}
@@ -179,6 +180,7 @@ func TestRegeneratePreservesAbsExp(t *testing.T) {
 		id:     "old",
 		data:   map[string]any{absExpKey: ts, "user": "admin"},
 		store:  store,
+		ctx:    context.Background(),
 		expiry: time.Hour,
 		keyGen: func() string { return "new" },
 	}
@@ -225,7 +227,7 @@ func TestMemoryStoreCRUD(t *testing.T) {
 	store := NewMemoryStore()
 
 	// Get non-existent.
-	data, err := store.Get("nope")
+	data, err := store.Get(context.Background(), "nope")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -234,13 +236,13 @@ func TestMemoryStoreCRUD(t *testing.T) {
 	}
 
 	// Save.
-	err = store.Save("s1", map[string]any{"a": 1}, time.Hour)
+	err = store.Save(context.Background(), "s1", map[string]any{"a": 1}, time.Hour)
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
 	// Get existing.
-	data, err = store.Get("s1")
+	data, err = store.Get(context.Background(), "s1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -249,27 +251,27 @@ func TestMemoryStoreCRUD(t *testing.T) {
 	}
 
 	// Update.
-	err = store.Save("s1", map[string]any{"a": 2, "b": 3}, time.Hour)
+	err = store.Save(context.Background(), "s1", map[string]any{"a": 2, "b": 3}, time.Hour)
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	data, _ = store.Get("s1")
+	data, _ = store.Get(context.Background(), "s1")
 	if data["a"] != 2 || data["b"] != 3 {
 		t.Fatalf("updated data: got %v", data)
 	}
 
 	// Delete.
-	err = store.Delete("s1")
+	err = store.Delete(context.Background(), "s1")
 	if err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	data, _ = store.Get("s1")
+	data, _ = store.Get(context.Background(), "s1")
 	if data != nil {
 		t.Fatal("expected nil after Delete")
 	}
 
 	// Delete non-existent (no error).
-	err = store.Delete("nope")
+	err = store.Delete(context.Background(), "nope")
 	if err != nil {
 		t.Fatalf("Delete non-existent: %v", err)
 	}
@@ -277,9 +279,9 @@ func TestMemoryStoreCRUD(t *testing.T) {
 
 func TestMemoryStoreExpiry(t *testing.T) {
 	store := NewMemoryStore()
-	_ = store.Save("exp", map[string]any{"k": "v"}, time.Nanosecond)
+	_ = store.Save(context.Background(), "exp", map[string]any{"k": "v"}, time.Nanosecond)
 	time.Sleep(time.Millisecond)
-	data, _ := store.Get("exp")
+	data, _ := store.Get(context.Background(), "exp")
 	if data != nil {
 		t.Fatal("expected nil for expired session")
 	}
@@ -295,11 +297,11 @@ func TestMemoryStoreCleanup(t *testing.T) {
 		CleanupContext:  ctx,
 	})
 
-	_ = store.Save("clean", map[string]any{"k": "v"}, time.Nanosecond)
+	_ = store.Save(context.Background(), "clean", map[string]any{"k": "v"}, time.Nanosecond)
 	time.Sleep(time.Millisecond)
 	// Wait for cleanup to run.
 	time.Sleep(50 * time.Millisecond)
-	data, _ := store.Get("clean")
+	data, _ := store.Get(context.Background(), "clean")
 	if data != nil {
 		t.Fatal("expected cleanup to remove expired session")
 	}
@@ -319,16 +321,16 @@ func TestMemoryStoreCleanupStopsOnCancel(t *testing.T) {
 func TestMemoryStoreDataIsolation(t *testing.T) {
 	store := NewMemoryStore()
 	original := map[string]any{"k": "v"}
-	_ = store.Save("iso", original, time.Hour)
+	_ = store.Save(context.Background(), "iso", original, time.Hour)
 	// Mutating the original should not affect stored data.
 	original["k"] = "mutated"
-	data, _ := store.Get("iso")
+	data, _ := store.Get(context.Background(), "iso")
 	if data["k"] != "v" {
 		t.Fatal("store data was mutated through original reference")
 	}
 	// Mutating the returned data should not affect stored data.
 	data["k"] = "also-mutated"
-	data2, _ := store.Get("iso")
+	data2, _ := store.Get(context.Background(), "iso")
 	if data2["k"] != "v" {
 		t.Fatal("store data was mutated through returned reference")
 	}
@@ -336,8 +338,8 @@ func TestMemoryStoreDataIsolation(t *testing.T) {
 
 func TestMemoryStoreNoExpiry(t *testing.T) {
 	store := NewMemoryStore()
-	_ = store.Save("noexp", map[string]any{"k": "v"}, 0)
-	data, _ := store.Get("noexp")
+	_ = store.Save(context.Background(), "noexp", map[string]any{"k": "v"}, 0)
+	data, _ := store.Get(context.Background(), "noexp")
 	if data == nil || data["k"] != "v" {
 		t.Fatal("expected session with no expiry to persist")
 	}
@@ -354,9 +356,9 @@ func TestMemoryStoreConcurrent(t *testing.T) {
 			defer wg.Done()
 			sid := "sess-" + string(rune('A'+id%26))
 			for range ops {
-				_ = store.Save(sid, map[string]any{"g": id}, time.Hour)
-				_, _ = store.Get(sid)
-				_ = store.Delete(sid)
+				_ = store.Save(context.Background(), sid, map[string]any{"g": id}, time.Hour)
+				_, _ = store.Get(context.Background(), sid)
+				_ = store.Delete(context.Background(), sid)
 			}
 		}(g)
 	}
@@ -444,7 +446,7 @@ func TestModifiedSessionAutoSaved(t *testing.T) {
 	testutil.AssertNoError(t, err)
 
 	// Verify data was persisted.
-	data, _ := store.Get(sid)
+	data, _ := store.Get(context.Background(), sid)
 	if data == nil || data["count"] != 42 {
 		t.Fatalf("expected count=42 in store, got %v", data)
 	}
@@ -696,7 +698,7 @@ func TestSessionDestroyInHandler(t *testing.T) {
 	)
 	testutil.AssertNoError(t, err)
 
-	data, _ := store.Get(sid)
+	data, _ := store.Get(context.Background(), sid)
 	if data != nil {
 		t.Fatal("expected session deleted from store after Destroy")
 	}
@@ -829,11 +831,12 @@ func TestRegenerateUpdatesCookie(t *testing.T) {
 
 func TestZeroArgRegenerate(t *testing.T) {
 	store := NewMemoryStore()
-	_ = store.Save("old-id", map[string]any{"user": "admin"}, time.Hour)
+	_ = store.Save(context.Background(), "old-id", map[string]any{"user": "admin"}, time.Hour)
 	s := &Session{
 		id:     "old-id",
 		data:   map[string]any{"user": "admin"},
 		store:  store,
+		ctx:    context.Background(),
 		expiry: time.Hour,
 		keyGen: func() string { return "new-id" },
 	}
@@ -847,7 +850,7 @@ func TestZeroArgRegenerate(t *testing.T) {
 	if !s.modified {
 		t.Fatal("expected modified=true after Regenerate")
 	}
-	old, _ := store.Get("old-id")
+	old, _ := store.Get(context.Background(), "old-id")
 	if old != nil {
 		t.Fatal("expected old session deleted")
 	}
@@ -861,7 +864,7 @@ func TestAbsoluteTimeoutEnforced(t *testing.T) {
 	store := NewMemoryStore()
 	sid := hexID(0xa1)
 	oldCreated := time.Now().Add(-3 * time.Hour).UnixNano()
-	_ = store.Save(sid, map[string]any{absExpKey: oldCreated, "user": "admin"}, time.Hour)
+	_ = store.Save(context.Background(), sid, map[string]any{absExpKey: oldCreated, "user": "admin"}, time.Hour)
 
 	mw := New(Config{
 		Store:           store,
@@ -888,7 +891,7 @@ func TestAbsoluteTimeoutEnforced(t *testing.T) {
 	if sess.ID() == sid {
 		t.Fatal("expected new session ID after absolute timeout expiry")
 	}
-	data, _ := store.Get(sid)
+	data, _ := store.Get(context.Background(), sid)
 	if data != nil {
 		t.Fatal("expected old session deleted from store")
 	}
@@ -898,7 +901,7 @@ func TestAbsoluteTimeoutNotExpired(t *testing.T) {
 	store := NewMemoryStore()
 	sid := hexID(0xa2)
 	recentCreated := time.Now().Add(-30 * time.Minute).UnixNano()
-	_ = store.Save(sid, map[string]any{absExpKey: recentCreated, "user": "admin"}, time.Hour)
+	_ = store.Save(context.Background(), sid, map[string]any{absExpKey: recentCreated, "user": "admin"}, time.Hour)
 
 	mw := New(Config{
 		Store:           store,
@@ -1017,7 +1020,7 @@ func TestNewSessionStoresAbsExp(t *testing.T) {
 	_, err := testutil.RunChain(t, chain, "GET", "/")
 	testutil.AssertNoError(t, err)
 
-	data, _ := store.Get(sid)
+	data, _ := store.Get(context.Background(), sid)
 	if data == nil {
 		t.Fatal("expected session in store")
 	}
@@ -1039,16 +1042,22 @@ type trackingStore struct {
 	saves int
 }
 
-func (ts *trackingStore) Get(id string) (map[string]any, error) { return ts.inner.Get(id) }
+func (ts *trackingStore) Get(ctx context.Context, id string) (map[string]any, error) {
+	return ts.inner.Get(ctx, id)
+}
 
-func (ts *trackingStore) Save(id string, data map[string]any, expiry time.Duration) error {
+func (ts *trackingStore) Save(ctx context.Context, id string, data map[string]any, expiry time.Duration) error {
 	ts.mu.Lock()
 	ts.saves++
 	ts.mu.Unlock()
-	return ts.inner.Save(id, data, expiry)
+	return ts.inner.Save(ctx, id, data, expiry)
 }
 
-func (ts *trackingStore) Delete(id string) error { return ts.inner.Delete(id) }
+func (ts *trackingStore) Delete(ctx context.Context, id string) error {
+	return ts.inner.Delete(ctx, id)
+}
+
+func (ts *trackingStore) Reset(ctx context.Context) error { return ts.inner.Reset(ctx) }
 
 func (ts *trackingStore) saveCount() int {
 	ts.mu.Lock()
@@ -1062,9 +1071,10 @@ type failStore struct {
 	delErr  error
 }
 
-func (fs *failStore) Get(_ string) (map[string]any, error)                   { return nil, fs.getErr }
-func (fs *failStore) Save(_ string, _ map[string]any, _ time.Duration) error { return fs.saveErr }
-func (fs *failStore) Delete(_ string) error                                  { return fs.delErr }
+func (fs *failStore) Get(_ context.Context, _ string) (map[string]any, error)                   { return nil, fs.getErr }
+func (fs *failStore) Save(_ context.Context, _ string, _ map[string]any, _ time.Duration) error { return fs.saveErr }
+func (fs *failStore) Delete(_ context.Context, _ string) error                                  { return fs.delErr }
+func (fs *failStore) Reset(_ context.Context) error                                             { return nil }
 
 // --- New tests for fixes ---
 
@@ -1216,7 +1226,7 @@ func TestQueryExtractor(t *testing.T) {
 		Extractor: QueryExtractor("sid"),
 	})
 
-	_ = store.Save(sid, map[string]any{absExpKey: time.Now().UnixNano(), "role": "editor"}, time.Hour)
+	_ = store.Save(context.Background(), sid, map[string]any{absExpKey: time.Now().UnixNano(), "role": "editor"}, time.Hour)
 
 	var gotRole any
 	var gotOK, wasFresh bool
@@ -1247,7 +1257,7 @@ func TestCookieExtractorExplicit(t *testing.T) {
 		Extractor: CookieExtractor("my_sess"),
 	})
 
-	_ = store.Save(sid, map[string]any{absExpKey: time.Now().UnixNano(), "k": "v"}, time.Hour)
+	_ = store.Save(context.Background(), sid, map[string]any{absExpKey: time.Now().UnixNano(), "k": "v"}, time.Hour)
 
 	var sess *Session
 	handler := func(c *celeris.Context) error {
@@ -1272,7 +1282,7 @@ func TestHeaderExtractorDestroyedSetsEmptyHeader(t *testing.T) {
 	})
 
 	hdrSid := hexID(0xa7)
-	_ = store.Save(hdrSid, map[string]any{absExpKey: time.Now().UnixNano(), "k": "v"}, time.Hour)
+	_ = store.Save(context.Background(), hdrSid, map[string]any{absExpKey: time.Now().UnixNano(), "k": "v"}, time.Hour)
 
 	handler := func(c *celeris.Context) error {
 		s := FromContext(c)
@@ -1345,7 +1355,7 @@ func TestSetIdleTimeout(t *testing.T) {
 
 	// Session should expire immediately due to per-session override.
 	time.Sleep(time.Millisecond)
-	data, _ := store.Get(sid)
+	data, _ := store.Get(context.Background(), sid)
 	if data != nil {
 		t.Fatal("expected session to expire with per-session idle timeout override")
 	}
@@ -1366,11 +1376,12 @@ func TestSetIdleTimeoutModifiesSession(t *testing.T) {
 
 func TestReset(t *testing.T) {
 	store := NewMemoryStore()
-	_ = store.Save("old-id", map[string]any{absExpKey: time.Now().UnixNano(), "user": "admin", "role": "editor"}, time.Hour)
+	_ = store.Save(context.Background(), "old-id", map[string]any{absExpKey: time.Now().UnixNano(), "user": "admin", "role": "editor"}, time.Hour)
 	s := &Session{
 		id:     "old-id",
 		data:   map[string]any{absExpKey: time.Now().UnixNano(), "user": "admin", "role": "editor"},
 		store:  store,
+		ctx:    context.Background(),
 		expiry: time.Hour,
 		keyGen: func() string { return "new-id" },
 	}
@@ -1392,7 +1403,7 @@ func TestReset(t *testing.T) {
 		t.Fatal("expected role key cleared by Reset")
 	}
 	// Old session should be deleted from store.
-	old, _ := store.Get("old-id")
+	old, _ := store.Get(context.Background(), "old-id")
 	if old != nil {
 		t.Fatal("expected old session deleted from store after Reset")
 	}
@@ -1444,7 +1455,7 @@ func TestAbsoluteTimeoutDisabled(t *testing.T) {
 	store := NewMemoryStore()
 	sid := hexID(0xa8)
 	oldCreated := time.Now().Add(-100 * time.Hour).UnixNano()
-	_ = store.Save(sid, map[string]any{absExpKey: oldCreated, "user": "admin"}, time.Hour)
+	_ = store.Save(context.Background(), sid, map[string]any{absExpKey: oldCreated, "user": "admin"}, time.Hour)
 
 	mw := New(Config{
 		Store:           store,
@@ -1495,7 +1506,7 @@ func TestAbsoluteTimeoutDisabledNoAbsExpStored(t *testing.T) {
 	_, err := testutil.RunChain(t, chain, "GET", "/")
 	testutil.AssertNoError(t, err)
 
-	data, _ := store.Get(sid)
+	data, _ := store.Get(context.Background(), sid)
 	if data == nil {
 		t.Fatal("expected session in store")
 	}
@@ -1793,7 +1804,7 @@ func TestInvalidSessionIDUppercase(t *testing.T) {
 func TestValidSessionIDLoadsExisting(t *testing.T) {
 	store := NewMemoryStore()
 	validID := strings.Repeat("ab", 32)
-	_ = store.Save(validID, map[string]any{"user": "admin"}, time.Hour)
+	_ = store.Save(context.Background(), validID, map[string]any{"user": "admin"}, time.Hour)
 
 	mw := New(Config{Store: store})
 	var gotUser any
@@ -1832,7 +1843,7 @@ func TestCustomSessionIDLength(t *testing.T) {
 	chain := []celeris.HandlerFunc{mw, handler}
 
 	validID := strings.Repeat("cd", 16)
-	_ = store.Save(validID, map[string]any{"x": 1}, time.Hour)
+	_ = store.Save(context.Background(), validID, map[string]any{"x": 1}, time.Hour)
 	_, err := testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithCookie("celeris_session", validID))
 	testutil.AssertNoError(t, err)
@@ -1851,7 +1862,7 @@ func TestCustomSessionIDLength(t *testing.T) {
 func TestDisableSessionIDValidation(t *testing.T) {
 	store := NewMemoryStore()
 	customID := "my-custom-session-id-any-format"
-	_ = store.Save(customID, map[string]any{"x": 1}, time.Hour)
+	_ = store.Save(context.Background(), customID, map[string]any{"x": 1}, time.Hour)
 
 	mw := New(Config{
 		Store:           store,
@@ -1918,7 +1929,7 @@ func TestChainExtractorNoExtractors(t *testing.T) {
 func TestChainExtractorWithRealExtractors(t *testing.T) {
 	store := NewMemoryStore()
 	validID := strings.Repeat("ab", 32)
-	_ = store.Save(validID, map[string]any{"src": "header"}, time.Hour)
+	_ = store.Save(context.Background(), validID, map[string]any{"src": "header"}, time.Hour)
 
 	mw := New(Config{
 		Store: store,
@@ -2062,5 +2073,273 @@ func TestNilDataBeforePoolPut(t *testing.T) {
 	defer sessionPool.Put(sess)
 	if sess.data != nil {
 		t.Fatal("expected sess.data to be nil after pool return")
+	}
+}
+
+// --- Store.Reset tests ---
+
+func TestMemoryStoreReset(t *testing.T) {
+	store := NewMemoryStore(MemoryStoreConfig{Shards: 4})
+	ctx := context.Background()
+
+	// Populate multiple sessions across shards.
+	for i := range 20 {
+		sid := hexID(byte(i))
+		_ = store.Save(ctx, sid, map[string]any{"i": i}, time.Hour)
+	}
+
+	// Verify at least one exists.
+	data, _ := store.Get(ctx, hexID(0))
+	if data == nil {
+		t.Fatal("expected session to exist before Reset")
+	}
+
+	// Reset.
+	if err := store.Reset(ctx); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+
+	// All sessions should be gone.
+	for i := range 20 {
+		sid := hexID(byte(i))
+		data, err := store.Get(ctx, sid)
+		if err != nil {
+			t.Fatalf("Get after Reset: %v", err)
+		}
+		if data != nil {
+			t.Fatalf("expected nil after Reset for session %d", i)
+		}
+	}
+}
+
+func TestMemoryStoreResetEmpty(t *testing.T) {
+	store := NewMemoryStore()
+	if err := store.Reset(context.Background()); err != nil {
+		t.Fatalf("Reset on empty store: %v", err)
+	}
+}
+
+func TestMemoryStoreResetConcurrent(t *testing.T) {
+	store := NewMemoryStore(MemoryStoreConfig{Shards: 4})
+	ctx := context.Background()
+
+	// Populate.
+	for i := range 50 {
+		_ = store.Save(ctx, hexID(byte(i)), map[string]any{"i": i}, time.Hour)
+	}
+
+	var wg sync.WaitGroup
+	// Concurrent Reset + CRUD operations.
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_ = store.Reset(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		for i := range 50 {
+			sid := hexID(byte(i + 100))
+			_ = store.Save(ctx, sid, map[string]any{"i": i}, time.Hour)
+			_, _ = store.Get(ctx, sid)
+			_ = store.Delete(ctx, sid)
+		}
+	}()
+	wg.Wait()
+}
+
+func TestMemoryStoreResetThenSave(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+
+	_ = store.Save(ctx, "before", map[string]any{"k": "v"}, time.Hour)
+	_ = store.Reset(ctx)
+
+	// Store should accept new sessions after Reset.
+	_ = store.Save(ctx, "after", map[string]any{"k": "v2"}, time.Hour)
+	data, err := store.Get(ctx, "after")
+	if err != nil {
+		t.Fatalf("Get after Reset+Save: %v", err)
+	}
+	if data == nil || data["k"] != "v2" {
+		t.Fatalf("expected k=v2 after Reset+Save, got %v", data)
+	}
+
+	// Old session should still be gone.
+	data, _ = store.Get(ctx, "before")
+	if data != nil {
+		t.Fatal("expected old session gone after Reset")
+	}
+}
+
+// --- Context propagation tests ---
+
+type ctxKeyType struct{}
+
+var ctxTestKey = ctxKeyType{}
+
+// contextStore records the context passed to each method for verification.
+type contextStore struct {
+	inner    Store
+	mu       sync.Mutex
+	lastCtxs []context.Context
+}
+
+func (cs *contextStore) Get(ctx context.Context, id string) (map[string]any, error) {
+	cs.mu.Lock()
+	cs.lastCtxs = append(cs.lastCtxs, ctx)
+	cs.mu.Unlock()
+	return cs.inner.Get(ctx, id)
+}
+
+func (cs *contextStore) Save(ctx context.Context, id string, data map[string]any, expiry time.Duration) error {
+	cs.mu.Lock()
+	cs.lastCtxs = append(cs.lastCtxs, ctx)
+	cs.mu.Unlock()
+	return cs.inner.Save(ctx, id, data, expiry)
+}
+
+func (cs *contextStore) Delete(ctx context.Context, id string) error {
+	cs.mu.Lock()
+	cs.lastCtxs = append(cs.lastCtxs, ctx)
+	cs.mu.Unlock()
+	return cs.inner.Delete(ctx, id)
+}
+
+func (cs *contextStore) Reset(ctx context.Context) error {
+	cs.mu.Lock()
+	cs.lastCtxs = append(cs.lastCtxs, ctx)
+	cs.mu.Unlock()
+	return cs.inner.Reset(ctx)
+}
+
+func (cs *contextStore) contexts() []context.Context {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cp := make([]context.Context, len(cs.lastCtxs))
+	copy(cp, cs.lastCtxs)
+	return cp
+}
+
+func TestStoreReceivesRequestContext(t *testing.T) {
+	cs := &contextStore{inner: NewMemoryStore()}
+	mw := New(Config{Store: cs})
+
+	handler := func(c *celeris.Context) error {
+		s := FromContext(c)
+		s.Set("key", "val")
+		return nil
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+
+	ctxs := cs.contexts()
+	// At minimum: Get (load attempt for fresh session is skipped since no cookie,
+	// but the fresh session triggers a Save on post-handler).
+	if len(ctxs) == 0 {
+		t.Fatal("expected at least one context passed to store")
+	}
+	// All contexts should be non-nil.
+	for i, ctx := range ctxs {
+		if ctx == nil {
+			t.Fatalf("context %d was nil", i)
+		}
+	}
+}
+
+func TestStoreContextOnExistingSession(t *testing.T) {
+	cs := &contextStore{inner: NewMemoryStore()}
+	sid := hexID(0xb1)
+	_ = cs.inner.Save(context.Background(), sid, map[string]any{"user": "admin"}, time.Hour)
+
+	mw := New(Config{Store: cs})
+	handler := func(c *celeris.Context) error {
+		s := FromContext(c)
+		s.Set("updated", true)
+		return nil
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithCookie("celeris_session", sid),
+	)
+	testutil.AssertNoError(t, err)
+
+	ctxs := cs.contexts()
+	// Should have at least Get (load) + Save (post-handler).
+	if len(ctxs) < 2 {
+		t.Fatalf("expected at least 2 context captures, got %d", len(ctxs))
+	}
+	for i, ctx := range ctxs {
+		if ctx == nil {
+			t.Fatalf("context %d was nil", i)
+		}
+	}
+}
+
+func TestSessionDestroyPassesContext(t *testing.T) {
+	cs := &contextStore{inner: NewMemoryStore()}
+	sid := hexID(0xb2)
+	_ = cs.inner.Save(context.Background(), sid, map[string]any{"user": "admin"}, time.Hour)
+
+	mw := New(Config{Store: cs})
+	handler := func(c *celeris.Context) error {
+		s := FromContext(c)
+		return s.Destroy()
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithCookie("celeris_session", sid),
+	)
+	testutil.AssertNoError(t, err)
+
+	ctxs := cs.contexts()
+	// Get (load) + Delete (Destroy).
+	if len(ctxs) < 2 {
+		t.Fatalf("expected at least 2 context captures, got %d", len(ctxs))
+	}
+}
+
+func TestSessionRegeneratePassesContext(t *testing.T) {
+	cs := &contextStore{inner: NewMemoryStore()}
+	sid := hexID(0xb3)
+	_ = cs.inner.Save(context.Background(), sid, map[string]any{"user": "admin"}, time.Hour)
+
+	mw := New(Config{Store: cs})
+	handler := func(c *celeris.Context) error {
+		s := FromContext(c)
+		return s.Regenerate()
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithCookie("celeris_session", sid),
+	)
+	testutil.AssertNoError(t, err)
+
+	ctxs := cs.contexts()
+	// Get (load) + Delete (Regenerate) + Save (post-handler).
+	if len(ctxs) < 3 {
+		t.Fatalf("expected at least 3 context captures, got %d", len(ctxs))
+	}
+}
+
+func TestPooledSessionCtxNilAfterReturn(t *testing.T) {
+	store := NewMemoryStore()
+	mw := New(Config{Store: store})
+	handler := func(c *celeris.Context) error {
+		sess := FromContext(c)
+		sess.Set("key", "val")
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := sessionPool.Get().(*Session)
+	defer sessionPool.Put(sess)
+	if sess.ctx != nil {
+		t.Fatal("expected sess.ctx to be nil after pool return")
 	}
 }
