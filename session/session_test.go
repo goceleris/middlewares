@@ -2468,6 +2468,18 @@ func TestGetByIDIntegrationWithMiddleware(t *testing.T) {
 	}
 }
 
+func TestGetByIDNonExistentReturnsNil(t *testing.T) {
+	store := NewMemoryStore()
+	h := NewHandler(Config{Store: store})
+	sess, err := h.GetByID(context.Background(), "nonexistent-id")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if sess != nil {
+		t.Fatalf("expected nil session, got %+v", sess)
+	}
+}
+
 func TestGetByIDExpiredSession(t *testing.T) {
 	store := NewMemoryStore()
 	sid := hexID(0xd3)

@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"fmt"
+	"log"
 	"net/url"
 	"strings"
 	"time"
@@ -111,6 +112,15 @@ type Config struct {
 	// parsing, validation). Use it for request decoration, logging, or
 	// other pre-processing that should occur before authentication.
 	BeforeFunc func(c *celeris.Context)
+
+	// MinKeyLength, when > 0, enforces a minimum HMAC signing key length
+	// in bytes at initialization time. If SigningKey is a []byte shorter
+	// than this value, New() panics. Use this for strict security policies.
+	// When 0 (default), no hard enforcement is applied, but the middleware
+	// still logs warnings for keys shorter than the recommended minimum
+	// for the selected HMAC algorithm (32 for HS256, 48 for HS384, 64
+	// for HS512).
+	MinKeyLength int
 }
 
 // DefaultConfig is the default JWT configuration.
@@ -151,6 +161,35 @@ func (cfg Config) validate() {
 	}
 	for _, u := range cfg.JWKSURLs {
 		validateJWKSURL(u)
+	}
+	validateHMACKeyLength(cfg)
+}
+
+// hmacMinKeyLengths maps HMAC algorithm names to their recommended minimum
+// key lengths in bytes (matching the hash output size per RFC 2104).
+var hmacMinKeyLengths = map[string]int{
+	"HS256": 32,
+	"HS384": 48,
+	"HS512": 64,
+}
+
+func validateHMACKeyLength(cfg Config) {
+	keyBytes, ok := cfg.SigningKey.([]byte)
+	if !ok || cfg.SigningKey == nil {
+		return
+	}
+	alg := cfg.SigningMethod.Alg()
+	if cfg.MinKeyLength > 0 {
+		if len(keyBytes) < cfg.MinKeyLength {
+			panic(fmt.Sprintf("jwt: SigningKey length %d is below MinKeyLength %d", len(keyBytes), cfg.MinKeyLength))
+		}
+	}
+	recommended, isHMAC := hmacMinKeyLengths[alg]
+	if !isHMAC {
+		return
+	}
+	if len(keyBytes) < recommended {
+		log.Printf("jwt: WARNING: %s signing key is %d bytes, recommended minimum is %d bytes", alg, len(keyBytes), recommended)
 	}
 }
 
