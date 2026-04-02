@@ -48,6 +48,11 @@ type Config struct {
 	// Default: nil (no auth, all requests to the metrics endpoint are served).
 	AuthFunc func(c *celeris.Context) bool
 
+	// IgnoreStatusCodes excludes requests with matching response status codes
+	// from all metric recording (counter, histograms). Common use:
+	// IgnoreStatusCodes: []int{404} to suppress scanner noise.
+	IgnoreStatusCodes []int
+
 	// LabelFuncs defines custom label dimensions appended to all metric
 	// label sets. Each map key becomes a label name and the function extracts
 	// the label value from the request context. The functions are called

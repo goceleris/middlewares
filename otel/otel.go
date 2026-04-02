@@ -150,12 +150,17 @@ func New(config ...Config) celeris.HandlerFunc {
 			spanName = spanNameFmt(c)
 		}
 
-		method := normalizeMethod(c.Method())
+		rawMethod := c.Method()
+		method := normalizeMethod(rawMethod)
 
-		var spanBuf [13]attribute.KeyValue
+		var spanBuf [14]attribute.KeyValue
 		n := 0
 		spanBuf[n] = semconv.HTTPRequestMethodKey.String(method)
 		n++
+		if method != rawMethod {
+			spanBuf[n] = attribute.String("http.request.method_original", rawMethod)
+			n++
+		}
 		spanBuf[n] = semconv.HTTPRoute(c.FullPath())
 		n++
 		spanBuf[n] = semconv.URLScheme(c.Scheme())
@@ -219,6 +224,8 @@ func New(config ...Config) celeris.HandlerFunc {
 
 			err := c.Next()
 
+			propagators.Inject(spanCtx, carrier)
+
 			duration := time.Since(start).Seconds()
 			status := c.StatusCode()
 
@@ -252,6 +259,9 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 
 		err := c.Next()
+
+		propagators.Inject(spanCtx, carrier)
+
 		status := c.StatusCode()
 
 		if span.IsRecording() {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/goceleris/celeris"
@@ -116,6 +117,11 @@ func New(config ...Config) celeris.HandlerFunc {
 		skipMap[p] = struct{}{}
 	}
 
+	ignoreStatus := make(map[int]struct{}, len(cfg.IgnoreStatusCodes))
+	for _, code := range cfg.IgnoreStatusCodes {
+		ignoreStatus[code] = struct{}{}
+	}
+
 	// Pre-cache status code strings for common codes.
 	statusStrings := make(map[int]string, 17)
 	for _, code := range []int{
@@ -161,6 +167,10 @@ func New(config ...Config) celeris.HandlerFunc {
 		activeRequests.Dec()
 
 		status := c.StatusCode()
+		if _, ignored := ignoreStatus[status]; ignored {
+			return err
+		}
+
 		statusStr, ok := statusStrings[status]
 		if !ok {
 			statusStr = strconv.Itoa(status)
@@ -174,6 +184,7 @@ func New(config ...Config) celeris.HandlerFunc {
 				path = c.Path()
 			}
 		}
+		path = strings.ToValidUTF8(path, "")
 
 		// Build label values: method, path, status + custom labels.
 		lv := make([]string, 3, 3+nCustom)

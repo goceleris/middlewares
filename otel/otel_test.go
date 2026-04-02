@@ -1335,3 +1335,125 @@ func TestMetricAttributeKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestMethodOriginalAttributeOnNonStandard(t *testing.T) {
+	tp, exp := newTestTP()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	mw := New(Config{TracerProvider: tp})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	err := runChain(t, []celeris.HandlerFunc{mw, handler}, "PURGE", "/original-test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	attrMap := make(map[string]attribute.Value, len(spans[0].Attributes))
+	for _, a := range spans[0].Attributes {
+		attrMap[string(a.Key)] = a.Value
+	}
+	if got := attrMap["http.request.method"].AsString(); got != "_OTHER" {
+		t.Fatalf("expected http.request.method=_OTHER, got %q", got)
+	}
+	if got := attrMap["http.request.method_original"].AsString(); got != "PURGE" {
+		t.Fatalf("expected http.request.method_original=PURGE, got %q", got)
+	}
+}
+
+func TestMethodOriginalAbsentForStandard(t *testing.T) {
+	tp, exp := newTestTP()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	mw := New(Config{TracerProvider: tp})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	err := runChain(t, []celeris.HandlerFunc{mw, handler}, "GET", "/standard-test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	for _, a := range spans[0].Attributes {
+		if string(a.Key) == "http.request.method_original" {
+			t.Fatal("http.request.method_original should be absent for standard methods")
+		}
+	}
+}
+
+func TestMethodOriginalVariousMethods(t *testing.T) {
+	for _, method := range []string{"FOOBAR", "LOCK", "MKCOL", "PROPFIND"} {
+		tp, exp := newTestTP()
+		mw := New(Config{TracerProvider: tp})
+		handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+		err := runChain(t, []celeris.HandlerFunc{mw, handler}, method, "/method-orig")
+		if err != nil {
+			t.Fatalf("[%s] unexpected error: %v", method, err)
+		}
+
+		spans := exp.GetSpans()
+		if len(spans) != 1 {
+			t.Fatalf("[%s] expected 1 span, got %d", method, len(spans))
+		}
+		attrMap := make(map[string]attribute.Value, len(spans[0].Attributes))
+		for _, a := range spans[0].Attributes {
+			attrMap[string(a.Key)] = a.Value
+		}
+		if got := attrMap["http.request.method_original"].AsString(); got != method {
+			t.Fatalf("[%s] expected http.request.method_original=%s, got %q", method, method, got)
+		}
+		_ = tp.Shutdown(context.Background())
+	}
+}
+
+func TestResponseHeaderPropagation(t *testing.T) {
+	traceTP, _ := newTestTP()
+	defer func() { _ = traceTP.Shutdown(context.Background()) }()
+
+	prop := propagation.TraceContext{}
+	mw := New(Config{TracerProvider: traceTP, Propagators: prop})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+
+	allOpts := []celeristest.Option{celeristest.WithHandlers(mw, handler)}
+	ctx, rec := celeristest.NewContextT(t, "GET", "/resp-prop", allOpts...)
+	err := ctx.Next()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	traceparent := rec.Header("traceparent")
+	if traceparent == "" {
+		t.Fatal("expected traceparent response header from response propagation, got empty")
+	}
+	if !strings.HasPrefix(traceparent, "00-") {
+		t.Fatalf("traceparent should start with version 00-, got %q", traceparent)
+	}
+}
+
+func TestResponseHeaderPropagationDisableMetrics(t *testing.T) {
+	traceTP, _ := newTestTP()
+	defer func() { _ = traceTP.Shutdown(context.Background()) }()
+
+	prop := propagation.TraceContext{}
+	mw := New(Config{TracerProvider: traceTP, Propagators: prop, DisableMetrics: true})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+
+	allOpts := []celeristest.Option{celeristest.WithHandlers(mw, handler)}
+	ctx, rec := celeristest.NewContextT(t, "GET", "/resp-prop-no-metrics", allOpts...)
+	err := ctx.Next()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	traceparent := rec.Header("traceparent")
+	if traceparent == "" {
+		t.Fatal("expected traceparent response header with DisableMetrics, got empty")
+	}
+	if !strings.HasPrefix(traceparent, "00-") {
+		t.Fatalf("traceparent should start with version 00-, got %q", traceparent)
+	}
+}
