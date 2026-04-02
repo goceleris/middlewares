@@ -17,7 +17,7 @@ func BenchmarkParseHS256(b *testing.B) {
 	}
 
 	p := NewParser(WithValidMethods([]string{"HS256"}))
-	keyFunc := func(t *Token) (any, error) { return secret, nil }
+	keyFunc := func(_ *Token) (any, error) { return secret, nil }
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -35,7 +35,7 @@ func BenchmarkParseHS384(b *testing.B) {
 	}
 
 	p := NewParser(WithValidMethods([]string{"HS384"}))
-	keyFunc := func(t *Token) (any, error) { return secret, nil }
+	keyFunc := func(_ *Token) (any, error) { return secret, nil }
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -53,7 +53,7 @@ func BenchmarkParseHS512(b *testing.B) {
 	}
 
 	p := NewParser(WithValidMethods([]string{"HS512"}))
-	keyFunc := func(t *Token) (any, error) { return secret, nil }
+	keyFunc := func(_ *Token) (any, error) { return secret, nil }
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -75,7 +75,7 @@ func BenchmarkParseRS256(b *testing.B) {
 
 	pub := &key.PublicKey
 	p := NewParser(WithValidMethods([]string{"RS256"}))
-	keyFunc := func(t *Token) (any, error) { return pub, nil }
+	keyFunc := func(_ *Token) (any, error) { return pub, nil }
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -97,7 +97,7 @@ func BenchmarkParseES256(b *testing.B) {
 
 	pub := &key.PublicKey
 	p := NewParser(WithValidMethods([]string{"ES256"}))
-	keyFunc := func(t *Token) (any, error) { return pub, nil }
+	keyFunc := func(_ *Token) (any, error) { return pub, nil }
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -118,7 +118,7 @@ func BenchmarkParseEdDSA(b *testing.B) {
 	}
 
 	p := NewParser(WithValidMethods([]string{"EdDSA"}))
-	keyFunc := func(t *Token) (any, error) { return pub, nil }
+	keyFunc := func(_ *Token) (any, error) { return pub, nil }
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -141,7 +141,7 @@ func BenchmarkParseRegisteredClaims(b *testing.B) {
 	}
 
 	p := NewParser(WithValidMethods([]string{"HS256"}))
-	keyFunc := func(t *Token) (any, error) { return secret, nil }
+	keyFunc := func(_ *Token) (any, error) { return secret, nil }
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -169,7 +169,7 @@ func BenchmarkParseHS256_Validate(b *testing.B) {
 	token, _ := SignToken(SigningMethodHS256, claims, secret)
 
 	p := NewParser(WithValidMethods([]string{"HS256"}))
-	keyFunc := func(t *Token) (any, error) { return secret, nil }
+	keyFunc := func(_ *Token) (any, error) { return secret, nil }
 
 	parsed, err := p.ParseWithClaims(token, MapClaims{}, keyFunc)
 	if err != nil {

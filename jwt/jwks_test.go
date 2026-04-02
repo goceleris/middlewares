@@ -74,7 +74,7 @@ func TestJWKSFetchRSA(t *testing.T) {
 	body := rsaJWKSJSON("rsa-kid-1", &privKey.PublicKey)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	defer ts.Close()
 
@@ -106,7 +106,7 @@ func TestJWKSFetchEC(t *testing.T) {
 	body := ecJWKSJSON("ec-kid-1", &privKey.PublicKey, "P-256")
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	defer ts.Close()
 
@@ -148,7 +148,7 @@ func TestJWKSFetchECCurves(t *testing.T) {
 			body := ecJWKSJSON("ec-"+tc.name, &privKey.PublicKey, tc.name)
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				w.Write(body)
+				_, _ = w.Write(body)
 			}))
 			defer ts.Close()
 
@@ -187,9 +187,9 @@ func TestJWKSRefreshStaleKeys(t *testing.T) {
 		count := callCount.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		if count == 1 {
-			w.Write(kid1Body)
+			_, _ = w.Write(kid1Body)
 		} else {
-			w.Write(kid2Body)
+			_, _ = w.Write(kid2Body)
 		}
 	}))
 	defer ts.Close()
@@ -238,7 +238,7 @@ func TestJWKSStaleFallbackOnError(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	defer ts.Close()
 
@@ -276,7 +276,7 @@ func TestJWKSUnknownKidAfterRefresh(t *testing.T) {
 	body := rsaJWKSJSON("known-kid", &privKey.PublicKey)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	defer ts.Close()
 
@@ -295,7 +295,7 @@ func TestJWKSUnknownKidAfterRefresh(t *testing.T) {
 func TestJWKSMalformedJSON(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{not json`))
+		_, _ = w.Write([]byte(`{not json`))
 	}))
 	defer ts.Close()
 
@@ -330,13 +330,13 @@ func TestJWKSResponseSizeLimit(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		// Write a valid JSON start, then pad with spaces to exceed 1MB limit,
 		// then close JSON. The LimitReader caps at 1MB so the JSON will be truncated.
-		w.Write([]byte(`{"keys":[`))
+		_, _ = w.Write([]byte(`{"keys":[`))
 		buf := make([]byte, 1<<20) // 1MB of padding
 		for i := range buf {
 			buf[i] = ' '
 		}
-		w.Write(buf)
-		w.Write([]byte(`]}`))
+		_, _ = w.Write(buf)
+		_, _ = w.Write([]byte(`]}`))
 	}))
 	defer ts.Close()
 
@@ -350,7 +350,7 @@ func TestJWKSResponseSizeLimit(t *testing.T) {
 func TestJWKSHTTPTimeout(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(15 * time.Second)
-		w.Write([]byte(`{"keys":[]}`))
+		_, _ = w.Write([]byte(`{"keys":[]}`))
 	}))
 	defer ts.Close()
 
@@ -407,7 +407,7 @@ func TestJWKSThunderingHerd(t *testing.T) {
 		// Simulate slow fetch.
 		time.Sleep(50 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	defer ts.Close()
 
@@ -460,7 +460,7 @@ func TestJWKSKeyFuncIntegration(t *testing.T) {
 	body := rsaJWKSJSON("int-kid", &privKey.PublicKey)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	defer ts.Close()
 
@@ -492,7 +492,7 @@ func TestJWKSKeyFuncECIntegration(t *testing.T) {
 	body := ecJWKSJSON("ec-int-kid", &privKey.PublicKey, "P-256")
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	defer ts.Close()
 
@@ -540,7 +540,7 @@ func TestJWKSFetchOKPEdDSA(t *testing.T) {
 	body := okpJWKSJSON("ed-kid-1", pub)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	defer ts.Close()
 
@@ -572,7 +572,7 @@ func TestJWKSKeyFuncOKPIntegration(t *testing.T) {
 	body := okpJWKSJSON("ed-int-kid", pub)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	defer ts.Close()
 
@@ -610,7 +610,7 @@ func TestJWKSOKPUnsupportedCurve(t *testing.T) {
 	body, _ := json.Marshal(jwks)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	defer ts.Close()
 
@@ -646,7 +646,7 @@ func TestJWKSECCurveValidation(t *testing.T) {
 	body, _ := json.Marshal(jwks)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	defer ts.Close()
 
@@ -677,14 +677,14 @@ func TestMultiJWKSKeyFuncFirstProviderHasKey(t *testing.T) {
 	body1 := rsaJWKSJSON("provider1-kid", &privKey1.PublicKey)
 	ts1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body1)
+		_, _ = w.Write(body1)
 	}))
 	defer ts1.Close()
 
 	body2 := rsaJWKSJSON("provider2-kid", &privKey2.PublicKey)
 	ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body2)
+		_, _ = w.Write(body2)
 	}))
 	defer ts2.Close()
 
@@ -718,14 +718,14 @@ func TestMultiJWKSKeyFuncSecondProviderHasKey(t *testing.T) {
 	body1 := rsaJWKSJSON("provider1-kid", &privKey1.PublicKey)
 	ts1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body1)
+		_, _ = w.Write(body1)
 	}))
 	defer ts1.Close()
 
 	body2 := rsaJWKSJSON("provider2-kid", &privKey2.PublicKey)
 	ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body2)
+		_, _ = w.Write(body2)
 	}))
 	defer ts2.Close()
 
@@ -755,7 +755,7 @@ func TestMultiJWKSKeyFuncUnknownKidAllProviders(t *testing.T) {
 	body := rsaJWKSJSON("known-kid", &privKey.PublicKey)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	defer ts.Close()
 

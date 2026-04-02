@@ -49,5 +49,4 @@
 //
 // Set [Config].Skip to bypass the middleware dynamically, or
 // [Config].SkipPaths for exact-match path exclusions.
-//
 package basicauth

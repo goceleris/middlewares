@@ -6,8 +6,7 @@ import (
 	"github.com/goceleris/middlewares/jwt/internal/jwtparse"
 )
 
-// Public type aliases re-exported from the internal parser.
-// Users should only import "github.com/goceleris/middlewares/jwt".
+// Token and related type aliases re-exported from the internal parser.
 type (
 	Token            = jwtparse.Token
 	Header           = jwtparse.Header

@@ -46,7 +46,8 @@ func New(config ...Config) celeris.HandlerFunc {
 	tokenCtxKey := cfg.TokenContextKey
 	claimsCtxKey := cfg.ClaimsContextKey
 
-	parserOpts := []jwtparse.ParserOption{jwtparse.WithValidMethods(validMethods)}
+	parserOpts := make([]jwtparse.ParserOption, 0, 1+len(cfg.ParseOptions))
+	parserOpts = append(parserOpts, jwtparse.WithValidMethods(validMethods))
 	parserOpts = append(parserOpts, cfg.ParseOptions...)
 	parser := jwtparse.NewParser(parserOpts...)
 

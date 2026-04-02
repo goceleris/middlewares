@@ -213,14 +213,14 @@ func (p *jsonParser) skipValue() {
 	}
 }
 
-func (p *jsonParser) skipBraced(open, close byte) {
+func (p *jsonParser) skipBraced(open, closeByte byte) {
 	depth := 1
 	p.pos++
 	for p.pos < len(p.data) && depth > 0 {
 		c := p.data[p.pos]
 		if c == open {
 			depth++
-		} else if c == close {
+		} else if c == closeByte {
 			depth--
 		} else if c == '"' {
 			p.pos++

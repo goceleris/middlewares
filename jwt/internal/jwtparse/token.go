@@ -32,12 +32,12 @@ type Header struct {
 // Keyfunc is called during parsing to supply the key for signature verification.
 type Keyfunc func(token *Token) (any, error)
 
-// ParserOption configures a parser.
-type ParserOption func(*parser)
+// ParserOption configures a [Parser].
+type ParserOption func(*Parser)
 
 // WithValidMethods restricts which signing algorithms are accepted.
 func WithValidMethods(methods []string) ParserOption {
-	return func(p *parser) {
+	return func(p *Parser) {
 		p.validMethods = make(map[string]struct{}, len(methods))
 		for _, m := range methods {
 			p.validMethods[m] = struct{}{}
@@ -47,26 +47,27 @@ func WithValidMethods(methods []string) ParserOption {
 
 // WithLeeway adds a time leeway for exp/nbf/iat validation.
 func WithLeeway(d time.Duration) ParserOption {
-	return func(p *parser) {
+	return func(p *Parser) {
 		p.leeway = d
 	}
 }
 
 // WithIssuer requires the token to have the specified issuer.
 func WithIssuer(iss string) ParserOption {
-	return func(p *parser) {
+	return func(p *Parser) {
 		p.issuer = iss
 	}
 }
 
 // WithAudience requires the token to contain the specified audience.
 func WithAudience(aud string) ParserOption {
-	return func(p *parser) {
+	return func(p *Parser) {
 		p.audience = aud
 	}
 }
 
-type parser struct {
+// Parser is a JWT token parser.
+type Parser struct {
 	validMethods map[string]struct{}
 	leeway       time.Duration
 	issuer       string
@@ -74,8 +75,8 @@ type parser struct {
 }
 
 // NewParser creates a new JWT parser with the given options.
-func NewParser(opts ...ParserOption) *parser {
-	p := &parser{}
+func NewParser(opts ...ParserOption) *Parser {
+	p := &Parser{}
 	for _, o := range opts {
 		o(p)
 	}
@@ -83,12 +84,12 @@ func NewParser(opts ...ParserOption) *parser {
 }
 
 // Parse parses a token string into MapClaims.
-func (p *parser) Parse(tokenString string, keyFunc Keyfunc) (*Token, error) {
+func (p *Parser) Parse(tokenString string, keyFunc Keyfunc) (*Token, error) {
 	return p.ParseWithClaims(tokenString, MapClaims{}, keyFunc)
 }
 
 // ParseWithClaims parses a token string and unmarshals claims into the provided Claims value.
-func (p *parser) ParseWithClaims(tokenString string, claims Claims, keyFunc Keyfunc) (*Token, error) {
+func (p *Parser) ParseWithClaims(tokenString string, claims Claims, keyFunc Keyfunc) (*Token, error) {
 	// 0. Reject oversized tokens.
 	if len(tokenString) > maxTokenSize {
 		return nil, ErrTokenMalformed
@@ -215,7 +216,7 @@ func (p *parser) ParseWithClaims(tokenString string, claims Claims, keyFunc Keyf
 	return token, nil
 }
 
-func (p *parser) checkIssuer(claims Claims) bool {
+func (p *Parser) checkIssuer(claims Claims) bool {
 	switch c := claims.(type) {
 	case *RegisteredClaims:
 		return c.Issuer == p.issuer
@@ -228,7 +229,7 @@ func (p *parser) checkIssuer(claims Claims) bool {
 	return false
 }
 
-func (p *parser) checkAudience(claims Claims) bool {
+func (p *Parser) checkAudience(claims Claims) bool {
 	switch c := claims.(type) {
 	case *RegisteredClaims:
 		for _, a := range c.Audience {

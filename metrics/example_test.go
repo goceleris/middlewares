@@ -1,8 +1,9 @@
 package metrics_test
 
 import (
-	"github.com/goceleris/middlewares/metrics"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/goceleris/middlewares/metrics"
 )
 
 func ExampleNew() {

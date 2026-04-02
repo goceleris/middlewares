@@ -1,3 +1,4 @@
+// Package jwtparse implements a zero-allocation JWT parser and signer.
 package jwtparse
 
 import (
@@ -22,6 +23,7 @@ func NewNumericDate(t time.Time) *NumericDate {
 	return &NumericDate{Time: t.Truncate(time.Second)}
 }
 
+// MarshalJSON encodes a NumericDate as a Unix timestamp integer.
 func (d NumericDate) MarshalJSON() ([]byte, error) {
 	if d.IsZero() {
 		return []byte("null"), nil
@@ -29,6 +31,7 @@ func (d NumericDate) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf("%d", d.Unix())), nil
 }
 
+// UnmarshalJSON decodes a Unix timestamp number into a NumericDate.
 func (d *NumericDate) UnmarshalJSON(b []byte) error {
 	var n json.Number
 	if err := json.Unmarshal(b, &n); err != nil {
@@ -48,6 +51,7 @@ func (d *NumericDate) UnmarshalJSON(b []byte) error {
 // Audience is a slice of strings that accepts both a single string and an array in JSON.
 type Audience []string
 
+// UnmarshalJSON decodes an audience from either a single string or a string array.
 func (a *Audience) UnmarshalJSON(b []byte) error {
 	var s string
 	if err := json.Unmarshal(b, &s); err == nil {
@@ -74,6 +78,7 @@ type RegisteredClaims struct {
 	ID        string       `json:"jti,omitempty"`
 }
 
+// Valid validates exp, nbf, and iat claims against the current time.
 func (c RegisteredClaims) Valid() error {
 	now := time.Now()
 
@@ -95,6 +100,7 @@ func (c RegisteredClaims) Valid() error {
 // MapClaims is an unstructured claims type backed by a map.
 type MapClaims map[string]any
 
+// Valid validates exp, nbf, and iat claims against the current time.
 func (c MapClaims) Valid() error {
 	now := time.Now().Unix()
 
