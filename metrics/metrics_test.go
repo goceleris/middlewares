@@ -1,4 +1,4 @@
-package metrics //nolint:revive // package name intentionally matches the middleware domain
+package metrics
 
 import (
 	"fmt"
