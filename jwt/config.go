@@ -1,0 +1,248 @@
+package jwt
+
+import (
+	"fmt"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/goceleris/celeris"
+	"github.com/goceleris/middlewares/jwt/internal/jwtparse"
+)
+
+// TokenKey is the context store key for the parsed *jwt.Token.
+const TokenKey = "jwt_token"
+
+// ClaimsKey is the context store key for the token's claims.
+const ClaimsKey = "jwt_claims"
+
+// Config defines the JWT middleware configuration.
+type Config struct {
+	// Skip defines a function to skip this middleware for certain requests.
+	Skip func(c *celeris.Context) bool
+
+	// SkipPaths lists paths to skip (exact match).
+	SkipPaths []string
+
+	// SigningKey is the key used to verify tokens. For HMAC this is a
+	// []byte secret; for RSA/ECDSA this is the public key.
+	SigningKey any
+
+	// SigningKeys maps kid (Key ID) to verification key for key rotation.
+	// When set, the token's "kid" header selects the key.
+	SigningKeys map[string]any
+
+	// SigningMethod is the expected signing algorithm.
+	// Default: jwt.SigningMethodHS256.
+	SigningMethod jwtparse.SigningMethod
+
+	// ValidMethods restricts the allowed signing algorithms.
+	// Default: []string{SigningMethod.Alg()}.
+	ValidMethods []string
+
+	// TokenLookup defines where to extract the token. Comma-separated
+	// sources are tried in order. Format: "source:name[:prefix]".
+	// Supported sources: header, query, cookie, form, param.
+	// Default: "header:Authorization:Bearer ".
+	TokenLookup string
+
+	// Claims is the template for the claims type. The middleware clones
+	// this for each request. Default: jwt.MapClaims{}.
+	Claims jwtparse.Claims
+
+	// ClaimsFactory creates a fresh Claims instance per request. When set,
+	// this takes precedence over the Claims template field. Use this for
+	// custom struct claims types to avoid data races.
+	ClaimsFactory func() jwtparse.Claims
+
+	// KeyFunc is a custom key function that overrides SigningKey/SigningKeys.
+	KeyFunc jwtparse.Keyfunc
+
+	// JWKSURL is a URL for JWKS auto-discovery (e.g. Auth0, Keycloak).
+	JWKSURL string
+
+	// JWKSRefresh is the interval for re-fetching the JWKS keyset.
+	// Default: 1h.
+	JWKSRefresh time.Duration
+
+	// TokenContextKey overrides the context store key for the parsed token.
+	// Default: "jwt_token" (TokenKey).
+	TokenContextKey string
+
+	// ClaimsContextKey overrides the context store key for the claims.
+	// Default: "jwt_claims" (ClaimsKey).
+	ClaimsContextKey string
+
+	// ParseOptions provides additional parser options (e.g., WithLeeway,
+	// WithIssuer, WithAudience) appended after the default ValidMethods
+	// option. This allows fine-grained control over the JWT parser without
+	// needing a custom KeyFunc.
+	ParseOptions []jwtparse.ParserOption
+
+	// ErrorHandler handles authentication failures. Receives the error
+	// and returns the error to propagate. Default: returns the error as-is.
+	ErrorHandler func(c *celeris.Context, err error) error
+
+	// SuccessHandler is called after successful token validation, before
+	// c.Next(). Use for logging, metrics, or enriching the context.
+	SuccessHandler func(c *celeris.Context)
+}
+
+// DefaultConfig is the default JWT configuration.
+var DefaultConfig = Config{
+	SigningMethod: jwtparse.SigningMethodHS256,
+	TokenLookup:  "header:Authorization:Bearer ",
+	JWKSRefresh:  time.Hour,
+}
+
+func applyDefaults(cfg Config) Config {
+	if cfg.SigningMethod == nil {
+		cfg.SigningMethod = DefaultConfig.SigningMethod
+	}
+	if cfg.TokenLookup == "" {
+		cfg.TokenLookup = DefaultConfig.TokenLookup
+	}
+	if cfg.Claims == nil && cfg.ClaimsFactory == nil {
+		cfg.Claims = jwtparse.MapClaims{}
+	}
+	if cfg.JWKSRefresh == 0 {
+		cfg.JWKSRefresh = DefaultConfig.JWKSRefresh
+	}
+	if cfg.TokenContextKey == "" {
+		cfg.TokenContextKey = TokenKey
+	}
+	if cfg.ClaimsContextKey == "" {
+		cfg.ClaimsContextKey = ClaimsKey
+	}
+	return cfg
+}
+
+func (cfg Config) validate() {
+	if cfg.SigningKey == nil && len(cfg.SigningKeys) == 0 && cfg.KeyFunc == nil && cfg.JWKSURL == "" {
+		panic("jwt: one of SigningKey, SigningKeys, KeyFunc, or JWKSURL is required")
+	}
+	if cfg.JWKSURL != "" {
+		validateJWKSURL(cfg.JWKSURL)
+	}
+}
+
+// validateJWKSURL enforces HTTPS for JWKS URLs, allowing HTTP only for
+// localhost addresses (127.0.0.1, ::1, localhost) for development.
+func validateJWKSURL(rawURL string) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		panic(fmt.Sprintf("jwt: invalid JWKS URL: %v", err))
+	}
+	if u.Scheme == "https" {
+		return
+	}
+	if u.Scheme == "http" {
+		host := u.Hostname()
+		if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+			return
+		}
+	}
+	panic("jwt: JWKS URL must use HTTPS (HTTP allowed only for localhost)")
+}
+
+// extractor extracts a token string from a request context.
+type extractor func(c *celeris.Context) string
+
+func parseExtractors(lookup string) []extractor {
+	sources := strings.Split(lookup, ",")
+	extractors := make([]extractor, 0, len(sources))
+	for _, source := range sources {
+		// Only trim leading whitespace; trailing whitespace in the prefix
+		// (e.g. "Bearer ") is significant and must be preserved.
+		source = strings.TrimLeft(source, " \t")
+		parts := strings.SplitN(source, ":", 3)
+		if len(parts) < 2 {
+			panic("jwt: invalid TokenLookup format: " + source)
+		}
+		parts[0] = strings.TrimSpace(parts[0])
+		parts[1] = strings.TrimSpace(parts[1])
+		switch parts[0] {
+		case "header":
+			key := strings.ToLower(parts[1])
+			prefix := ""
+			if len(parts) == 3 {
+				prefix = parts[2]
+			}
+			extractors = append(extractors, headerExtractor(key, prefix))
+		case "query":
+			name := parts[1]
+			extractors = append(extractors, func(c *celeris.Context) string {
+				return c.Query(name)
+			})
+		case "cookie":
+			name := parts[1]
+			extractors = append(extractors, func(c *celeris.Context) string {
+				v, _ := c.Cookie(name)
+				return v
+			})
+		case "form":
+			name := parts[1]
+			extractors = append(extractors, func(c *celeris.Context) string {
+				return c.FormValue(name)
+			})
+		case "param":
+			name := parts[1]
+			extractors = append(extractors, func(c *celeris.Context) string {
+				return c.Param(name)
+			})
+		default:
+			panic("jwt: unsupported TokenLookup source: " + parts[0])
+		}
+	}
+	return extractors
+}
+
+func headerExtractor(key, prefix string) extractor {
+	return func(c *celeris.Context) string {
+		val := c.Header(key)
+		if val == "" {
+			return ""
+		}
+		if prefix != "" {
+			if len(val) > len(prefix) && val[:len(prefix)] == prefix {
+				return val[len(prefix):]
+			}
+			return ""
+		}
+		return val
+	}
+}
+
+// resolveKeyFunc builds the key function. When customValidMethods is true,
+// the caller has set ValidMethods explicitly, so the parser already enforces
+// algorithm restrictions and the key function should not duplicate that check.
+func resolveKeyFunc(cfg Config, customValidMethods bool) jwtparse.Keyfunc {
+	if cfg.KeyFunc != nil {
+		return cfg.KeyFunc
+	}
+	if cfg.JWKSURL != "" {
+		fetcher := newJWKSFetcher(cfg.JWKSURL, cfg.JWKSRefresh)
+		return fetcher.keyFunc
+	}
+	if len(cfg.SigningKeys) > 0 {
+		return func(t *jwtparse.Token) (any, error) {
+			kid := t.Header.Kid
+			key, ok := cfg.SigningKeys[kid]
+			if !ok {
+				return nil, ErrTokenInvalid
+			}
+			return key, nil
+		}
+	}
+	if customValidMethods {
+		return func(_ *jwtparse.Token) (any, error) {
+			return cfg.SigningKey, nil
+		}
+	}
+	return func(t *jwtparse.Token) (any, error) {
+		if t.Method.Alg() != cfg.SigningMethod.Alg() {
+			return nil, fmt.Errorf("jwt: unexpected signing method: %v", t.Header.Alg)
+		}
+		return cfg.SigningKey, nil
+	}
+}
