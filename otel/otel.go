@@ -90,17 +90,25 @@ func New(config ...Config) celeris.HandlerFunc {
 
 		var spanBuf [12]attribute.KeyValue
 		n := 0
-		spanBuf[n] = attribute.String("http.request.method", c.Method()); n++
-		spanBuf[n] = attribute.String("http.route", c.FullPath()); n++
-		spanBuf[n] = attribute.String("url.scheme", c.Scheme()); n++
-		spanBuf[n] = attribute.String("url.path", c.Path()); n++
-		spanBuf[n] = attribute.String("network.protocol.version", "1.1"); n++
+		spanBuf[n] = attribute.String("http.request.method", c.Method())
+		n++
+		spanBuf[n] = attribute.String("http.route", c.FullPath())
+		n++
+		spanBuf[n] = attribute.String("url.scheme", c.Scheme())
+		n++
+		spanBuf[n] = attribute.String("url.path", c.Path())
+		n++
+		spanBuf[n] = attribute.String("network.protocol.version", "1.1")
+		n++
 		if collectClientIP {
-			spanBuf[n] = attribute.String("client.address", c.ClientIP()); n++
+			spanBuf[n] = attribute.String("client.address", c.ClientIP())
+			n++
 		}
-		spanBuf[n] = attribute.String("server.address", c.Host()); n++
+		spanBuf[n] = attribute.String("server.address", c.Host())
+		n++
 		if collectUserAgent {
-			spanBuf[n] = attribute.String("user_agent.original", c.Header("user-agent")); n++
+			spanBuf[n] = attribute.String("user_agent.original", c.Header("user-agent"))
+			n++
 		}
 		spanAttrs := spanBuf[:n]
 		if customAttrs != nil {
@@ -119,10 +127,14 @@ func New(config ...Config) celeris.HandlerFunc {
 		if metricsEnabled {
 			var metricBuf [6]attribute.KeyValue
 			mn := 0
-			metricBuf[mn] = attribute.String("http.request.method", c.Method()); mn++
-			metricBuf[mn] = attribute.String("http.route", c.FullPath()); mn++
-			metricBuf[mn] = attribute.String("url.scheme", c.Scheme()); mn++
-			metricBuf[mn] = attribute.String("server.address", c.Host()); mn++
+			metricBuf[mn] = attribute.String("http.request.method", c.Method())
+			mn++
+			metricBuf[mn] = attribute.String("http.route", c.FullPath())
+			mn++
+			metricBuf[mn] = attribute.String("url.scheme", c.Scheme())
+			mn++
+			metricBuf[mn] = attribute.String("server.address", c.Host())
+			mn++
 			metricBaseAttrs := metricBuf[:mn]
 			if customMetricAttrs != nil {
 				metricBaseAttrs = append(metricBaseAttrs, customMetricAttrs(c)...)

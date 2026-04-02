@@ -7,6 +7,7 @@ import (
 
 	"github.com/goceleris/celeris"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/common/expfmt"
 )
 
@@ -22,8 +23,8 @@ func New(config ...Config) celeris.HandlerFunc {
 	reg := cfg.Registry
 	if reg == nil {
 		reg = prometheus.NewRegistry()
-		reg.MustRegister(prometheus.NewGoCollector())
-		reg.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+		reg.MustRegister(collectors.NewGoCollector())
+		reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	}
 
 	constLabels := prometheus.Labels(cfg.ConstLabels)

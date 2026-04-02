@@ -67,7 +67,13 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
-      - run: go test -race -count=1 -timeout=120s ${{ needs.detect-changes.outputs.packages }}
+      - name: Test (root module only, sub-modules tested separately)
+        run: |
+          PKGS="${{ needs.detect-changes.outputs.packages }}"
+          if [ "$PKGS" = "./..." ]; then
+            PKGS=$(go list ./... | paste -sd' ' -)
+          fi
+          go test -race -count=1 -timeout=120s $PKGS
 
   bench:
     needs: detect-changes
@@ -79,7 +85,12 @@ jobs:
         with:
           go-version: "1.26"
       - name: Run benchmarks (affected packages)
-        run: go test -bench=. -benchmem -count=5 -run=^$ -timeout=300s ${{ needs.detect-changes.outputs.packages }} | tee bench-current.txt
+        run: |
+          PKGS="${{ needs.detect-changes.outputs.packages }}"
+          if [ "$PKGS" = "./..." ]; then
+            PKGS=$(go list ./... | paste -sd' ' -)
+          fi
+          go test -bench=. -benchmem -count=5 -run=^$ -timeout=300s $PKGS | tee bench-current.txt
       - uses: actions/upload-artifact@v4
         with:
           name: bench-pr

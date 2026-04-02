@@ -1,4 +1,4 @@
-package metrics
+package metrics //nolint:revive // package name intentionally matches the middleware domain
 
 import (
 	"strconv"
@@ -563,7 +563,7 @@ func TestDuplicateBucketsPanics(t *testing.T) {
 	})
 }
 
-func TestSortedBucketsDoNotPanic(t *testing.T) {
+func TestSortedBucketsDoNotPanic(_ *testing.T) {
 	// Should not panic with properly sorted buckets.
 	New(Config{
 		Registry: newIsolatedRegistry(),

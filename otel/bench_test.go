@@ -46,7 +46,7 @@ func BenchmarkOTelSkipFunc(b *testing.B) {
 	mw := New(Config{
 		TracerProvider: tp,
 		MeterProvider:  mp,
-		Skip:           func(c *celeris.Context) bool { return true },
+		Skip:           func(_ *celeris.Context) bool { return true },
 	})
 	noopH := func(c *celeris.Context) error { return c.String(200, "ok") }
 	opts := []celeristest.Option{celeristest.WithHandlers(mw, noopH)}
