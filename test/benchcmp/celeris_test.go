@@ -10,6 +10,7 @@ import (
 
 	"github.com/goceleris/celeris"
 	"github.com/goceleris/celeris/celeristest"
+
 	"github.com/goceleris/middlewares/basicauth"
 	"github.com/goceleris/middlewares/bodylimit"
 	"github.com/goceleris/middlewares/cors"

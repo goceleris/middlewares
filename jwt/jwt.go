@@ -5,6 +5,7 @@ import (
 	"reflect"
 
 	"github.com/goceleris/celeris"
+
 	"github.com/goceleris/middlewares/jwt/internal/jwtparse"
 )
 
