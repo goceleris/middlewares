@@ -1,0 +1,58 @@
+// Package healthcheck provides Kubernetes-style health probe middleware
+// for celeris.
+//
+// The middleware intercepts requests matching configurable probe paths
+// (default "/livez", "/readyz", "/startupz") and returns a JSON status
+// response based on checker functions. Requests that do not match any
+// probe path are passed through to the next handler with zero overhead
+// beyond string equality checks.
+//
+// Basic usage with defaults (all probes return 200):
+//
+//	server.Use(healthcheck.New())
+//
+// Custom readiness check:
+//
+//	server.Use(healthcheck.New(healthcheck.Config{
+//	    ReadyChecker: func(_ *celeris.Context) bool {
+//	        return db.Ping() == nil
+//	    },
+//	}))
+//
+// Custom paths:
+//
+//	server.Use(healthcheck.New(healthcheck.Config{
+//	    LivePath:  "/health/live",
+//	    ReadyPath: "/health/ready",
+//	    StartPath: "/health/startup",
+//	}))
+//
+// # Probe Semantics
+//
+// The three probes follow Kubernetes conventions:
+//
+//   - Liveness: indicates the process is running. A failing liveness
+//     probe triggers a container restart.
+//   - Readiness: indicates the service can accept traffic. A failing
+//     readiness probe removes the pod from service endpoints.
+//   - Startup: indicates initial startup has completed. Until the
+//     startup probe succeeds, liveness and readiness probes are ignored.
+//
+// # Checker Timeout
+//
+// Each checker call is guarded by [Config].CheckerTimeout (default 5s).
+// If a checker does not return within the timeout, the probe responds
+// with 503 unavailable. This prevents a slow dependency (e.g., a
+// database ping) from blocking the health endpoint indefinitely.
+//
+// # Skip Function
+//
+// Set [Config].Skip to bypass the middleware for certain requests before
+// path matching occurs. This is useful for conditional healthcheck
+// routing based on request properties.
+//
+// # Response Format
+//
+// 200: {"status": "ok"}
+// 503: {"status": "unavailable"}
+package healthcheck
