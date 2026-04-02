@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -449,7 +452,8 @@ func TestSensitiveHeadersCaseInsensitive(t *testing.T) {
 
 func TestNoSensitiveHeadersNoRedaction(t *testing.T) {
 	log, buf := newTestLogger()
-	mw := New(Config{Output: log})
+	// Explicitly set empty slice to disable all redaction.
+	mw := New(Config{Output: log, SensitiveHeaders: []string{}})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
@@ -460,7 +464,7 @@ func TestNoSensitiveHeadersNoRedaction(t *testing.T) {
 	testutil.AssertNoError(t, err)
 	out := buf.String()
 	if strings.Contains(out, "[REDACTED]") {
-		t.Fatalf("expected no redaction without SensitiveHeaders, got: %s", out)
+		t.Fatalf("expected no redaction with empty SensitiveHeaders, got: %s", out)
 	}
 }
 
@@ -695,5 +699,535 @@ func TestAllOptInFieldsTogether(t *testing.T) {
 		if !strings.Contains(out, field) {
 			t.Fatalf("missing %s in log with all opt-in fields: %s", field, out)
 		}
+	}
+}
+
+// --- TimeZone ---
+
+func TestTimeZone(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	log := slog.New(h)
+
+	utc := time.UTC
+	mw := New(Config{
+		Output:           log,
+		TimeZone:         utc,
+		SensitiveHeaders: []string{},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/tz")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	// The TextHandler formats the record's time. Since we set UTC,
+	// the timestamp must end with Z (UTC indicator).
+	if !strings.Contains(out, "Z") {
+		t.Fatalf("expected UTC timestamp (Z suffix) in log, got: %s", out)
+	}
+}
+
+func TestTimeZoneNilUsesLocal(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewTextHandler(buf, nil))
+	mw := New(Config{Output: log, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/tz-nil")
+	testutil.AssertNoError(t, err)
+	if buf.Len() == 0 {
+		t.Fatal("expected log output")
+	}
+}
+
+// --- TimeFormat on FastHandler ---
+
+func TestFastHandlerTimeFormat(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewFastHandler(buf, &FastHandlerOptions{TimeFormat: time.Kitchen})
+	r := slog.NewRecord(time.Date(2025, 6, 15, 14, 30, 0, 0, time.UTC), slog.LevelInfo, "test", 0)
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// time.Kitchen produces e.g. "2:30PM"
+	if !strings.Contains(out, "time=2:30PM") {
+		t.Fatalf("expected Kitchen format in output, got: %q", out)
+	}
+}
+
+func TestFastHandlerTimeFormatEmpty(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewFastHandler(buf, &FastHandlerOptions{TimeFormat: ""})
+	now := time.Date(2025, 6, 15, 14, 30, 45, 123_000_000, time.UTC)
+	r := slog.NewRecord(now, slog.LevelInfo, "test", 0)
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// Default RFC3339-millis format
+	if !strings.Contains(out, "2025-06-15T14:30:45.123Z") {
+		t.Fatalf("expected default RFC3339 format, got: %q", out)
+	}
+}
+
+// --- LogPID ---
+
+func TestLogPID(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, LogPID: true, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/pid")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	pid := strconv.Itoa(os.Getpid())
+	if !strings.Contains(out, `"pid":`+pid) {
+		t.Fatalf("expected pid=%s in log, got: %s", pid, out)
+	}
+}
+
+func TestLogPIDDisabledByDefault(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/no-pid")
+	testutil.AssertNoError(t, err)
+	if strings.Contains(buf.String(), `"pid"`) {
+		t.Fatalf("pid should not be logged by default, got: %s", buf.String())
+	}
+}
+
+func TestLogPIDCached(t *testing.T) {
+	// Verify cachedPID matches os.Getpid().
+	if cachedPID != os.Getpid() {
+		t.Fatalf("cachedPID=%d, os.Getpid()=%d", cachedPID, os.Getpid())
+	}
+}
+
+// --- LogQueryParams ---
+
+func TestLogQueryParams(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, LogQueryParams: true, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/search",
+		celeristest.WithQuery("q", "hello"),
+		celeristest.WithQuery("page", "1"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, `"query"`) {
+		t.Fatalf("expected query attr in log, got: %s", out)
+	}
+	if !strings.Contains(out, "hello") {
+		t.Fatalf("expected query value 'hello' in log, got: %s", out)
+	}
+}
+
+func TestLogQueryParamsEmpty(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, LogQueryParams: true, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/no-query")
+	testutil.AssertNoError(t, err)
+	if strings.Contains(buf.String(), `"query"`) {
+		t.Fatalf("query should be omitted when empty, got: %s", buf.String())
+	}
+}
+
+func TestLogQueryParamsDisabledByDefault(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/q",
+		celeristest.WithQuery("q", "test"),
+	)
+	testutil.AssertNoError(t, err)
+	if strings.Contains(buf.String(), `"query"`) {
+		t.Fatalf("query should not be logged by default, got: %s", buf.String())
+	}
+}
+
+// --- LogFormValues ---
+
+func TestLogFormValues(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, LogFormValues: true, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/form",
+		celeristest.WithHeader("content-type", "application/x-www-form-urlencoded"),
+		celeristest.WithBody([]byte("user=alice&role=admin")),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, `"form"`) {
+		t.Fatalf("expected form attr in log, got: %s", out)
+	}
+	if !strings.Contains(out, "alice") {
+		t.Fatalf("expected form value 'alice' in log, got: %s", out)
+	}
+}
+
+func TestLogFormValuesNotFormContentType(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, LogFormValues: true, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/json",
+		celeristest.WithHeader("content-type", "application/json"),
+		celeristest.WithBody([]byte(`{"key":"value"}`)),
+	)
+	testutil.AssertNoError(t, err)
+	if strings.Contains(buf.String(), `"form"`) {
+		t.Fatalf("form should not be logged for JSON content-type, got: %s", buf.String())
+	}
+}
+
+func TestLogFormValuesDisabledByDefault(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/form-off",
+		celeristest.WithHeader("content-type", "application/x-www-form-urlencoded"),
+		celeristest.WithBody([]byte("x=1")),
+	)
+	testutil.AssertNoError(t, err)
+	if strings.Contains(buf.String(), `"form"`) {
+		t.Fatalf("form should not be logged by default, got: %s", buf.String())
+	}
+}
+
+// --- LogCookies ---
+
+func TestLogCookies(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, LogCookies: true, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/cookies",
+		celeristest.WithCookie("session", "abc123"),
+		celeristest.WithCookie("theme", "dark"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, `"cookies"`) {
+		t.Fatalf("expected cookies attr in log, got: %s", out)
+	}
+	if !strings.Contains(out, "session") {
+		t.Fatalf("expected cookie name 'session' in log, got: %s", out)
+	}
+	if !strings.Contains(out, "theme") {
+		t.Fatalf("expected cookie name 'theme' in log, got: %s", out)
+	}
+	// Values must NOT appear in the log.
+	if strings.Contains(out, "abc123") {
+		t.Fatalf("cookie value 'abc123' should not be in log, got: %s", out)
+	}
+	if strings.Contains(out, "dark") {
+		// "dark" could appear as part of a cookie name coincidentally,
+		// but in the "cookies" attr it should only be the name "theme".
+		// Check that the cookies field does not contain "=dark".
+		if strings.Contains(out, "=dark") {
+			t.Fatalf("cookie value should not be in log, got: %s", out)
+		}
+	}
+}
+
+func TestLogCookiesNoCookies(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, LogCookies: true, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/no-cookies")
+	testutil.AssertNoError(t, err)
+	if strings.Contains(buf.String(), `"cookies"`) {
+		t.Fatalf("cookies should be omitted when no cookies present, got: %s", buf.String())
+	}
+}
+
+func TestLogCookiesDisabledByDefault(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/cookies-off",
+		celeristest.WithCookie("sess", "val"),
+	)
+	testutil.AssertNoError(t, err)
+	if strings.Contains(buf.String(), `"cookies"`) {
+		t.Fatalf("cookies should not be logged by default, got: %s", buf.String())
+	}
+}
+
+// --- Done callback ---
+
+func TestDoneCallback(t *testing.T) {
+	log, _ := newTestLogger()
+	var mu sync.Mutex
+	var called bool
+	var gotStatus int
+	var gotLatency time.Duration
+
+	mw := New(Config{
+		Output:           log,
+		SensitiveHeaders: []string{},
+		Done: func(_ *celeris.Context, latency time.Duration, status int) {
+			mu.Lock()
+			called = true
+			gotStatus = status
+			gotLatency = latency
+			mu.Unlock()
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/done")
+	testutil.AssertNoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !called {
+		t.Fatal("Done callback was not called")
+	}
+	if gotStatus != 200 {
+		t.Fatalf("Done got status=%d, want 200", gotStatus)
+	}
+	if gotLatency <= 0 {
+		t.Fatalf("Done got latency=%v, want >0", gotLatency)
+	}
+}
+
+func TestDoneCallbackOn5xx(t *testing.T) {
+	log, _ := newTestLogger()
+	var mu sync.Mutex
+	var gotStatus int
+
+	mw := New(Config{
+		Output:           log,
+		SensitiveHeaders: []string{},
+		Done: func(_ *celeris.Context, _ time.Duration, status int) {
+			mu.Lock()
+			gotStatus = status
+			mu.Unlock()
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(503, "error")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/done-5xx")
+	testutil.AssertNoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotStatus != 503 {
+		t.Fatalf("Done got status=%d, want 503", gotStatus)
+	}
+}
+
+func TestDoneCallbackNilSafe(t *testing.T) {
+	log, _ := newTestLogger()
+	mw := New(Config{Output: log, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/done-nil")
+	testutil.AssertNoError(t, err)
+	// No panic means success.
+}
+
+func TestDoneCallbackCalledWhenLogDisabled(t *testing.T) {
+	// Use a handler that only enables ERROR level.
+	buf := &bytes.Buffer{}
+	h := slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelError})
+	log := slog.New(h)
+
+	var mu sync.Mutex
+	var called bool
+
+	mw := New(Config{
+		Output:           log,
+		SensitiveHeaders: []string{},
+		Done: func(_ *celeris.Context, _ time.Duration, _ int) {
+			mu.Lock()
+			called = true
+			mu.Unlock()
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok") // INFO level → disabled
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/done-disabled")
+	testutil.AssertNoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !called {
+		t.Fatal("Done callback should be called even when log level is disabled")
+	}
+}
+
+// --- DefaultSensitiveHeaders ---
+
+func TestDefaultSensitiveHeadersApplied(t *testing.T) {
+	log, buf := newTestLogger()
+	// SensitiveHeaders is nil → use DefaultSensitiveHeaders.
+	mw := New(Config{Output: log})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/defaults",
+		celeristest.WithHeader("authorization", "Bearer secret"),
+		celeristest.WithHeader("x-api-key", "key123"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, "[REDACTED]") {
+		t.Fatalf("expected default sensitive headers to be redacted, got: %s", out)
+	}
+	if strings.Contains(out, "secret") {
+		t.Fatalf("authorization value should be redacted, got: %s", out)
+	}
+	if strings.Contains(out, "key123") {
+		t.Fatalf("x-api-key value should be redacted, got: %s", out)
+	}
+}
+
+func TestDefaultSensitiveHeadersOverridden(t *testing.T) {
+	log, buf := newTestLogger()
+	// Explicitly set only "x-custom" → defaults NOT used.
+	mw := New(Config{
+		Output:           log,
+		SensitiveHeaders: []string{"x-custom"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/override",
+		celeristest.WithHeader("authorization", "Bearer visible"),
+		celeristest.WithHeader("x-custom", "secret"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	// authorization should NOT be redacted (not in custom list).
+	if strings.Contains(out, "header.authorization") {
+		t.Fatalf("authorization should not be redacted with custom list, got: %s", out)
+	}
+	// x-custom SHOULD be redacted.
+	if !strings.Contains(out, "header.x-custom") || !strings.Contains(out, "[REDACTED]") {
+		t.Fatalf("x-custom should be redacted, got: %s", out)
+	}
+}
+
+func TestDefaultSensitiveHeadersDisabled(t *testing.T) {
+	log, buf := newTestLogger()
+	// Empty slice disables all redaction.
+	mw := New(Config{Output: log, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/disabled",
+		celeristest.WithHeader("authorization", "Bearer visible"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if strings.Contains(out, "[REDACTED]") {
+		t.Fatalf("expected no redaction with empty SensitiveHeaders, got: %s", out)
+	}
+}
+
+func TestDefaultSensitiveHeadersVar(t *testing.T) {
+	// Verify the exported var has the expected entries.
+	expected := map[string]bool{
+		"authorization": true,
+		"cookie":        true,
+		"set-cookie":    true,
+		"x-api-key":     true,
+	}
+	if len(DefaultSensitiveHeaders) != len(expected) {
+		t.Fatalf("DefaultSensitiveHeaders has %d entries, want %d",
+			len(DefaultSensitiveHeaders), len(expected))
+	}
+	for _, h := range DefaultSensitiveHeaders {
+		if !expected[h] {
+			t.Fatalf("unexpected header in DefaultSensitiveHeaders: %s", h)
+		}
+	}
+}
+
+// --- parseCookieNames ---
+
+func TestParseCookieNames(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"single", "session=abc", "session"},
+		{"multiple", "session=abc; theme=dark", "session,theme"},
+		{"trailing semicolon", "a=1; b=2;", "a,b"},
+		{"no value", "bare", "bare"},
+		{"empty", "", ""},
+		{"spaces", "  a=1 ;  b=2  ", "a,b"},
+		{"equals in value", "data=a=b; other=c", "data,other"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseCookieNames(tc.raw)
+			if got != tc.want {
+				t.Errorf("parseCookieNames(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- Pool capacity ---
+
+func TestAttrPoolCapacity(t *testing.T) {
+	ptr := attrPool.Get().(*[]slog.Attr)
+	got := cap(*ptr)
+	attrPool.Put(ptr)
+	if got < 28 {
+		t.Fatalf("attrPool capacity = %d, want >= 28", got)
 	}
 }

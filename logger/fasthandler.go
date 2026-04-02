@@ -19,10 +19,11 @@ import (
 //	log := slog.New(logger.NewFastHandler(os.Stderr, nil))
 //	mw := logger.New(logger.Config{Output: log})
 type FastHandler struct {
-	w      io.Writer
-	level  slog.Level
-	prefix []byte // pre-formatted group/attr prefix for WithAttrs/WithGroup
-	color  bool
+	w          io.Writer
+	level      slog.Level
+	prefix     []byte // pre-formatted group/attr prefix for WithAttrs/WithGroup
+	color      bool
+	timeFormat string // custom Go time layout; empty = RFC3339-millis
 }
 
 // FastHandlerOptions configures a FastHandler.
@@ -32,6 +33,9 @@ type FastHandlerOptions struct {
 	// Color enables ANSI color codes in output.
 	// Level names are colored: red=ERROR, yellow=WARN, green=INFO, cyan=DEBUG.
 	Color bool
+	// TimeFormat sets a custom Go time layout (e.g. time.RFC3339).
+	// When empty, the built-in RFC3339-millis formatter is used.
+	TimeFormat string
 }
 
 var fastBufPool = sync.Pool{New: func() any {
@@ -108,6 +112,7 @@ func NewFastHandler(w io.Writer, opts *FastHandlerOptions) *FastHandler {
 	if opts != nil {
 		h.level = opts.Level
 		h.color = opts.Color
+		h.timeFormat = opts.TimeFormat
 	}
 	return h
 }
@@ -124,7 +129,11 @@ func (h *FastHandler) Handle(_ context.Context, r slog.Record) error {
 
 	// time=2006-01-02T15:04:05.000Z07:00
 	buf = append(buf, "time="...)
-	buf = appendTime(buf, r.Time)
+	if h.timeFormat != "" {
+		buf = append(buf, r.Time.Format(h.timeFormat)...)
+	} else {
+		buf = appendTime(buf, r.Time)
+	}
 
 	// level=INFO
 	buf = append(buf, " level="...)
@@ -180,7 +189,7 @@ func (h *FastHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		buf = append(buf, ' ')
 		buf = appendAttr(buf, a)
 	}
-	return &FastHandler{w: h.w, level: h.level, prefix: buf, color: h.color}
+	return &FastHandler{w: h.w, level: h.level, prefix: buf, color: h.color, timeFormat: h.timeFormat}
 }
 
 // WithGroup returns a new handler with the given group name prepended
@@ -191,15 +200,16 @@ func (h *FastHandler) WithGroup(name string) slog.Handler {
 	}
 	prefix := make([]byte, len(h.prefix))
 	copy(prefix, h.prefix)
-	return &groupHandler{parent: h, group: name, prefix: prefix, color: h.color}
+	return &groupHandler{parent: h, group: name, prefix: prefix, color: h.color, timeFormat: h.timeFormat}
 }
 
 // groupHandler prepends a group name to attribute keys.
 type groupHandler struct {
-	parent *FastHandler
-	group  string
-	prefix []byte
-	color  bool
+	parent     *FastHandler
+	group      string
+	prefix     []byte
+	color      bool
+	timeFormat string
 }
 
 func (g *groupHandler) Enabled(ctx context.Context, level slog.Level) bool {
@@ -211,7 +221,11 @@ func (g *groupHandler) Handle(_ context.Context, r slog.Record) error {
 	buf := (*bp)[:0]
 
 	buf = append(buf, "time="...)
-	buf = appendTime(buf, r.Time)
+	if g.timeFormat != "" {
+		buf = append(buf, r.Time.Format(g.timeFormat)...)
+	} else {
+		buf = appendTime(buf, r.Time)
+	}
 
 	buf = append(buf, " level="...)
 	idx := levelIndex(r.Level)
@@ -258,7 +272,7 @@ func (g *groupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		prefix = append(prefix, '.')
 		prefix = appendAttr(prefix, a)
 	}
-	return &groupHandler{parent: g.parent, group: g.group, prefix: prefix, color: g.color}
+	return &groupHandler{parent: g.parent, group: g.group, prefix: prefix, color: g.color, timeFormat: g.timeFormat}
 }
 
 func (g *groupHandler) WithGroup(name string) slog.Handler {
@@ -267,7 +281,7 @@ func (g *groupHandler) WithGroup(name string) slog.Handler {
 	}
 	prefix := make([]byte, len(g.prefix))
 	copy(prefix, g.prefix)
-	return &groupHandler{parent: g.parent, group: g.group + "." + name, prefix: prefix, color: g.color}
+	return &groupHandler{parent: g.parent, group: g.group + "." + name, prefix: prefix, color: g.color, timeFormat: g.timeFormat}
 }
 
 // appendAttr formats a single slog.Attr into buf.

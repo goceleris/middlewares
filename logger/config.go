@@ -7,6 +7,16 @@ import (
 	"github.com/goceleris/celeris"
 )
 
+// DefaultSensitiveHeaders lists header names redacted by default when
+// SensitiveHeaders is nil (not explicitly set). Set SensitiveHeaders
+// to an empty slice ([]string{}) to disable all redaction.
+var DefaultSensitiveHeaders = []string{
+	"authorization",
+	"cookie",
+	"set-cookie",
+	"x-api-key",
+}
+
 // Config defines the logger middleware configuration.
 type Config struct {
 	// Skip defines a function to skip this middleware for certain requests.
@@ -21,6 +31,10 @@ type Config struct {
 
 	// Fields adds custom fields to the log entry.
 	Fields func(c *celeris.Context, latency time.Duration) []slog.Attr
+
+	// Done is called after the log entry is written. Useful for alerting
+	// on 5xx responses or collecting metrics outside the log pipeline.
+	Done func(c *celeris.Context, latency time.Duration, status int)
 
 	// SkipPaths lists paths to skip (exact match).
 	SkipPaths []string
@@ -39,7 +53,19 @@ type Config struct {
 	// SensitiveHeaders lists header names whose values should be redacted
 	// in log output. Values are replaced with "[REDACTED]". Header names
 	// are matched case-insensitively.
+	//
+	// When nil, DefaultSensitiveHeaders is used. Set to an empty slice
+	// ([]string{}) to disable all redaction.
 	SensitiveHeaders []string
+
+	// TimeZone sets the timezone for log timestamps. Default nil uses
+	// the local timezone.
+	TimeZone *time.Location
+
+	// TimeFormat sets a custom time format for FastHandler output.
+	// Uses Go time layout syntax (e.g. time.RFC3339). When empty,
+	// FastHandler uses its built-in RFC3339-millis formatter.
+	TimeFormat string
 
 	// LogHost includes the request Host header.
 	LogHost bool
@@ -51,6 +77,16 @@ type Config struct {
 	LogProtocol bool
 	// LogRoute includes the matched route pattern (FullPath).
 	LogRoute bool
+	// LogPID includes the process ID as "pid" attr.
+	LogPID bool
+	// LogQueryParams includes the raw query string as "query" attr.
+	LogQueryParams bool
+	// LogFormValues includes form field names and values as "form" attr
+	// (only when content-type is application/x-www-form-urlencoded).
+	LogFormValues bool
+	// LogCookies includes cookie names (not values, for security) as
+	// "cookies" attr.
+	LogCookies bool
 }
 
 // DefaultConfig is the default logger configuration.
