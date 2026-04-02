@@ -40,8 +40,8 @@ type swShard struct {
 }
 
 type swBucket struct {
-	prevCount int
-	currCount int
+	prevCount   int
+	currCount   int
 	windowStart int64 // UnixNano of current window start
 }
 
@@ -97,7 +97,7 @@ func (l *slidingWindowLimiter) allow(key string, now int64) (bool, int, int64) {
 	}
 
 	// Weighted count: previous window contribution + current window count
-	weight := float64(w.prevCount) * (1 - fraction) + float64(w.currCount)
+	weight := float64(w.prevCount)*(1-fraction) + float64(w.currCount)
 	remaining := l.limit - int(weight) - 1
 
 	if weight+1 > float64(l.limit) {

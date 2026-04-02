@@ -1513,7 +1513,7 @@ func TestRateFuncFallback(t *testing.T) {
 	mw := New(Config{
 		RPS:   0.001,
 		Burst: 3,
-		RateFunc: func(c *celeris.Context) (string, error) {
+		RateFunc: func(_ *celeris.Context) (string, error) {
 			return "", nil // empty string = fallback to static
 		},
 		CleanupInterval: time.Hour,
@@ -1534,7 +1534,7 @@ func TestRateFuncError(t *testing.T) {
 	mw := New(Config{
 		RPS:   100,
 		Burst: 100,
-		RateFunc: func(c *celeris.Context) (string, error) {
+		RateFunc: func(_ *celeris.Context) (string, error) {
 			return "", errors.New("config lookup failed")
 		},
 		CleanupInterval: time.Hour,
@@ -1556,7 +1556,7 @@ func TestRateFuncHeaders(t *testing.T) {
 	mw := New(Config{
 		RPS:   100,
 		Burst: 100,
-		RateFunc: func(c *celeris.Context) (string, error) {
+		RateFunc: func(_ *celeris.Context) (string, error) {
 			return "5-S", nil
 		},
 		CleanupInterval: time.Hour,
@@ -1578,7 +1578,7 @@ func TestRateFuncWithSlidingWindow(t *testing.T) {
 		RPS:           100,
 		Burst:         100,
 		SlidingWindow: true,
-		RateFunc: func(c *celeris.Context) (string, error) {
+		RateFunc: func(_ *celeris.Context) (string, error) {
 			return "3-S", nil
 		},
 		CleanupInterval: time.Hour,
@@ -1601,7 +1601,7 @@ func TestRateFuncCachesLimiters(t *testing.T) {
 	mw := New(Config{
 		RPS:   100,
 		Burst: 100,
-		RateFunc: func(c *celeris.Context) (string, error) {
+		RateFunc: func(_ *celeris.Context) (string, error) {
 			callCount++
 			return "5-S", nil
 		},

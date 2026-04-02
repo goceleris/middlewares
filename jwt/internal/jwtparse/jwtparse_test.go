@@ -94,7 +94,7 @@ func TestHS512RoundTrip(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodHS512, claims, key)
 
 	p := NewParser(WithValidMethods([]string{"HS512"}))
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestRS256RoundTrip(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodRS256, claims, key)
 
 	p := NewParser(WithValidMethods([]string{"RS256"}))
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return &key.PublicKey, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return &key.PublicKey, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestRS384RoundTrip(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodRS384, claims, key)
 
 	p := NewParser(WithValidMethods([]string{"RS384"}))
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return &key.PublicKey, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return &key.PublicKey, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestRS512RoundTrip(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodRS512, claims, key)
 
 	p := NewParser(WithValidMethods([]string{"RS512"}))
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return &key.PublicKey, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return &key.PublicKey, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestES256RoundTrip(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodES256, claims, key)
 
 	p := NewParser(WithValidMethods([]string{"ES256"}))
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return &key.PublicKey, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return &key.PublicKey, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestES384RoundTrip(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodES384, claims, key)
 
 	p := NewParser(WithValidMethods([]string{"ES384"}))
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return &key.PublicKey, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return &key.PublicKey, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestES512RoundTrip(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodES512, claims, key)
 
 	p := NewParser(WithValidMethods([]string{"ES512"}))
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return &key.PublicKey, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return &key.PublicKey, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestEdDSARoundTrip(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodEdDSA, claims, priv)
 
 	p := NewParser(WithValidMethods([]string{"EdDSA"}))
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return pub, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return pub, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestAlgNoneRejected(t *testing.T) {
 	// Manually construct a token with alg:none.
 	tok := "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjM0In0."
 	p := NewParser()
-	_, err := p.Parse(tok, func(t *Token) (any, error) { return nil, nil })
+	_, err := p.Parse(tok, func(_ *Token) (any, error) { return nil, nil })
 	if !errors.Is(err, ErrAlgNone) {
 		t.Fatalf("expected ErrAlgNone, got %v", err)
 	}
@@ -230,7 +230,7 @@ func TestAlgNoneCaseInsensitive(t *testing.T) {
 	// alg:"None" (mixed case) should also be rejected.
 	tok := "eyJhbGciOiJOb25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjM0In0."
 	p := NewParser()
-	_, err := p.Parse(tok, func(t *Token) (any, error) { return nil, nil })
+	_, err := p.Parse(tok, func(_ *Token) (any, error) { return nil, nil })
 	if !errors.Is(err, ErrAlgNone) {
 		t.Fatalf("expected ErrAlgNone, got %v", err)
 	}
@@ -247,7 +247,7 @@ func TestExpiredToken(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodHS256, claims, key)
 
 	p := NewParser()
-	_, err := p.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	_, err := p.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if !errors.Is(err, ErrTokenExpired) {
 		t.Fatalf("expected ErrTokenExpired, got %v", err)
 	}
@@ -265,7 +265,7 @@ func TestNotValidYet(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodHS256, claims, key)
 
 	p := NewParser()
-	_, err := p.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	_, err := p.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if !errors.Is(err, ErrTokenNotValidYet) {
 		t.Fatalf("expected ErrTokenNotValidYet, got %v", err)
 	}
@@ -275,7 +275,7 @@ func TestNotValidYet(t *testing.T) {
 
 func TestMalformedTokens(t *testing.T) {
 	p := NewParser()
-	kf := func(t *Token) (any, error) { return hmacKey(), nil }
+	kf := func(_ *Token) (any, error) { return hmacKey(), nil }
 
 	cases := []string{
 		"",
@@ -304,7 +304,7 @@ func TestMapClaimsIssuedInFuture(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodHS256, claims, key)
 
 	p := NewParser()
-	_, err := p.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	_, err := p.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if !errors.Is(err, ErrTokenUsedBeforeIssued) {
 		t.Fatalf("expected ErrTokenUsedBeforeIssued, got %v", err)
 	}
@@ -323,7 +323,7 @@ func TestRegisteredClaimsValid(t *testing.T) {
 
 	p := NewParser()
 	rc := &RegisteredClaims{}
-	parsed, err := p.ParseWithClaims(tok, rc, func(t *Token) (any, error) { return key, nil })
+	parsed, err := p.ParseWithClaims(tok, rc, func(_ *Token) (any, error) { return key, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestRegisteredClaimsExpired(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodHS256, claims, key)
 
 	p := NewParser()
-	_, err := p.ParseWithClaims(tok, &RegisteredClaims{}, func(t *Token) (any, error) { return key, nil })
+	_, err := p.ParseWithClaims(tok, &RegisteredClaims{}, func(_ *Token) (any, error) { return key, nil })
 	if !errors.Is(err, ErrTokenExpired) {
 		t.Fatalf("expected ErrTokenExpired, got %v", err)
 	}
@@ -360,7 +360,7 @@ func TestRegisteredClaimsNotValidYet(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodHS256, claims, key)
 
 	p := NewParser()
-	_, err := p.ParseWithClaims(tok, &RegisteredClaims{}, func(t *Token) (any, error) { return key, nil })
+	_, err := p.ParseWithClaims(tok, &RegisteredClaims{}, func(_ *Token) (any, error) { return key, nil })
 	if !errors.Is(err, ErrTokenNotValidYet) {
 		t.Fatalf("expected ErrTokenNotValidYet, got %v", err)
 	}
@@ -423,7 +423,7 @@ func TestWithValidMethodsRejects(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodHS256, claims, key)
 
 	p := NewParser(WithValidMethods([]string{"RS256"}))
-	_, err := p.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	_, err := p.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if !errors.Is(err, ErrTokenUnverifiable) {
 		t.Fatalf("expected ErrTokenUnverifiable, got %v", err)
 	}
@@ -438,7 +438,7 @@ func TestHeaderKid(t *testing.T) {
 
 	// Our SignToken doesn't set kid, so parse and check it's empty.
 	p := NewParser()
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -456,7 +456,7 @@ func TestWrongSigningKey(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodHS256, claims, key1)
 
 	p := NewParser()
-	_, err := p.Parse(tok, func(t *Token) (any, error) { return key2, nil })
+	_, err := p.Parse(tok, func(_ *Token) (any, error) { return key2, nil })
 	if !errors.Is(err, ErrTokenSignatureInvalid) {
 		t.Fatalf("expected ErrTokenSignatureInvalid, got %v", err)
 	}
@@ -474,7 +474,7 @@ func TestWithIssuer(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodHS256, claims, key)
 
 	p := NewParser(WithIssuer("myissuer"))
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestWithIssuerRejects(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodHS256, claims, key)
 
 	p := NewParser(WithIssuer("myissuer"))
-	_, err := p.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	_, err := p.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if !errors.Is(err, ErrInvalidIssuer) {
 		t.Fatalf("expected ErrInvalidIssuer, got %v", err)
 	}
@@ -511,7 +511,7 @@ func TestWithAudience(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodHS256, claims, key)
 
 	p := NewParser(WithAudience("myapp"))
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -530,7 +530,7 @@ func TestWithAudienceRejects(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodHS256, claims, key)
 
 	p := NewParser(WithAudience("myapp"))
-	_, err := p.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	_, err := p.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if !errors.Is(err, ErrInvalidAudience) {
 		t.Fatalf("expected ErrInvalidAudience, got %v", err)
 	}
@@ -544,7 +544,7 @@ func TestKeyfuncError(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodHS256, claims, key)
 
 	p := NewParser()
-	_, err := p.Parse(tok, func(t *Token) (any, error) { return nil, errors.New("no key") })
+	_, err := p.Parse(tok, func(_ *Token) (any, error) { return nil, errors.New("no key") })
 	if !errors.Is(err, ErrTokenUnverifiable) {
 		t.Fatalf("expected ErrTokenUnverifiable, got %v", err)
 	}
@@ -558,7 +558,7 @@ func TestNoExpClaim(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodHS256, claims, key)
 
 	p := NewParser()
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -596,7 +596,7 @@ func TestPS256RoundTrip(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodPS256, claims, key)
 
 	p := NewParser(WithValidMethods([]string{"PS256"}))
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return &key.PublicKey, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return &key.PublicKey, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -614,7 +614,7 @@ func TestPS384RoundTrip(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodPS384, claims, key)
 
 	p := NewParser(WithValidMethods([]string{"PS384"}))
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return &key.PublicKey, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return &key.PublicKey, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -629,7 +629,7 @@ func TestPS512RoundTrip(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodPS512, claims, key)
 
 	p := NewParser(WithValidMethods([]string{"PS512"}))
-	parsed, err := p.Parse(tok, func(t *Token) (any, error) { return &key.PublicKey, nil })
+	parsed, err := p.Parse(tok, func(_ *Token) (any, error) { return &key.PublicKey, nil })
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -646,7 +646,7 @@ func TestPSSWrongKeyType(t *testing.T) {
 	tok := mustSignToken(t, SigningMethodPS256, claims, key)
 
 	p := NewParser(WithValidMethods([]string{"PS256"}))
-	_, err := p.Parse(tok, func(t *Token) (any, error) { return []byte("wrong-key-type"), nil })
+	_, err := p.Parse(tok, func(_ *Token) (any, error) { return []byte("wrong-key-type"), nil })
 	if !errors.Is(err, ErrTokenUnverifiable) {
 		t.Fatalf("expected ErrTokenUnverifiable, got %v", err)
 	}
@@ -664,14 +664,14 @@ func TestWithLeewayAllowsRecentlyExpired(t *testing.T) {
 
 	// Without leeway: should fail.
 	p := NewParser()
-	_, err := p.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	_, err := p.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if !errors.Is(err, ErrTokenExpired) {
 		t.Fatalf("without leeway: expected ErrTokenExpired, got %v", err)
 	}
 
 	// With 1 minute leeway: should succeed.
 	p2 := NewParser(WithLeeway(time.Minute))
-	parsed, err := p2.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	parsed, err := p2.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if err != nil {
 		t.Fatalf("with leeway: unexpected error: %v", err)
 	}
@@ -691,14 +691,14 @@ func TestWithLeewayAllowsNotYetValidWithinLeeway(t *testing.T) {
 
 	// Without leeway: should fail.
 	p := NewParser()
-	_, err := p.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	_, err := p.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if !errors.Is(err, ErrTokenNotValidYet) {
 		t.Fatalf("without leeway: expected ErrTokenNotValidYet, got %v", err)
 	}
 
 	// With 1 minute leeway: should succeed.
 	p2 := NewParser(WithLeeway(time.Minute))
-	parsed, err := p2.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	parsed, err := p2.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if err != nil {
 		t.Fatalf("with leeway: unexpected error: %v", err)
 	}
@@ -717,14 +717,14 @@ func TestWithLeewayRegisteredClaims(t *testing.T) {
 
 	// Without leeway: should fail.
 	p := NewParser()
-	_, err := p.ParseWithClaims(tok, &RegisteredClaims{}, func(t *Token) (any, error) { return key, nil })
+	_, err := p.ParseWithClaims(tok, &RegisteredClaims{}, func(_ *Token) (any, error) { return key, nil })
 	if !errors.Is(err, ErrTokenExpired) {
 		t.Fatalf("without leeway: expected ErrTokenExpired, got %v", err)
 	}
 
 	// With 1 minute leeway: should succeed.
 	p2 := NewParser(WithLeeway(time.Minute))
-	parsed, err := p2.ParseWithClaims(tok, &RegisteredClaims{}, func(t *Token) (any, error) { return key, nil })
+	parsed, err := p2.ParseWithClaims(tok, &RegisteredClaims{}, func(_ *Token) (any, error) { return key, nil })
 	if err != nil {
 		t.Fatalf("with leeway: unexpected error: %v", err)
 	}
@@ -743,7 +743,7 @@ func TestWithLeewayStillRejectsFarExpired(t *testing.T) {
 
 	// 1 minute leeway should NOT save a 1-hour-expired token.
 	p := NewParser(WithLeeway(time.Minute))
-	_, err := p.Parse(tok, func(t *Token) (any, error) { return key, nil })
+	_, err := p.Parse(tok, func(_ *Token) (any, error) { return key, nil })
 	if !errors.Is(err, ErrTokenExpired) {
 		t.Fatalf("expected ErrTokenExpired for far-expired token, got %v", err)
 	}
@@ -762,7 +762,7 @@ func TestMaxTokenSizeRejected(t *testing.T) {
 	oversized[200] = '.'
 
 	p := NewParser()
-	_, err := p.Parse(string(oversized), func(t *Token) (any, error) { return hmacKey(), nil })
+	_, err := p.Parse(string(oversized), func(_ *Token) (any, error) { return hmacKey(), nil })
 	if !errors.Is(err, ErrTokenMalformed) {
 		t.Fatalf("expected ErrTokenMalformed for oversized token, got %v", err)
 	}

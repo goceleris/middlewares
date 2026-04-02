@@ -1071,10 +1071,12 @@ type failStore struct {
 	delErr  error
 }
 
-func (fs *failStore) Get(_ context.Context, _ string) (map[string]any, error)                   { return nil, fs.getErr }
-func (fs *failStore) Save(_ context.Context, _ string, _ map[string]any, _ time.Duration) error { return fs.saveErr }
-func (fs *failStore) Delete(_ context.Context, _ string) error                                  { return fs.delErr }
-func (fs *failStore) Reset(_ context.Context) error                                             { return nil }
+func (fs *failStore) Get(_ context.Context, _ string) (map[string]any, error) { return nil, fs.getErr }
+func (fs *failStore) Save(_ context.Context, _ string, _ map[string]any, _ time.Duration) error {
+	return fs.saveErr
+}
+func (fs *failStore) Delete(_ context.Context, _ string) error { return fs.delErr }
+func (fs *failStore) Reset(_ context.Context) error            { return nil }
 
 // --- New tests for fixes ---
 
