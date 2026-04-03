@@ -4,7 +4,7 @@ import "github.com/goceleris/celeris"
 
 // New creates a CORS middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := defaultConfig
 	if len(config) > 0 {
 		cfg = config[0]
 	}
@@ -79,6 +79,9 @@ func New(config ...Config) celeris.HandlerFunc {
 			allowed = p.allowOriginRequestFunc(c, origin)
 		}
 		if !allowed {
+			if !p.allowAllOrigins {
+				c.SetHeader("vary", "Origin")
+			}
 			return c.Next()
 		}
 

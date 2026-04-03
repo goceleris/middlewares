@@ -382,6 +382,22 @@ func TestPreflightVaryHeaders(t *testing.T) {
 	if vary == "" {
 		t.Fatal("expected Vary header on preflight")
 	}
+	testutil.AssertHeaderContains(t, rec, "vary", "Origin")
+	testutil.AssertHeaderContains(t, rec, "vary", "Access-Control-Request-Method")
+	testutil.AssertHeaderContains(t, rec, "vary", "Access-Control-Request-Headers")
+}
+
+func TestPreflightVaryWildcardOmitsOrigin(t *testing.T) {
+	mw := New()
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "GET"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 204)
+	vary := rec.Header("vary")
+	if strings.Contains(vary, "Origin") {
+		t.Fatalf("wildcard preflight Vary should not contain Origin, got %q", vary)
+	}
 	testutil.AssertHeaderContains(t, rec, "vary", "Access-Control-Request-Method")
 	testutil.AssertHeaderContains(t, rec, "vary", "Access-Control-Request-Headers")
 }
@@ -504,11 +520,11 @@ func TestVaryHeaderOnNonPreflight(t *testing.T) {
 	testutil.AssertStatus(t, rec, 200)
 	testutil.AssertHeader(t, rec, "vary", "Origin")
 
-	// Denied origin should not set Vary.
+	// Denied origin should still set Vary: Origin (for cache correctness).
 	rec, err = testutil.RunChain(t, chain, "GET", "/api/data",
 		celeristest.WithHeader("origin", "http://evil.com"))
 	testutil.AssertNoError(t, err)
-	testutil.AssertNoHeader(t, rec, "vary")
+	testutil.AssertHeader(t, rec, "vary", "Origin")
 }
 
 func TestSkipPaths(t *testing.T) {
@@ -628,10 +644,10 @@ func TestOriginNormalizationWithPort(t *testing.T) {
 // --- Mirror Access-Control-Request-Headers ---
 
 func TestMirrorRequestHeadersWhenNotConfigured(t *testing.T) {
-	// AllowHeaders not set — should mirror the request headers.
+	// AllowHeaders set to empty slice — should mirror the request headers.
 	mw := New(Config{
 		AllowOrigins: []string{"http://example.com"},
-		AllowHeaders: nil,
+		AllowHeaders: []string{},
 	})
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
 		celeristest.WithHeader("origin", "http://example.com"),
@@ -643,10 +659,10 @@ func TestMirrorRequestHeadersWhenNotConfigured(t *testing.T) {
 }
 
 func TestMirrorRequestHeadersNoACRH(t *testing.T) {
-	// AllowHeaders not set and no ACRH header — no allow-headers in response.
+	// AllowHeaders set to empty slice and no ACRH header — no allow-headers in response.
 	mw := New(Config{
 		AllowOrigins: []string{"http://example.com"},
-		AllowHeaders: nil,
+		AllowHeaders: []string{},
 	})
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
 		celeristest.WithHeader("origin", "http://example.com"),
@@ -971,4 +987,118 @@ func TestRedactOriginHelper(t *testing.T) {
 	if cfg.redactOrigin("http://example.com") != "http://example.com" {
 		t.Fatal("disabled redaction should return raw value")
 	}
+}
+
+// --- DefaultConfig copy function ---
+
+func TestDefaultConfigReturnsCopy(t *testing.T) {
+	cfg1 := DefaultConfig()
+	cfg2 := DefaultConfig()
+
+	// Mutating one copy should not affect the other.
+	cfg1.AllowOrigins = []string{"http://changed.com"}
+	if len(cfg2.AllowOrigins) != 1 || cfg2.AllowOrigins[0] != "*" {
+		t.Fatal("DefaultConfig copies should be independent")
+	}
+}
+
+func TestDefaultConfigValues(t *testing.T) {
+	cfg := DefaultConfig()
+	if len(cfg.AllowOrigins) != 1 || cfg.AllowOrigins[0] != "*" {
+		t.Fatal("expected AllowOrigins [*]")
+	}
+	if len(cfg.AllowMethods) == 0 {
+		t.Fatal("expected default AllowMethods")
+	}
+	if len(cfg.AllowHeaders) == 0 {
+		t.Fatal("expected default AllowHeaders")
+	}
+}
+
+// --- normalizeOrigin rejects paths ---
+
+func TestNormalizeOriginRejectsPath(t *testing.T) {
+	got := normalizeOrigin("http://example.com/path")
+	if got != "" {
+		t.Fatalf("expected empty string for origin with path, got %q", got)
+	}
+}
+
+func TestNormalizeOriginAcceptsTrailingSlash(t *testing.T) {
+	got := normalizeOrigin("http://example.com/")
+	if got != "http://example.com" {
+		t.Fatalf("expected http://example.com, got %q", got)
+	}
+}
+
+func TestNormalizeOriginAcceptsClean(t *testing.T) {
+	got := normalizeOrigin("http://example.com")
+	if got != "http://example.com" {
+		t.Fatalf("expected http://example.com, got %q", got)
+	}
+}
+
+// --- isSerializedOrigin rejects trailing slash ---
+
+func TestIsSerializedOriginRejectsTrailingSlash(t *testing.T) {
+	if isSerializedOrigin("http://example.com/") {
+		t.Fatal("trailing slash should be rejected")
+	}
+}
+
+func TestIsSerializedOriginAcceptsClean(t *testing.T) {
+	if !isSerializedOrigin("http://example.com") {
+		t.Fatal("clean origin should be accepted")
+	}
+}
+
+// --- Denied origin gets Vary:Origin ---
+
+func TestDeniedOriginGetsVary(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://allowed.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "http://denied.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+	testutil.AssertHeader(t, rec, "vary", "Origin")
+}
+
+func TestDeniedWildcardOriginNoVary(t *testing.T) {
+	// When allowAllOrigins is true, denied origins are impossible
+	// (all are allowed), but for completeness: wildcard + no Origin header
+	// should not set Vary.
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "vary")
+}
+
+// --- AllowHeaders default applied for partial config ---
+
+func TestPartialConfigGetsDefaultAllowHeaders(t *testing.T) {
+	// User provides only AllowOrigins — AllowHeaders should default.
+	mw := New(Config{AllowOrigins: []string{"http://example.com"}})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "POST"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 204)
+	testutil.AssertHeaderContains(t, rec, "access-control-allow-headers", "Content-Type")
+	testutil.AssertHeaderContains(t, rec, "access-control-allow-headers", "Authorization")
+}
+
+// --- Multi-level subdomain wildcard ---
+
+func TestWildcardMatchesMultiLevelSubdomain(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"https://*.example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "https://a.b.c.example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "https://a.b.c.example.com")
 }
