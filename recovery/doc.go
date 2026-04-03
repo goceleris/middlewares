@@ -17,8 +17,10 @@
 //	    },
 //	}))
 //
-// Set [Config].StackSize to 0 to disable stack trace capture.
-// Set [Config].DisableLogStack to true to suppress panic logging entirely.
+// Set [Config].StackSize to 0 to disable stack trace capture (the panic
+// value, method, and path are still logged; only the goroutine stack is
+// omitted). Set [Config].DisableLogStack to true to suppress panic logging
+// entirely.
 //
 // # DisableLogStack (replaces LogStack)
 //
@@ -28,8 +30,11 @@
 //
 // [Config].DisableLogStack inverts the polarity so the zero value (false)
 // means "stacks are logged" — the desired default. The old LogStack field
-// is retained as a deprecated backward-compatibility alias: setting
-// LogStack: true forces DisableLogStack to false in applyDefaults.
+// is retained as a deprecated backward-compatibility alias: only
+// LogStack: true has effect (it forces DisableLogStack to false in
+// applyDefaults). LogStack: false is indistinguishable from "not set" due
+// to Go's zero-value semantics and is ignored. To suppress stack logging,
+// use DisableLogStack: true.
 //
 // # Special Panic Types
 //

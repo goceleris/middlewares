@@ -20,12 +20,12 @@ var stackPool = sync.Pool{New: func() any {
 
 // New creates a recovery middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := defaultConfig()
 	if len(config) > 0 {
 		cfg = config[0]
 	}
-	cfg = applyDefaults(cfg)
 	cfg.validate()
+	cfg = applyDefaults(cfg)
 
 	handler := cfg.ErrorHandler
 	brokenPipeHandler := cfg.BrokenPipeHandler
@@ -47,7 +47,7 @@ func New(config ...Config) celeris.HandlerFunc {
 				}
 
 				if isBrokenPipe(r) {
-					if logStack && !disableBrokenPipeLog {
+					if !disableBrokenPipeLog {
 						log.LogAttrs(c.Context(), slog.LevelWarn, "broken pipe",
 							slog.String("method", c.Method()),
 							slog.String("path", c.Path()),
@@ -56,6 +56,8 @@ func New(config ...Config) celeris.HandlerFunc {
 					}
 					if brokenPipeHandler != nil {
 						retErr = brokenPipeHandler(c, r)
+					} else {
+						retErr = ErrBrokenPipe
 					}
 					return
 				}
@@ -63,7 +65,10 @@ func New(config ...Config) celeris.HandlerFunc {
 				if logStack && stackSize > 0 {
 					bufPtr := stackPool.Get().(*[]byte)
 					buf := *bufPtr
-					if len(buf) < stackSize {
+					// Discard oversized pooled buffers to bound memory.
+					if cap(buf) > 2*stackSize {
+						buf = make([]byte, stackSize)
+					} else if len(buf) < stackSize {
 						buf = make([]byte, stackSize)
 					}
 					n := runtime.Stack(buf[:stackSize], stackAll)
@@ -82,9 +87,26 @@ func New(config ...Config) celeris.HandlerFunc {
 						slog.String("error", fmt.Sprint(r)),
 					)
 				}
+
+				// Guard: if response already committed, skip writing.
+				if c.IsWritten() {
+					log.LogAttrs(c.Context(), slog.LevelError, "panic after response committed",
+						slog.String("method", c.Method()),
+						slog.String("path", c.Path()),
+						slog.String("error", fmt.Sprint(r)),
+					)
+					retErr = fmt.Errorf("recovery: panic after response committed: %v", r)
+					return
+				}
+
 				func() {
 					defer func() {
 						if r2 := recover(); r2 != nil {
+							log.LogAttrs(c.Context(), slog.LevelError, "panic in error handler",
+								slog.String("method", c.Method()),
+								slog.String("path", c.Path()),
+								slog.String("error", fmt.Sprint(r2)),
+							)
 							retErr = defaultErrorHandler(c, r2)
 						}
 					}()
@@ -101,6 +123,10 @@ func isBrokenPipe(v any) bool {
 	err, ok := v.(error)
 	if !ok {
 		return false
+	}
+	// Check directly without requiring a net.OpError wrapper.
+	if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
+		return true
 	}
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {

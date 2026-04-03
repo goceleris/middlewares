@@ -1,10 +1,16 @@
 package recovery
 
 import (
+	"errors"
 	"log/slog"
 
 	"github.com/goceleris/celeris"
 )
+
+// ErrBrokenPipe is returned when a panic is caused by a broken pipe or
+// connection reset and no BrokenPipeHandler is configured. Callers can
+// use errors.Is to detect this case.
+var ErrBrokenPipe = errors.New("recovery: broken pipe (client disconnected)")
 
 // Config defines the recovery middleware configuration.
 type Config struct {
@@ -15,12 +21,13 @@ type Config struct {
 	ErrorHandler func(c *celeris.Context, err any) error
 
 	// BrokenPipeHandler handles broken pipe / connection reset panics.
-	// When nil, broken pipe panics are logged at WARN level without a stack trace
-	// and the middleware returns nil (client is disconnected).
+	// When nil, broken pipe panics are logged at WARN level without a stack
+	// trace and the middleware returns ErrBrokenPipe.
 	BrokenPipeHandler func(c *celeris.Context, err any) error
 
 	// StackSize is the max bytes for stack trace capture. Default: 4096.
-	// To disable stack capture, set DisableLogStack to true.
+	// Set to 0 to disable stack capture (panic value, method, and path
+	// are still logged). Negative values are rejected by validate().
 	StackSize int
 
 	// DisableLogStack disables stack trace logging on panic recovery.
@@ -29,10 +36,11 @@ type Config struct {
 	// to "no logging" instead of "logging enabled".
 	DisableLogStack bool
 
-	// LogStack is deprecated: use DisableLogStack instead. When set to
-	// true explicitly, it overrides DisableLogStack to false (stacks are
-	// logged). When set to false explicitly, it sets DisableLogStack to
-	// true (stacks are suppressed). In new code, use DisableLogStack only.
+	// LogStack is deprecated: use DisableLogStack instead. Due to the
+	// zero-value problem, only LogStack: true has effect (it forces
+	// DisableLogStack to false). LogStack: false is indistinguishable
+	// from "not set" and is ignored. To suppress stack logging, use
+	// DisableLogStack: true.
 	//
 	// Deprecated: Use DisableLogStack.
 	LogStack bool
@@ -49,17 +57,22 @@ type Config struct {
 	Logger *slog.Logger
 }
 
-// DefaultConfig is the default recovery configuration.
-var DefaultConfig = Config{
-	StackSize: 4096,
+// defaultStackSize is the default stack trace capture size in bytes.
+const defaultStackSize = 4096
+
+// defaultConfig returns a fresh copy of the default recovery configuration.
+func defaultConfig() Config {
+	return Config{
+		StackSize: defaultStackSize,
+	}
 }
 
 func applyDefaults(cfg Config) Config {
 	if cfg.ErrorHandler == nil {
 		cfg.ErrorHandler = defaultErrorHandler
 	}
-	if cfg.StackSize <= 0 {
-		cfg.StackSize = DefaultConfig.StackSize
+	if cfg.StackSize < 0 {
+		cfg.StackSize = defaultStackSize
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -77,4 +90,8 @@ func defaultErrorHandler(c *celeris.Context, _ any) error {
 	return c.Blob(500, "application/json", defaultErrorBody)
 }
 
-func (cfg Config) validate() {}
+func (cfg Config) validate() {
+	if cfg.StackSize < 0 {
+		panic("recovery: StackSize must be >= 0")
+	}
+}
