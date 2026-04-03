@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"sync"
 	"time"
@@ -27,6 +28,11 @@ type bucket struct {
 // slidingWindowLimiter uses a sliding window counter algorithm.
 // It tracks the previous window count + current window count, weighted
 // by elapsed fraction of the current window.
+//
+// Caveat: undo under concurrent load near a window boundary may restore
+// a count into a window that has already advanced, slightly skewing the
+// weighted estimate. This is inherent to the sliding-window-counter
+// algorithm and is acceptable for rate limiting purposes.
 type slidingWindowLimiter struct {
 	shards     []swShard
 	mask       uint64
@@ -96,9 +102,10 @@ func (l *slidingWindowLimiter) allow(key string, now int64) (bool, int, int64) {
 		fraction = 1
 	}
 
-	// Weighted count: previous window contribution + current window count
+	// Weighted count: previous window contribution + current window count.
+	// Use math.Floor for consistent truncation (issue #13).
 	weight := float64(w.prevCount)*(1-fraction) + float64(w.currCount)
-	remaining := l.limit - int(weight) - 1
+	remaining := l.limit - int(math.Floor(weight)) - 1
 
 	if weight+1 > float64(l.limit) {
 		resetNano := w.windowStart + l.windowNano
@@ -106,7 +113,8 @@ func (l *slidingWindowLimiter) allow(key string, now int64) (bool, int, int64) {
 			remaining = 0
 		}
 		s.mu.Unlock()
-		return false, remaining + 1, resetNano
+		// Return remaining clamped to 0, not remaining+1 (issue #4).
+		return false, remaining, resetNano
 	}
 
 	w.currCount++
@@ -135,6 +143,7 @@ func (l *slidingWindowLimiter) advanceWindow(w *swBucket, now int64) {
 	}
 	elapsed := now - w.windowStart
 	if elapsed >= 2*l.windowNano {
+		// Two or more full windows elapsed: both counts are stale (issue #5).
 		w.prevCount = 0
 		w.currCount = 0
 		w.windowStart = now
@@ -154,16 +163,24 @@ func (l *slidingWindowLimiter) cleanup(ctx context.Context, interval time.Durati
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			s := &l.shards[shardIdx%len(l.shards)]
-			shardIdx++
-			expiry := now.UnixNano() - 2*l.windowNano
-			s.mu.Lock()
-			for k, w := range s.windows {
-				if w.windowStart < expiry && w.currCount == 0 && w.prevCount == 0 {
-					delete(s.windows, k)
-				}
+			// Process min(4, len(shards)) per tick instead of 1 (issue #8).
+			n := 4
+			if n > len(l.shards) {
+				n = len(l.shards)
 			}
-			s.mu.Unlock()
+			expiry := now.UnixNano() - 2*l.windowNano
+			for range n {
+				s := &l.shards[shardIdx%len(l.shards)]
+				// Wrap shardIdx to avoid overflow on 32-bit (issue #12).
+				shardIdx = (shardIdx + 1) % len(l.shards)
+				s.mu.Lock()
+				for k, w := range s.windows {
+					if w.windowStart < expiry && w.currCount == 0 && w.prevCount == 0 {
+						delete(s.windows, k)
+					}
+				}
+				s.mu.Unlock()
+			}
 		}
 	}
 }
@@ -251,21 +268,34 @@ func (l *shardedLimiter) cleanup(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	shardIdx := 0
+	// Derive expiry from rate: max(10s, 2 * burst/rps) (issue #6).
+	expiryDuration := time.Duration(float64(l.burst)/l.rps*2) * time.Second
+	if expiryDuration < 10*time.Second {
+		expiryDuration = 10 * time.Second
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			s := &l.shards[shardIdx%len(l.shards)]
-			shardIdx++
-			expiry := now.UnixNano() - int64(10*time.Second)
-			s.mu.Lock()
-			for k, b := range s.buckets {
-				if b.lastFill < expiry && b.tokens >= float64(l.burst) {
-					delete(s.buckets, k)
-				}
+			// Process min(4, len(shards)) per tick instead of 1 (issue #8).
+			n := 4
+			if n > len(l.shards) {
+				n = len(l.shards)
 			}
-			s.mu.Unlock()
+			expiry := now.UnixNano() - int64(expiryDuration)
+			for range n {
+				s := &l.shards[shardIdx%len(l.shards)]
+				// Wrap shardIdx to avoid overflow on 32-bit (issue #12).
+				shardIdx = (shardIdx + 1) % len(l.shards)
+				s.mu.Lock()
+				for k, b := range s.buckets {
+					if b.lastFill < expiry && b.tokens >= float64(l.burst) {
+						delete(s.buckets, k)
+					}
+				}
+				s.mu.Unlock()
+			}
 		}
 	}
 }
@@ -311,6 +341,11 @@ func formatInt(n int) string {
 	return strconv.Itoa(n)
 }
 
+// formatResetSeconds returns the ceiling-rounded number of whole seconds
+// between nowNano and resetNano, clamped to a minimum of 1. The minimum
+// of 1 is correct per HTTP spec: Retry-After is defined in whole seconds
+// (RFC 7231 §7.1.3), and returning 0 would mislead the client into
+// retrying immediately when the bucket has not yet refilled (issue #11).
 func formatResetSeconds(resetNano, nowNano int64) string {
 	secs := (resetNano - nowNano + int64(time.Second) - 1) / int64(time.Second)
 	if secs < 0 {
