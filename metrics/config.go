@@ -5,9 +5,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// DefaultBuckets provides fine-grained histogram buckets for sub-millisecond
-// latency resolution, suitable for high-performance servers.
-var DefaultBuckets = []float64{0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 5}
+// DefaultBuckets returns the default histogram bucket boundaries for
+// sub-millisecond latency resolution.
+func DefaultBuckets() []float64 {
+	dst := make([]float64, len(defaultBuckets))
+	copy(dst, defaultBuckets)
+	return dst
+}
+
+var defaultBuckets = []float64{0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 5}
 
 // Config defines the metrics middleware configuration.
 type Config struct {
@@ -80,7 +86,7 @@ func applyDefaults(cfg Config) Config {
 		cfg.Namespace = "celeris"
 	}
 	if len(cfg.Buckets) == 0 {
-		cfg.Buckets = DefaultBuckets
+		cfg.Buckets = DefaultBuckets()
 	}
 	return cfg
 }

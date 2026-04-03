@@ -49,15 +49,26 @@ type Config struct {
 
 	// CheckerTimeout is the maximum duration to wait for a checker to
 	// complete. If the checker does not return within this duration,
-	// the probe returns 503 unavailable. Default: 5s.
+	// the probe returns 503 unavailable.
+	//
+	// Special values:
+	//   0  — use default (5s)
+	//   -1 — fast-path: run synchronously without goroutine/channel/context
+	//
+	// Default: 5s.
 	CheckerTimeout time.Duration
 }
 
 // DefaultCheckerTimeout is the default timeout for health checkers.
 const DefaultCheckerTimeout = 5 * time.Second
 
-// DefaultConfig is the default healthcheck middleware configuration.
-var DefaultConfig = Config{
+// DefaultConfig returns the default healthcheck middleware configuration.
+// Each call returns a fresh copy.
+func DefaultConfig() Config {
+	return defaultConfig
+}
+
+var defaultConfig = Config{
 	LivePath:       DefaultLivePath,
 	ReadyPath:      DefaultReadyPath,
 	StartPath:      DefaultStartPath,
@@ -70,14 +81,15 @@ var DefaultConfig = Config{
 func applyDefaults(cfg Config) Config {
 	// Paths: empty string means "disabled" — do not fill with default.
 	if cfg.LiveChecker == nil {
-		cfg.LiveChecker = DefaultConfig.LiveChecker
+		cfg.LiveChecker = defaultConfig.LiveChecker
 	}
 	if cfg.ReadyChecker == nil {
-		cfg.ReadyChecker = DefaultConfig.ReadyChecker
+		cfg.ReadyChecker = defaultConfig.ReadyChecker
 	}
 	if cfg.StartChecker == nil {
-		cfg.StartChecker = DefaultConfig.StartChecker
+		cfg.StartChecker = defaultConfig.StartChecker
 	}
+	// 0 = use default timeout; -1 = fast-path (no goroutine/channel/context).
 	if cfg.CheckerTimeout == 0 {
 		cfg.CheckerTimeout = DefaultCheckerTimeout
 	}

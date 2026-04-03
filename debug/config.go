@@ -40,15 +40,27 @@ type Config struct {
 	// MemStatsTTL controls how long the /memory endpoint caches
 	// runtime.ReadMemStats results. ReadMemStats is expensive (it STWs the
 	// runtime), so caching avoids hammering under load.
+	//
 	// Default: 1s. Set to 0 to disable caching (not recommended).
+	// Negative values are treated as "not set" and fall back to the default.
 	MemStatsTTL time.Duration
 }
 
-// DefaultConfig is the default debug middleware configuration.
-var DefaultConfig = Config{
+// DefaultConfig returns the default debug middleware configuration.
+// Each call returns a fresh copy.
+func DefaultConfig() Config {
+	return defaultConfig
+}
+
+var defaultConfig = Config{
 	Prefix: "/debug/celeris",
 	AuthFunc: func(c *celeris.Context) bool {
-		host, _, _ := net.SplitHostPort(c.RemoteAddr())
+		rawAddr := c.RemoteAddr()
+		host, _, err := net.SplitHostPort(rawAddr)
+		if err != nil {
+			// RemoteAddr may lack a port (e.g. Unix socket or test stub).
+			host = rawAddr
+		}
 		if ip := net.ParseIP(host); ip != nil {
 			return ip.IsLoopback()
 		}
@@ -61,7 +73,10 @@ func applyDefaults(cfg Config) Config {
 		cfg.Prefix = "/debug/celeris"
 	}
 	if cfg.AuthFunc == nil {
-		cfg.AuthFunc = DefaultConfig.AuthFunc
+		cfg.AuthFunc = defaultConfig.AuthFunc
+	}
+	if cfg.MemStatsTTL < 0 {
+		cfg.MemStatsTTL = time.Second
 	}
 	if cfg.MemStatsTTL == 0 {
 		cfg.MemStatsTTL = time.Second
@@ -72,8 +87,5 @@ func applyDefaults(cfg Config) Config {
 func (cfg Config) validate() {
 	if cfg.Prefix != "" && cfg.Prefix[0] != '/' {
 		panic("debug: Prefix must start with /")
-	}
-	if cfg.MemStatsTTL < 0 {
-		panic("debug: MemStatsTTL must not be negative")
 	}
 }
