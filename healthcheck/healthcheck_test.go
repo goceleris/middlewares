@@ -12,6 +12,10 @@ import (
 	"github.com/goceleris/middlewares/internal/testutil"
 )
 
+type probeResponse struct {
+	Status string `json:"status"`
+}
+
 func okHandler(c *celeris.Context) error {
 	return c.String(200, "ok")
 }

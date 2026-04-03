@@ -45,6 +45,13 @@
 // with 503 unavailable. This prevents a slow dependency (e.g., a
 // database ping) from blocking the health endpoint indefinitely.
 //
+// Note: when a timeout fires, the middleware cancels the context and
+// waits for the checker goroutine to return before recycling the
+// [celeris.Context]. A checker that blocks forever and ignores context
+// cancellation will therefore block the request goroutine indefinitely.
+// Checkers should always select on ctx.Done() or otherwise respect the
+// deadline to avoid this.
+//
 // # Skip Function
 //
 // Set [Config].Skip to bypass the middleware for certain requests before
@@ -81,6 +88,13 @@
 // [Config].validate() panics at middleware construction time if paths are
 // invalid (missing leading '/') or overlap. This is a programming error
 // contract: validation failures are not recoverable at runtime.
+//
+// # Path Matching
+//
+// Probe paths are matched by exact string equality. There is no
+// trailing-slash normalization: "/livez/" does NOT match "/livez".
+// Configure paths without a trailing slash (the defaults already
+// follow this convention).
 //
 // # Response Format
 //
