@@ -1,6 +1,7 @@
 package bodylimit
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 
@@ -49,14 +50,18 @@ func applyDefaults(cfg Config) Config {
 
 func validate(cfg *Config) {
 	if cfg.Limit != "" {
-		cfg.MaxBytes = parseSize(cfg.Limit)
+		n, err := parseSize(cfg.Limit)
+		if err != nil {
+			panic(err.Error())
+		}
+		cfg.MaxBytes = n
 	}
 }
 
-func parseSize(s string) int64 {
+func parseSize(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		panic("bodylimit: empty Limit string")
+		return 0, errors.New("bodylimit: empty Limit string")
 	}
 
 	type suffix struct {
@@ -87,17 +92,17 @@ func parseSize(s string) int64 {
 			numStr := strings.TrimSpace(s[:len(s)-len(sf.name)])
 			val, err := strconv.ParseFloat(numStr, 64)
 			if err != nil {
-				panic("bodylimit: invalid Limit: " + s)
+				return 0, errors.New("bodylimit: invalid Limit: " + s)
 			}
 			if val < 0 {
-				panic("bodylimit: Limit must not be negative")
+				return 0, errors.New("bodylimit: Limit must not be negative")
 			}
 			n := int64(val * sf.mult)
 			if n <= 0 {
-				panic("bodylimit: Limit must be positive: " + s)
+				return 0, errors.New("bodylimit: Limit must be positive: " + s)
 			}
-			return n
+			return n, nil
 		}
 	}
-	panic("bodylimit: invalid Limit format (use B, KB, MB, GB, TB, PB, EB or KiB, MiB, GiB, TiB, PiB, EiB): " + s)
+	return 0, errors.New("bodylimit: invalid Limit format (use B, KB, MB, GB, TB, PB, EB or KiB, MiB, GiB, TiB, PiB, EiB): " + s)
 }

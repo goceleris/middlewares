@@ -17,6 +17,12 @@ var ErrSessionDestroyed = errors.New("session: cannot save a destroyed session")
 var sessionPool = sync.Pool{New: func() any { return &Session{} }}
 
 // Session holds per-request session data backed by a [Store].
+//
+// Session is designed for single-goroutine-per-request access and is NOT
+// safe for concurrent use from multiple goroutines within the same request.
+// If you need to access the session from multiple goroutines (e.g., a
+// background task spawned mid-request), you must synchronize access
+// externally.
 type Session struct {
 	id           string
 	data         map[string]any

@@ -692,6 +692,87 @@ func TestDisableTrustProxyTrueContextStore(t *testing.T) {
 	}
 }
 
+// --- FromStdContext tests ---
+
+func TestFromStdContextReturnsID(t *testing.T) {
+	mw := New()
+	var stdID string
+	handler := func(c *celeris.Context) error {
+		stdID = FromStdContext(c.Context())
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	headerID := rec.Header("x-request-id")
+	if stdID == "" {
+		t.Fatal("FromStdContext returned empty string")
+	}
+	if stdID != headerID {
+		t.Fatalf("FromStdContext %q != response header %q", stdID, headerID)
+	}
+}
+
+func TestFromStdContextNoMiddleware(t *testing.T) {
+	ctx, _ := celeristest.NewContextT(t, "GET", "/")
+	if got := FromStdContext(ctx.Context()); got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+}
+
+func TestFromStdContextPropagated(t *testing.T) {
+	mw := New()
+	var stdID string
+	handler := func(c *celeris.Context) error {
+		stdID = FromStdContext(c.Context())
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-request-id", "propagated-std"))
+	testutil.AssertNoError(t, err)
+	if stdID != "propagated-std" {
+		t.Fatalf("FromStdContext got %q, want %q", stdID, "propagated-std")
+	}
+}
+
+// --- AfterGenerate panic recovery tests ---
+
+func TestAfterGeneratePanicRecovered(t *testing.T) {
+	mw := New(Config{
+		AfterGenerate: func(_ *celeris.Context, _ string) {
+			panic("boom")
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	id := rec.Header("x-request-id")
+	if id == "" {
+		t.Fatal("expected request ID to be set despite AfterGenerate panic")
+	}
+}
+
+func TestAfterGeneratePanicDoesNotAffectID(t *testing.T) {
+	var storedID string
+	mw := New(Config{
+		AfterGenerate: func(_ *celeris.Context, _ string) {
+			panic("crash")
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		storedID = FromContext(c)
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	if storedID == "" {
+		t.Fatal("expected context store to have request ID")
+	}
+}
+
 func TestDeprecatedTrustProxyOverridesDisableTrustProxy(t *testing.T) {
 	// TrustProxy=false should set DisableTrustProxy=true even if
 	// DisableTrustProxy was not explicitly set.

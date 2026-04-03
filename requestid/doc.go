@@ -46,6 +46,12 @@
 //
 //	id := requestid.FromContext(c) // reads ContextKey from context store
 //
+// Use [FromStdContext] to retrieve the request ID from a stdlib
+// [context.Context], which is useful for passing the ID to libraries that
+// only accept a context.Context:
+//
+//	id := requestid.FromStdContext(ctx)
+//
 // # Skipping
 //
 // Use [Config].Skip for dynamic skip logic or [Config].SkipPaths for
@@ -55,8 +61,8 @@
 // # AfterGenerate
 //
 // [Config].AfterGenerate is called after the request ID is set. Panics
-// in AfterGenerate are not recovered by this middleware and will
-// propagate to the caller (or any upstream recovery middleware).
+// in AfterGenerate are recovered by the middleware: a panic message is
+// logged to stderr and the request continues normally.
 //
 // # Custom Generator Validation
 //

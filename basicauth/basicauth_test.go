@@ -1250,6 +1250,128 @@ func TestParseBasicAuthLargeCredentials(t *testing.T) {
 	}
 }
 
+// --- HashedUsersFunc (custom verify) tests ---
+
+func TestHashedUsersFuncBcryptStyle(t *testing.T) {
+	// Simulate a bcrypt-style verify function.
+	mw := New(Config{
+		HashedUsers: map[string]string{
+			"admin": "bcrypt:secret",
+		},
+		HashedUsersFunc: func(hash, password string) bool {
+			return hash == "bcrypt:"+password
+		},
+	})
+	var storedUser string
+	handler := func(c *celeris.Context) error {
+		storedUser = UsernameFromContext(c)
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithBasicAuth("admin", "secret"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	if storedUser != "admin" {
+		t.Fatalf("stored user: got %q, want %q", storedUser, "admin")
+	}
+}
+
+func TestHashedUsersFuncWrongPassword(t *testing.T) {
+	mw := New(Config{
+		HashedUsers: map[string]string{
+			"admin": "bcrypt:secret",
+		},
+		HashedUsersFunc: func(hash, password string) bool {
+			return hash == "bcrypt:"+password
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithBasicAuth("admin", "wrong"))
+	testutil.AssertHTTPError(t, err, 401)
+}
+
+func TestHashedUsersFuncUnknownUser(t *testing.T) {
+	mw := New(Config{
+		HashedUsers: map[string]string{
+			"admin": "bcrypt:secret",
+		},
+		HashedUsersFunc: func(hash, password string) bool {
+			return hash == "bcrypt:"+password
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithBasicAuth("unknown", "secret"))
+	testutil.AssertHTTPError(t, err, 401)
+}
+
+func TestHashedUsersFuncSkipsSHA256Validation(t *testing.T) {
+	// When HashedUsersFunc is set, hashes are NOT validated as SHA-256 hex.
+	// This should not panic even though the hash is not valid hex.
+	mw := New(Config{
+		HashedUsers: map[string]string{
+			"admin": "$2a$10$notHexAtAll",
+		},
+		HashedUsersFunc: func(hash, password string) bool {
+			return hash == "$2a$10$notHexAtAll" && password == "pass"
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithBasicAuth("admin", "pass"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+// --- Unpadded base64 fallback tests ---
+
+func TestUnpaddedBase64Accepted(t *testing.T) {
+	mw := New(Config{Validator: validatorFor("admin", "secret")})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	// base64("admin:secret") = "YWRtaW46c2VjcmV0" (no padding needed)
+	// but base64("test:pw") = "dGVzdDpwdw==" — strip padding → "dGVzdDpwdw"
+	mw2 := New(Config{Validator: func(u, p string) bool { return u == "test" && p == "pw" }})
+	chain2 := []celeris.HandlerFunc{mw2, handler}
+	rec, err := testutil.RunChain(t, chain2, "GET", "/",
+		celeristest.WithHeader("authorization", "Basic dGVzdDpwdw"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+
+	// Also verify the standard padded version still works.
+	rec, err = testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithBasicAuth("admin", "secret"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestUnpaddedBase64SinglePadChar(t *testing.T) {
+	// base64("a:b") = "YTpi" (no padding, but let's use one that needs single pad)
+	// base64("ab:cd") = "YWI6Y2Q=" — strip → "YWI6Y2Q"
+	mw := New(Config{Validator: func(u, p string) bool { return u == "ab" && p == "cd" }})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Basic YWI6Y2Q"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
 // assertResponseHeader is a test helper that checks a response header on Context.
 func assertResponseHeader(t *testing.T, ctx *celeris.Context, key, want string) {
 	t.Helper()

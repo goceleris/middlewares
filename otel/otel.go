@@ -3,6 +3,7 @@ package otel
 import (
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/goceleris/celeris"
 
@@ -43,12 +44,27 @@ func normalizeMethod(method string) string {
 	return "_OTHER"
 }
 
-// truncateString truncates s to maxLen, preserving valid UTF-8 boundaries.
+// truncateString truncates s to maxLen bytes without splitting multi-byte
+// UTF-8 runes. After slicing at maxLen it backs up to the last valid rune
+// boundary using [utf8.DecodeLastRuneInString].
 func truncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen]
+	truncated := s[:maxLen]
+	// If the truncation point lands in the middle of a multi-byte rune,
+	// the trailing bytes form an incomplete sequence. DecodeLastRune
+	// returns RuneError for such bytes. Strip them one at a time.
+	for len(truncated) > 0 {
+		r, _ := utf8.DecodeLastRuneInString(truncated)
+		if r != utf8.RuneError {
+			break
+		}
+		// RuneError with valid single-byte 0xFFFD encoding would not
+		// appear here since we are truncating a valid string.
+		truncated = truncated[:len(truncated)-1]
+	}
+	return truncated
 }
 
 // isSSE reports whether the response Content-Type indicates a Server-Sent Events stream.
