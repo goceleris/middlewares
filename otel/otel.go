@@ -17,6 +17,7 @@ import (
 const (
 	tracerName             = "github.com/goceleris/middlewares/otel"
 	instrumentationVersion = "0.2.0"
+	maxErrorLen            = 256
 )
 
 // standardMethods is the set of HTTP methods recognized by the OTel semconv spec.
@@ -40,6 +41,14 @@ func normalizeMethod(method string) string {
 		return method
 	}
 	return "_OTHER"
+}
+
+// truncateString truncates s to maxLen, preserving valid UTF-8 boundaries.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
 }
 
 // isSSE reports whether the response Content-Type indicates a Server-Sent Events stream.
@@ -153,6 +162,8 @@ func New(config ...Config) celeris.HandlerFunc {
 		rawMethod := c.Method()
 		method := normalizeMethod(rawMethod)
 
+		route := c.FullPath()
+
 		var spanBuf [14]attribute.KeyValue
 		n := 0
 		spanBuf[n] = semconv.HTTPRequestMethodKey.String(method)
@@ -161,8 +172,10 @@ func New(config ...Config) celeris.HandlerFunc {
 			spanBuf[n] = attribute.String("http.request.method_original", rawMethod)
 			n++
 		}
-		spanBuf[n] = semconv.HTTPRoute(c.FullPath())
-		n++
+		if route != "" {
+			spanBuf[n] = semconv.HTTPRoute(route)
+			n++
+		}
 		spanBuf[n] = semconv.URLScheme(c.Scheme())
 		n++
 		spanBuf[n] = semconv.URLPath(c.Path())
@@ -197,15 +210,16 @@ func New(config ...Config) celeris.HandlerFunc {
 		defer span.End()
 
 		c.SetContext(spanCtx)
-		propagators.Inject(spanCtx, carrier)
 
 		if metricsEnabled {
 			var metricBuf [7]attribute.KeyValue
 			mn := 0
 			metricBuf[mn] = semconv.HTTPRequestMethodKey.String(method)
 			mn++
-			metricBuf[mn] = semconv.HTTPRoute(c.FullPath())
-			mn++
+			if route != "" {
+				metricBuf[mn] = semconv.HTTPRoute(route)
+				mn++
+			}
 			metricBuf[mn] = semconv.URLScheme(c.Scheme())
 			mn++
 			metricBuf[mn] = semconv.ServerAddress(c.Host())
@@ -214,12 +228,14 @@ func New(config ...Config) celeris.HandlerFunc {
 				metricBuf[mn] = semconv.ServerPort(serverPort)
 				mn++
 			}
-			metricBaseAttrs := metricBuf[:mn]
+			metricBaseAttrs := metricBuf[:mn:mn]
 			if customMetricAttrs != nil {
 				metricBaseAttrs = append(metricBaseAttrs, customMetricAttrs(c)...)
 			}
 			activeAttrSet := metric.WithAttributeSet(attribute.NewSet(metricBaseAttrs...))
-			activeRequests.Add(spanCtx, 1, activeAttrSet)
+			if activeRequests != nil {
+				activeRequests.Add(spanCtx, 1, activeAttrSet)
+			}
 			start := time.Now()
 
 			err := c.Next()
@@ -238,20 +254,24 @@ func New(config ...Config) celeris.HandlerFunc {
 
 			if err != nil {
 				span.RecordError(err)
-				span.SetStatus(codes.Error, err.Error())
+				span.SetStatus(codes.Error, truncateString(err.Error(), maxErrorLen))
 			} else if status >= 500 {
 				span.SetStatus(codes.Error, "")
 			}
 
-			allAttrs := append(metricBaseAttrs, semconv.HTTPResponseStatusCode(status))
+			allAttrs := append(metricBaseAttrs[:len(metricBaseAttrs):len(metricBaseAttrs)], semconv.HTTPResponseStatusCode(status))
 			fullAttrSet := metric.WithAttributeSet(attribute.NewSet(allAttrs...))
-			requestDuration.Record(spanCtx, duration, fullAttrSet)
-			activeRequests.Add(spanCtx, -1, activeAttrSet)
+			if requestDuration != nil {
+				requestDuration.Record(spanCtx, duration, fullAttrSet)
+			}
+			if activeRequests != nil {
+				activeRequests.Add(spanCtx, -1, activeAttrSet)
+			}
 
-			if reqSize := c.ContentLength(); reqSize > 0 {
+			if reqSize := c.ContentLength(); reqSize > 0 && requestBodySize != nil {
 				requestBodySize.Record(spanCtx, reqSize, fullAttrSet)
 			}
-			if respSize := int64(c.BytesWritten()); respSize > 0 && !isSSE(c) {
+			if respSize := int64(c.BytesWritten()); respSize > 0 && !isSSE(c) && responseBodySize != nil {
 				responseBodySize.Record(spanCtx, respSize, fullAttrSet)
 			}
 
@@ -273,7 +293,7 @@ func New(config ...Config) celeris.HandlerFunc {
 
 		if err != nil {
 			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
+			span.SetStatus(codes.Error, truncateString(err.Error(), maxErrorLen))
 		} else if status >= 500 {
 			span.SetStatus(codes.Error, "")
 		}
