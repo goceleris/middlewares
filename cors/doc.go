@@ -35,7 +35,18 @@
 //
 // Origins may contain a single wildcard for subdomain matching
 // (e.g., "https://*.example.com"). Patterns with more than one wildcard
-// panic at initialization.
+// panic at initialization. Note that wildcards match across dots, so
+// "https://*.example.com" matches multi-level subdomains like
+// "https://a.b.example.com" — not just single-level subdomains.
+//
+// # Header Mirroring
+//
+// When [Config].AllowHeaders is set to an empty slice, the middleware
+// mirrors the value of the Access-Control-Request-Headers header from the
+// preflight request back in Access-Control-Allow-Headers. This means any
+// header the client requests will be reflected as allowed without
+// validation. When AllowHeaders is nil (not set), the default headers
+// (Origin, Content-Type, Accept, Authorization) are used.
 //
 // # Private Network Access
 //

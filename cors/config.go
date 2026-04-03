@@ -68,19 +68,31 @@ type Config struct {
 	MaxAge int
 }
 
-// DefaultConfig is the default CORS configuration.
-var DefaultConfig = Config{
+// defaultConfig is the default CORS configuration.
+var defaultConfig = Config{
 	AllowOrigins: []string{"*"},
 	AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"},
 	AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization"},
 }
 
+// DefaultConfig returns a copy of the default CORS configuration.
+func DefaultConfig() Config {
+	return Config{
+		AllowOrigins: append([]string(nil), defaultConfig.AllowOrigins...),
+		AllowMethods: append([]string(nil), defaultConfig.AllowMethods...),
+		AllowHeaders: append([]string(nil), defaultConfig.AllowHeaders...),
+	}
+}
+
 func applyDefaults(cfg Config) Config {
 	if len(cfg.AllowOrigins) == 0 {
-		cfg.AllowOrigins = DefaultConfig.AllowOrigins
+		cfg.AllowOrigins = defaultConfig.AllowOrigins
 	}
 	if len(cfg.AllowMethods) == 0 {
-		cfg.AllowMethods = DefaultConfig.AllowMethods
+		cfg.AllowMethods = defaultConfig.AllowMethods
+	}
+	if cfg.AllowHeaders == nil {
+		cfg.AllowHeaders = defaultConfig.AllowHeaders
 	}
 	return cfg
 }
@@ -202,11 +214,19 @@ func precompute(cfg Config) precomputed {
 		}
 	}
 
-	vary := "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
-	if cfg.AllowPrivateNetwork {
-		vary += ", Access-Control-Request-Private-Network"
+	if p.allowAllOrigins {
+		vary := "Access-Control-Request-Method, Access-Control-Request-Headers"
+		if cfg.AllowPrivateNetwork {
+			vary += ", Access-Control-Request-Private-Network"
+		}
+		p.preflightVary = vary
+	} else {
+		vary := "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+		if cfg.AllowPrivateNetwork {
+			vary += ", Access-Control-Request-Private-Network"
+		}
+		p.preflightVary = vary
 	}
-	p.preflightVary = vary
 
 	return p
 }
@@ -222,7 +242,7 @@ func isSerializedOrigin(origin string) bool {
 	if u.Scheme == "" || u.Host == "" {
 		return false
 	}
-	if u.Path != "" && u.Path != "/" {
+	if u.Path != "" {
 		return false
 	}
 	if u.RawQuery != "" || u.Fragment != "" || u.User != nil {
@@ -232,7 +252,8 @@ func isSerializedOrigin(origin string) bool {
 }
 
 // normalizeOrigin lowercases the scheme and host of a URL-shaped origin.
-// Plain values (e.g. "*") are returned unchanged.
+// Plain values (e.g. "*") are returned unchanged. Returns "" for origins
+// with a non-empty path, which are invalid per RFC 6454.
 func normalizeOrigin(raw string) string {
 	if !strings.Contains(raw, "://") {
 		return raw
@@ -240,6 +261,9 @@ func normalizeOrigin(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return raw
+	}
+	if u.Path != "" && u.Path != "/" {
+		return ""
 	}
 	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
 }
