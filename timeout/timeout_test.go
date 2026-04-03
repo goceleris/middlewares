@@ -53,7 +53,28 @@ func TestSkipBypassesTimeout(t *testing.T) {
 	testutil.AssertBodyContains(t, rec, "skipped")
 }
 
-func TestCustomErrorHandler(t *testing.T) {
+func TestCustomErrorHandlerResponseNotWritten(t *testing.T) {
+	// When the handler times out without writing a response, the custom
+	// ErrorHandler is invoked and its result is returned.
+	mw := New(Config{
+		Timeout: 1 * time.Millisecond,
+		ErrorHandler: func(_ *celeris.Context) error {
+			return celeris.NewHTTPError(504, "Gateway Timeout")
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/custom")
+	testutil.AssertHTTPError(t, err, 504)
+}
+
+func TestCustomErrorHandlerResponseAlreadyWritten(t *testing.T) {
+	// When the handler times out but has already written a response,
+	// ErrServiceUnavailable is returned directly (the response is
+	// committed, so ErrorHandler cannot write a new one).
 	mw := New(Config{
 		Timeout: 1 * time.Millisecond,
 		ErrorHandler: func(_ *celeris.Context) error {
@@ -65,8 +86,8 @@ func TestCustomErrorHandler(t *testing.T) {
 		return c.String(200, "ok")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/custom")
-	testutil.AssertHTTPError(t, err, 504)
+	_, err := testutil.RunChain(t, chain, "GET", "/custom-written")
+	testutil.AssertHTTPError(t, err, 503)
 }
 
 func TestCustomTimeoutDuration(t *testing.T) {
