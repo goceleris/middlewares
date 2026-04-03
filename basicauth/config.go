@@ -1,6 +1,8 @@
 package basicauth
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -54,14 +56,29 @@ type Config struct {
 	ErrorHandler func(c *celeris.Context, err error) error
 }
 
-// DefaultConfig is the default basic auth configuration.
-var DefaultConfig = Config{
+// defaultConfig is the default basic auth configuration.
+// Unexported to prevent callers from mutating shared state.
+var defaultConfig = Config{
 	Realm: "Restricted",
+}
+
+// DefaultConfig returns a copy of the default configuration.
+func DefaultConfig() Config {
+	return defaultConfig
+}
+
+// hmacKey generates a 32-byte cryptographically random key.
+func hmacKey() [32]byte {
+	var key [32]byte
+	if _, err := rand.Read(key[:]); err != nil {
+		panic("basicauth: crypto/rand failed: " + err.Error())
+	}
+	return key
 }
 
 func applyDefaults(cfg Config) Config {
 	if cfg.Realm == "" {
-		cfg.Realm = DefaultConfig.Realm
+		cfg.Realm = defaultConfig.Realm
 	}
 	if cfg.HeaderLimit <= 0 {
 		cfg.HeaderLimit = 4096
@@ -70,19 +87,26 @@ func applyDefaults(cfg Config) Config {
 		// Deep-copy the map so post-New() mutations don't affect the validator.
 		type userEntry struct{ passBytes []byte }
 		entries := make(map[string]userEntry, len(cfg.Users))
-		// dummy is a fixed-length value used for unknown-user comparisons
-		// to prevent timing side-channels on username existence.
-		dummy := []byte("__celeris_dummy_pw__")
 		for u, p := range cfg.Users {
 			entries[u] = userEntry{passBytes: []byte(p)}
 		}
+		// Per-instance HMAC key equalizes lengths for constant-time comparison.
+		key := hmacKey()
+		// Random dummy value for unknown-user comparisons to prevent
+		// timing side-channels on username existence.
+		dummyMAC := hmacSHA256(key[:], []byte("__celeris_dummy_pw__"))
 		cfg.Validator = func(user, pass string) bool {
 			e, ok := entries[user]
+			passMAC := hmacSHA256(key[:], []byte(pass))
 			if !ok {
-				subtle.ConstantTimeCompare([]byte(pass), dummy)
+				// The comparison result is assigned to _ to document intent.
+				// In Go, function calls with side effects cannot be elided by
+				// the compiler, so the timing behavior is preserved regardless.
+				_ = subtle.ConstantTimeCompare(passMAC, dummyMAC)
 				return false
 			}
-			return subtle.ConstantTimeCompare([]byte(pass), e.passBytes) == 1
+			storedMAC := hmacSHA256(key[:], e.passBytes)
+			return subtle.ConstantTimeCompare(passMAC, storedMAC) == 1
 		}
 	}
 	if cfg.Validator == nil && cfg.ValidatorWithContext == nil && len(cfg.HashedUsers) > 0 {
@@ -98,19 +122,29 @@ func applyDefaults(cfg Config) Config {
 			copy(entry.hashBytes[:], b)
 			entries[u] = entry
 		}
-		// dummy hash for unknown-user timing side-channel prevention.
+		// Random dummy hash for unknown-user timing side-channel prevention.
 		var dummyHash [sha256.Size]byte
+		if _, err := rand.Read(dummyHash[:]); err != nil {
+			panic("basicauth: crypto/rand failed: " + err.Error())
+		}
 		cfg.Validator = func(user, pass string) bool {
 			e, ok := entries[user]
 			passHash := sha256.Sum256([]byte(pass))
 			if !ok {
-				subtle.ConstantTimeCompare(passHash[:], dummyHash[:])
+				_ = subtle.ConstantTimeCompare(passHash[:], dummyHash[:])
 				return false
 			}
 			return subtle.ConstantTimeCompare(passHash[:], e.hashBytes[:]) == 1
 		}
 	}
 	return cfg
+}
+
+// hmacSHA256 computes HMAC-SHA256(key, data) and returns the 32-byte tag.
+func hmacSHA256(key, data []byte) []byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write(data)
+	return mac.Sum(nil)
 }
 
 // HashPassword returns the hex-encoded SHA-256 hash of password.
