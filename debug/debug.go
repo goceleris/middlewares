@@ -19,29 +19,44 @@ type memStatsCache struct {
 }
 
 type statusResponse struct {
-	Uptime    string `json:"uptime"`
+	// Uptime is the elapsed time since the middleware was initialized, formatted as a Go duration string.
+	Uptime string `json:"uptime"`
+	// GoVersion is the Go toolchain version (e.g. "go1.26").
 	GoVersion string `json:"go_version"`
 }
 
 type memoryResponse struct {
-	Alloc      uint64  `json:"alloc"`
-	TotalAlloc uint64  `json:"total_alloc"`
-	Sys        uint64  `json:"sys"`
-	HeapInuse  uint64  `json:"heap_inuse"`
-	HeapIdle   uint64  `json:"heap_idle"`
-	NumGC      uint32  `json:"num_gc"`
-	GCCPUFrac  float64 `json:"gc_cpu_fraction"`
+	// Alloc is the current heap allocation in bytes.
+	Alloc uint64 `json:"alloc"`
+	// TotalAlloc is the cumulative bytes allocated over the process lifetime (never decreases).
+	TotalAlloc uint64 `json:"total_alloc"`
+	// Sys is the total bytes of memory obtained from the OS.
+	Sys uint64 `json:"sys"`
+	// HeapInuse is the bytes in in-use heap spans.
+	HeapInuse uint64 `json:"heap_inuse"`
+	// HeapIdle is the bytes in idle (unused) heap spans.
+	HeapIdle uint64 `json:"heap_idle"`
+	// NumGC is the number of completed GC cycles.
+	NumGC uint32 `json:"num_gc"`
+	// GCCPUFrac is the fraction of CPU time spent in GC since the program started (0.0 to 1.0).
+	GCCPUFrac float64 `json:"gc_cpu_fraction"`
 }
 
 type buildResponse struct {
-	Module    string            `json:"module"`
-	GoVersion string            `json:"go_version"`
-	VCS       map[string]string `json:"vcs,omitempty"`
+	// Module is the main module path from build info (e.g. "github.com/goceleris/celeris").
+	Module string `json:"module"`
+	// GoVersion is the Go toolchain version used to build the binary.
+	GoVersion string `json:"go_version"`
+	// VCS contains version-control metadata (e.g. "vcs.revision", "vcs.time", "vcs.modified").
+	VCS map[string]string `json:"vcs,omitempty"`
 }
 
 type runtimeResponse struct {
+	// Goroutines is the current number of goroutines.
 	Goroutines int `json:"goroutines"`
-	NumCPU     int `json:"num_cpu"`
+	// NumCPU is the number of logical CPUs available to the process.
+	NumCPU int `json:"num_cpu"`
+	// GOMAXPROCS is the current value of GOMAXPROCS (max concurrently executing goroutines).
 	GOMAXPROCS int `json:"gomaxprocs"`
 }
 
@@ -89,11 +104,17 @@ func New(config ...Config) celeris.HandlerFunc {
 	}
 
 	return func(c *celeris.Context) error {
-		if cfg.Skip != nil && cfg.Skip(c) {
+		path := c.Path()
+
+		// Check prefix before Skip so the Skip function is only consulted
+		// for requests that actually target a debug endpoint.
+		if path != prefix && !strings.HasPrefix(path, prefixSlash) {
 			return c.Next()
 		}
 
-		path := c.Path()
+		if cfg.Skip != nil && cfg.Skip(c) {
+			return c.Next()
+		}
 
 		if path == prefix || path == prefixSlash {
 			if cfg.AuthFunc != nil && !cfg.AuthFunc(c) {
@@ -104,10 +125,6 @@ func New(config ...Config) celeris.HandlerFunc {
 				return c.NoContent(405)
 			}
 			return c.JSON(200, available)
-		}
-
-		if !strings.HasPrefix(path, prefixSlash) {
-			return c.Next()
 		}
 
 		if cfg.AuthFunc != nil && !cfg.AuthFunc(c) {
@@ -176,11 +193,16 @@ func handleMetrics(c *celeris.Context, collector *observe.Collector) error {
 }
 
 type configResponse struct {
-	GoVersion  string `json:"go_version"`
-	GoOS       string `json:"go_os"`
-	GoArch     string `json:"go_arch"`
-	NumCPU     int    `json:"num_cpu"`
-	Goroutines int    `json:"goroutines"`
+	// GoVersion is the Go toolchain version (e.g. "go1.26").
+	GoVersion string `json:"go_version"`
+	// GoOS is the target operating system (e.g. "linux", "darwin").
+	GoOS string `json:"go_os"`
+	// GoArch is the target architecture (e.g. "amd64", "arm64").
+	GoArch string `json:"go_arch"`
+	// NumCPU is the number of logical CPUs available to the process.
+	NumCPU int `json:"num_cpu"`
+	// Goroutines is the current number of goroutines at the time of the request.
+	Goroutines int `json:"goroutines"`
 }
 
 var cachedConfig = configResponse{
