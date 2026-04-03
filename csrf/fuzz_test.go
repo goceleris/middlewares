@@ -15,6 +15,9 @@ func FuzzTokenValidation(f *testing.F) {
 	f.Add("short", "different")
 	f.Add("abcdef1234567890", "abcdef1234567890")
 	f.Add("abcdef1234567890", "ABCDEF1234567890")
+	// Valid 64-char hex tokens (32-byte raw length).
+	f.Add("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+		"abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
 	f.Fuzz(func(t *testing.T, cookie, header string) {
 		mw := New()
 		handler := func(c *celeris.Context) error {
@@ -42,6 +45,17 @@ func FuzzTokenValidation(f *testing.F) {
 			}
 			return
 		}
+
+		// Cookie-injection defense: non-hex or wrong-length cookies
+		// are rejected with 403 regardless of header match.
+		if !isValidTokenHex(cookie, 32) {
+			var he *celeris.HTTPError
+			if !errors.As(err, &he) || he.Code != 403 {
+				t.Errorf("invalid cookie hex %q: expected 403, got %v", cookie, err)
+			}
+			return
+		}
+
 		if cookie == header {
 			// Matching tokens: must succeed.
 			if err != nil {

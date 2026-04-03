@@ -2195,3 +2195,199 @@ func TestSafeMethodDoesNotRefreshExpiryForExistingToken(t *testing.T) {
 		t.Fatal("expected token to expire (safe method should not refresh expiry)")
 	}
 }
+
+// --- Wildcard subdomain traversal defense tests ---
+
+func TestWildcardOriginRejectsLeadingDot(t *testing.T) {
+	w := wildcardOrigin{prefix: "https://", suffix: ".example.com"}
+	// ".evil.com" starts with ".", must be rejected.
+	if w.match("https://.evil.com.example.com") {
+		t.Fatal("expected wildcard to reject middle starting with dot")
+	}
+}
+
+func TestWildcardOriginRejectsDoubleDot(t *testing.T) {
+	w := wildcardOrigin{prefix: "https://", suffix: ".example.com"}
+	// "sub..evil" contains "..", must be rejected.
+	if w.match("https://sub..evil.example.com") {
+		t.Fatal("expected wildcard to reject middle containing '..'")
+	}
+}
+
+func TestWildcardOriginAllowsValidSubdomain(t *testing.T) {
+	w := wildcardOrigin{prefix: "https://", suffix: ".example.com"}
+	if !w.match("https://app.example.com") {
+		t.Fatal("expected wildcard to allow valid subdomain")
+	}
+}
+
+func TestWildcardOriginAllowsDeepValidSubdomain(t *testing.T) {
+	w := wildcardOrigin{prefix: "https://", suffix: ".example.com"}
+	if !w.match("https://a.b.c.example.com") {
+		t.Fatal("expected wildcard to allow deep valid subdomain")
+	}
+}
+
+func TestWildcardIntegrationRejectsLeadingDotOrigin(t *testing.T) {
+	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	mw := New(Config{
+		TrustedOrigins: []string{"https://*.example.com"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", token),
+		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("origin", "https://.evil.example.com"),
+	)
+	testutil.AssertHTTPError(t, err, 403)
+}
+
+func TestWildcardIntegrationRejectsDoubleDotOrigin(t *testing.T) {
+	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	mw := New(Config{
+		TrustedOrigins: []string{"https://*.example.com"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", token),
+		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("origin", "https://sub..evil.example.com"),
+	)
+	testutil.AssertHTTPError(t, err, 403)
+}
+
+// --- Cookie-injection defense tests ---
+
+func TestCookieInjectionNonHexRejected(t *testing.T) {
+	mw := New()
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	// "not-hex-at-all!!" is not valid hex, should be rejected.
+	_, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", "not-hex-at-all!!"),
+		celeristest.WithCookie("_csrf", "not-hex-at-all!!"),
+	)
+	testutil.AssertHTTPError(t, err, 403)
+}
+
+func TestCookieInjectionWrongLengthRejected(t *testing.T) {
+	mw := New()
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	// Valid hex but wrong length (too short for 32-byte token).
+	_, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", "abcdef"),
+		celeristest.WithCookie("_csrf", "abcdef"),
+	)
+	testutil.AssertHTTPError(t, err, 403)
+}
+
+func TestCookieInjectionValidHexRawLengthAccepted(t *testing.T) {
+	// 64 hex chars = 32 bytes raw token.
+	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	mw := New()
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", token),
+		celeristest.WithCookie("_csrf", token),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestIsValidTokenHex(t *testing.T) {
+	tests := []struct {
+		name  string
+		token string
+		n     int
+		want  bool
+	}{
+		{"raw length valid", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 32, true},
+		{"masked length valid", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 32, true},
+		{"wrong length", "abcdef", 32, false},
+		{"non-hex chars", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", 32, false},
+		{"empty", "", 32, false},
+		{"uppercase hex", "ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890", 32, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isValidTokenHex(tt.token, tt.n)
+			if got != tt.want {
+				t.Fatalf("isValidTokenHex(%q, %d) = %v, want %v", tt.token, tt.n, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- Extractor self-sabotage validation tests ---
+
+func TestValidateExtractorCookieSelfSabotagePanics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when TokenLookup extracts from the CSRF cookie itself")
+		}
+		msg, ok := r.(string)
+		if !ok || !containsSubstring(msg, "defeats the double-submit pattern") {
+			t.Fatalf("expected descriptive panic message, got: %v", r)
+		}
+	}()
+	// cookie:_csrf matches the default CookieName "_csrf".
+	// This should be caught by validate() before buildSingleExtractor panics.
+	cfg := Config{TokenLookup: "cookie:_csrf"}
+	cfg = applyDefaults(cfg)
+	cfg.validate()
+}
+
+func TestValidateExtractorCookieCustomNameSelfSabotagePanics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when TokenLookup extracts from custom CSRF cookie")
+		}
+		msg, ok := r.(string)
+		if !ok || !containsSubstring(msg, "defeats the double-submit pattern") {
+			t.Fatalf("expected descriptive panic message, got: %v", r)
+		}
+	}()
+	cfg := Config{
+		TokenLookup: "cookie:my_token",
+		CookieName:  "my_token",
+	}
+	cfg = applyDefaults(cfg)
+	cfg.validate()
+}
+
+func TestValidateExtractorCookieDifferentNameDoesNotPanic(t *testing.T) {
+	// cookie:some_other_cookie does not match CookieName "_csrf",
+	// so the self-sabotage check should NOT trigger. However,
+	// validateTokenLookup will still panic because "cookie" is not
+	// a supported source. We test that the self-sabotage check
+	// is not the one panicking.
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for unsupported source 'cookie'")
+		}
+		msg, ok := r.(string)
+		if ok && containsSubstring(msg, "defeats the double-submit pattern") {
+			t.Fatal("self-sabotage check should not fire for different cookie name")
+		}
+	}()
+	cfg := Config{TokenLookup: "cookie:different_name"}
+	cfg = applyDefaults(cfg)
+	cfg.validate()
+}
