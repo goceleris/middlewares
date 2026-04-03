@@ -27,7 +27,7 @@ func New(config ...Config) celeris.HandlerFunc {
 
 	dur := cfg.Timeout
 	timeoutFunc := cfg.TimeoutFunc
-	errHandler := cfg.ErrorHandler
+	errHandler := resolveErrHandler(cfg)
 	preemptive := cfg.Preemptive
 	timeoutErrors := cfg.TimeoutErrors
 
@@ -64,18 +64,42 @@ func New(config ...Config) celeris.HandlerFunc {
 			if c.IsWritten() {
 				return ErrServiceUnavailable
 			}
-			return errHandler(c)
+			return safeErrHandler(c, context.DeadlineExceeded, errHandler)
 		}
 
 		if err != nil && isTimeoutError(err, timeoutErrors) {
 			if c.IsWritten() {
 				return ErrServiceUnavailable
 			}
-			return errHandler(c)
+			return safeErrHandler(c, err, errHandler)
 		}
 
 		return err
 	}
+}
+
+// resolveErrHandler builds the unified error handler closure from Config.
+// ErrorHandlerWithError takes precedence over ErrorHandler when set.
+func resolveErrHandler(cfg Config) func(*celeris.Context, error) error {
+	if cfg.ErrorHandlerWithError != nil {
+		return cfg.ErrorHandlerWithError
+	}
+	h := cfg.ErrorHandler
+	return func(c *celeris.Context, _ error) error {
+		return h(c)
+	}
+}
+
+// safeErrHandler calls the error handler with panic recovery. If the error
+// handler itself panics, a generic 503 is returned (mirroring the nested
+// recovery pattern used by recovery middleware).
+func safeErrHandler(c *celeris.Context, triggerErr error, handler func(*celeris.Context, error) error) (retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = ErrServiceUnavailable
+		}
+	}()
+	return handler(c, triggerErr)
 }
 
 // isTimeoutError checks if err matches any of the configured timeout-like errors.
@@ -98,11 +122,27 @@ func flushOrReturn(c *celeris.Context, err error) error {
 	return c.FlushResponse()
 }
 
+// Concurrency invariant for preemptive mode:
+//
+// The handler goroutine and the middleware goroutine share a single
+// *celeris.Context. Safety is ensured by the done channel acting as a
+// synchronization barrier:
+//
+//   - The handler goroutine sends exactly one value on done (either the
+//     handler's return error or a panic-wrapped error), then exits.
+//   - The middleware goroutine blocks on either <-done or <-childCtx.Done().
+//   - On the timeout path (<-childCtx.Done()), the middleware immediately
+//     blocks on <-done, waiting for the handler goroutine to finish. Only
+//     after <-done returns does the middleware access c again.
+//
+// This guarantees: the middleware never accesses c after <-done returns
+// concurrently with the handler goroutine, ensuring no concurrent Context
+// access post-return.
 func preemptiveHandler(
 	skipMap map[string]struct{},
 	dur time.Duration,
 	timeoutFunc func(*celeris.Context) time.Duration,
-	errHandler func(*celeris.Context) error,
+	errHandler func(*celeris.Context, error) error,
 	skip func(*celeris.Context) bool,
 	timeoutErrors []error,
 ) celeris.HandlerFunc {
@@ -148,18 +188,15 @@ func preemptiveHandler(
 		case err := <-done:
 			chanPool.Put(done)
 			if err != nil && isTimeoutError(err, timeoutErrors) {
-				return flushOrReturn(c, errHandler(c))
+				return flushOrReturn(c, safeErrHandler(c, err, errHandler))
 			}
 			if flushErr := c.FlushResponse(); flushErr != nil {
 				return flushErr
 			}
 			return err
 		case <-childCtx.Done():
-			// Between childCtx.Done() firing and <-done completing, the
-			// handler goroutine may still be touching c (writing buffered
-			// response data, setting headers, etc.). The <-done receive
-			// serializes: once it returns, the goroutine has exited and
-			// the Context is safe to use exclusively from this goroutine.
+			// See concurrency invariant above: <-done serializes access
+			// to c. The handler goroutine has exited once <-done returns.
 			<-done
 			chanPool.Put(done)
 			// The handler may have buffered a stale response. We do NOT
@@ -168,7 +205,7 @@ func preemptiveHandler(
 			// bufferDepth > 0, replacing the stale data. flushOrReturn
 			// then flushes the errHandler's response (or propagates its
 			// error without flushing).
-			return flushOrReturn(c, errHandler(c))
+			return flushOrReturn(c, safeErrHandler(c, context.DeadlineExceeded, errHandler))
 		}
 	}
 }
