@@ -47,9 +47,11 @@ func New(config ...Config) celeris.HandlerFunc {
 			return c.Next()
 		}
 
-		// Auto-skip bodyless methods.
+		// Auto-skip bodyless methods (RFC 7231 §4.3, RFC 7231 §4.3.6,
+		// RFC 7231 §4.3.8). TRACE must not have a body; CONNECT
+		// transitions to tunnel mode.
 		switch c.Method() {
-		case "GET", "HEAD", "DELETE", "OPTIONS":
+		case "GET", "HEAD", "DELETE", "OPTIONS", "TRACE", "CONNECT":
 			return c.Next()
 		}
 
