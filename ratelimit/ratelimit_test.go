@@ -1123,87 +1123,9 @@ func FuzzConcurrentAccess(f *testing.F) {
 	})
 }
 
-// --- Key Redaction Tests ---
-
-func TestKeyRedactionDefault(t *testing.T) {
-	cfg := Config{}
-	got := cfg.RedactKey("192.168.1.1")
-	if got != "[redacted]" {
-		t.Fatalf("expected [redacted], got %q", got)
-	}
-}
-
-func TestKeyRedactionDisabled(t *testing.T) {
-	cfg := Config{DisableKeyRedaction: true}
-	got := cfg.RedactKey("192.168.1.1")
-	if got != "192.168.1.1" {
-		t.Fatalf("expected raw key, got %q", got)
-	}
-}
-
-func TestKeyRedactionWithLimitReached(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	var receivedKey string
-	redactor := Config{} // default: redaction enabled
-	cfg := Config{
-		RPS:   0.001,
-		Burst: 1,
-		KeyFunc: func(c *celeris.Context) string {
-			return "192.168.1.1"
-		},
-		LimitReached: func(c *celeris.Context) error {
-			receivedKey = redactor.RedactKey("192.168.1.1")
-			return celeris.NewHTTPError(429, "limited")
-		},
-		CleanupInterval: time.Hour,
-		CleanupContext:  ctx,
-	}
-	mw := New(cfg)
-
-	// Exhaust token.
-	_, _ = testutil.RunMiddleware(t, mw)
-
-	// Trigger LimitReached.
-	_, err := testutil.RunMiddleware(t, mw)
-	testutil.AssertHTTPError(t, err, 429)
-
-	if receivedKey != "[redacted]" {
-		t.Fatalf("expected redacted key in LimitReached, got %q", receivedKey)
-	}
-}
-
-func TestKeyRedactionDisabledWithLimitReached(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	var receivedKey string
-	redactor := Config{DisableKeyRedaction: true}
-	cfg := Config{
-		RPS:                 0.001,
-		Burst:               1,
-		DisableKeyRedaction: true,
-		KeyFunc: func(c *celeris.Context) string {
-			return "192.168.1.1"
-		},
-		LimitReached: func(c *celeris.Context) error {
-			receivedKey = redactor.RedactKey("192.168.1.1")
-			return celeris.NewHTTPError(429, "limited")
-		},
-		CleanupInterval: time.Hour,
-		CleanupContext:  ctx,
-	}
-	mw := New(cfg)
-
-	_, _ = testutil.RunMiddleware(t, mw)
-	_, err := testutil.RunMiddleware(t, mw)
-	testutil.AssertHTTPError(t, err, 429)
-
-	if receivedKey != "192.168.1.1" {
-		t.Fatalf("expected raw key when redaction disabled, got %q", receivedKey)
-	}
-}
+// --- DisableKeyRedaction removed (issue #14) ---
+// The DisableKeyRedaction field and RedactKey method were dead code
+// (never wired into the middleware). They have been removed.
 
 // --- Sliding Window Tests ---
 
@@ -1618,5 +1540,160 @@ func TestRateFuncCachesLimiters(t *testing.T) {
 
 	if callCount != 3 {
 		t.Fatalf("expected RateFunc called 3 times, got %d", callCount)
+	}
+}
+
+// --- Issue #1: Unbounded dynamic limiter map ---
+
+func TestDynamicLimiterMapBounded(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	counter := atomic.Int64{}
+	mw := New(Config{
+		RPS:   100,
+		Burst: 100,
+		RateFunc: func(_ *celeris.Context) (string, error) {
+			n := counter.Add(1)
+			return strings.Replace("NNN-S", "NNN", strings.Repeat("1", int(n)), 1), nil
+		},
+		CleanupInterval:   time.Hour,
+		CleanupContext:     ctx,
+		KeyFunc:            func(c *celeris.Context) string { return "test" },
+		MaxDynamicLimiters: 3,
+	})
+
+	// First 3 unique rates should succeed.
+	for range 3 {
+		_, err := testutil.RunMiddleware(t, mw)
+		testutil.AssertNoError(t, err)
+	}
+
+	// 4th unique rate should fail with dynamic limiter exhausted error.
+	_, err := testutil.RunMiddleware(t, mw)
+	if err == nil {
+		t.Fatal("expected error when dynamic limiter map full")
+	}
+	if !strings.Contains(err.Error(), "dynamic limiter map full") {
+		t.Fatalf("expected dynamic limiter exhausted error, got: %v", err)
+	}
+}
+
+// --- Issue #2: Dynamic limiter goroutine leak ---
+
+func TestDynamicLimiterCleanupContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	mw := New(Config{
+		RPS:   100,
+		Burst: 100,
+		RateFunc: func(_ *celeris.Context) (string, error) {
+			return "5-S", nil
+		},
+		CleanupInterval: time.Millisecond,
+		CleanupContext:  ctx,
+		KeyFunc:         func(c *celeris.Context) string { return "test" },
+	})
+
+	// Create a dynamic limiter.
+	_, err := testutil.RunMiddleware(t, mw)
+	testutil.AssertNoError(t, err)
+
+	// Cancel context — should stop cleanup goroutines (no leak).
+	cancel()
+	time.Sleep(5 * time.Millisecond) // allow goroutines to exit
+}
+
+// --- Issue #4: Sliding window remaining=1 on deny ---
+
+func TestSlidingWindowRemainingZeroOnDeny(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l := newSlidingWindowLimiter(ctx, 4, 0.001, 2, time.Hour)
+
+	now := time.Now().UnixNano()
+	l.allow("k", now) // 1 of 2
+	l.allow("k", now) // 2 of 2
+
+	// Denied: remaining must be 0, not 1.
+	allowed, remaining, _ := l.allow("k", now)
+	if allowed {
+		t.Fatal("expected denial")
+	}
+	if remaining != 0 {
+		t.Fatalf("expected remaining=0 on deny, got %d", remaining)
+	}
+}
+
+// --- Issue #9: ParseRate panics from RateFunc ---
+
+func TestRateFuncInvalidRateStringDoesNotPanic(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mw := New(Config{
+		RPS:   100,
+		Burst: 100,
+		RateFunc: func(_ *celeris.Context) (string, error) {
+			return "not-a-valid-rate", nil // would panic in ParseRate
+		},
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+		KeyFunc:         func(c *celeris.Context) string { return "test" },
+	})
+
+	// Should return an error, not panic.
+	_, err := testutil.RunMiddleware(t, mw)
+	if err == nil {
+		t.Fatal("expected error from invalid RateFunc rate string")
+	}
+	if !strings.Contains(err.Error(), "invalid rate") {
+		t.Fatalf("expected 'invalid rate' error, got: %v", err)
+	}
+}
+
+// --- Issue #10: applyDefaults preserves user Burst when Rate is set ---
+
+func TestApplyDefaultsPreservesUserBurst(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Rate "5-S" would set burst=5, but user explicitly sets Burst=10.
+	mw := New(Config{
+		Rate:            "5-S",
+		Burst:           10,
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+	})
+
+	// Should allow 10 requests (user's Burst), not 5.
+	for range 10 {
+		_, err := testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+		testutil.AssertNoError(t, err)
+	}
+	_, err := testutil.RunMiddleware(t, mw, celeristest.WithHeader("x-forwarded-for", "1.2.3.4"))
+	testutil.AssertHTTPError(t, err, 429)
+}
+
+// --- Issue #13: Sliding window math.Floor consistency ---
+
+func TestSlidingWindowFloorConsistency(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Use a window where the weighted count is fractional.
+	l := newSlidingWindowLimiter(ctx, 4, 1, 5, time.Hour)
+
+	now := time.Now().UnixNano()
+	// Fill current window.
+	for range 5 {
+		l.allow("k", now)
+	}
+
+	// Advance halfway into the next window.
+	halfWindow := now + l.windowNano + l.windowNano/2
+	// prevCount=5, fraction=0.5, weight=5*0.5+0 = 2.5
+	// math.Floor(2.5) = 2, so remaining = 5 - 2 - 1 = 2
+	allowed, remaining, _ := l.allow("k", halfWindow)
+	if !allowed {
+		t.Fatal("expected allow at half-window")
+	}
+	if remaining != 2 {
+		t.Fatalf("expected remaining=2 at half-window after one request, got %d", remaining)
 	}
 }

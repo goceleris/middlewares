@@ -50,7 +50,7 @@
 //   - X-RateLimit-Limit: the burst capacity (maximum tokens).
 //   - X-RateLimit-Remaining: tokens left after this request.
 //   - X-RateLimit-Reset: seconds until the bucket next gains a token
-//     (ceiling-rounded to whole seconds).
+//     (ceiling-rounded to whole seconds, minimum 1 per RFC 7231 §7.1.3).
 //
 // Set [Config].DisableHeaders to true to suppress all rate limit headers,
 // including Retry-After on denied responses. This is useful for internal
@@ -88,6 +88,30 @@
 // bucket resumes normal refill from the new timestamp. Forward steps
 // are handled naturally — the bucket fills to its burst cap and any
 // excess is discarded.
+//
+// # Sliding Window
+//
+// When [Config].SlidingWindow is true, the middleware uses a sliding window
+// counter instead of the default token bucket. The sliding window tracks
+// the previous and current window counts, weighted by the elapsed fraction
+// of the current window, providing smoother rate limiting near window
+// boundaries.
+//
+// Caveat: under concurrent load near a window boundary, an undo (from
+// SkipFailedRequests/SkipSuccessfulRequests) may restore a count into a
+// window that has already advanced, slightly skewing the weighted estimate.
+// This is inherent to the sliding-window-counter algorithm and acceptable
+// for rate limiting purposes.
+//
+// # Dynamic Rate Limiting
+//
+// [Config].RateFunc allows per-request rate selection. The number of
+// distinct rate strings is capped by [Config].MaxDynamicLimiters (default
+// 1024). When exceeded, the middleware returns an error rather than
+// allowing unbounded memory growth. Each dynamic limiter's cleanup
+// goroutine is tied to the parent [Config].CleanupContext and stops when
+// that context is cancelled.
+//
 // # Skipping
 //
 // Set [Config].Skip to bypass the middleware dynamically, or

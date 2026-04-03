@@ -46,7 +46,8 @@ type Config struct {
 
 	// Rate is a human-readable rate string (e.g., "100-M" for 100 per minute).
 	// Supported units: S (second), M (minute), H (hour), D (day).
-	// Takes precedence over RPS/Burst when set.
+	// Takes precedence over RPS/Burst when set. If Burst is also set
+	// explicitly, the user's Burst is preserved (Rate only overrides RPS).
 	Rate string
 
 	// RateFunc, when set, is called per-request to determine the rate.
@@ -76,11 +77,6 @@ type Config struct {
 	// DisableHeaders disables X-RateLimit-* response headers.
 	DisableHeaders bool
 
-	// DisableKeyRedaction, when false (default), redacts the key value
-	// passed to internal logging or LimitReached context. This prevents
-	// leaking potentially sensitive key information (e.g., IP addresses).
-	DisableKeyRedaction bool
-
 	// SlidingWindow, when true, uses a sliding window counter instead
 	// of the default token bucket algorithm. The sliding window tracks
 	// the previous and current window counts, weighted by the elapsed
@@ -101,6 +97,11 @@ type Config struct {
 	// LimitReached is called when a request is rate-limited.
 	// If nil, returns 429 Too Many Requests.
 	LimitReached func(c *celeris.Context) error
+
+	// MaxDynamicLimiters caps the number of distinct rate strings cached
+	// when RateFunc is used. When exceeded, new rate strings are rejected
+	// with an error. Default: 1024.
+	MaxDynamicLimiters int
 }
 
 // DefaultConfig is the default rate limit configuration.
@@ -115,7 +116,10 @@ func applyDefaults(cfg Config) Config {
 	if cfg.Rate != "" {
 		rps, burst := ParseRate(cfg.Rate)
 		cfg.RPS = rps
-		cfg.Burst = burst
+		// Only override Burst if the user did not set it explicitly (issue #10).
+		if cfg.Burst <= 0 {
+			cfg.Burst = burst
+		}
 	}
 	if cfg.RPS <= 0 {
 		cfg.RPS = DefaultConfig.RPS
@@ -134,6 +138,9 @@ func applyDefaults(cfg Config) Config {
 	if cfg.CleanupInterval <= 0 {
 		cfg.CleanupInterval = DefaultConfig.CleanupInterval
 	}
+	if cfg.MaxDynamicLimiters <= 0 {
+		cfg.MaxDynamicLimiters = 1024
+	}
 	return cfg
 }
 
@@ -141,14 +148,6 @@ func (cfg Config) validate() {
 	if cfg.Burst < 1 {
 		panic("ratelimit: Burst must be >= 1")
 	}
-}
-
-// RedactKey returns "[redacted]" unless DisableKeyRedaction is true.
-func (cfg Config) RedactKey(key string) string {
-	if cfg.DisableKeyRedaction {
-		return key
-	}
-	return "[redacted]"
 }
 
 // ParseRate parses a human-readable rate string into RPS and burst values.
