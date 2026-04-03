@@ -30,10 +30,22 @@
 // WARNING: SHA-256 is a fast hash with no work factor. It is NOT suitable
 // for high-security password storage where offline brute-force attacks are
 // a concern. For those scenarios, use a dedicated password hashing algorithm
-// such as bcrypt, scrypt, or Argon2 inside a custom [Config].Validator.
+// such as bcrypt, scrypt, or Argon2 inside a custom [Config].Validator or
+// via [Config].HashedUsersFunc.
 // HashedUsers with SHA-256 is provided as a convenience for environments
 // where passwords are already protected by other means (e.g., short-lived
 // tokens, internal services behind a VPN, or defense-in-depth layers).
+//
+// Plugging in bcrypt via HashedUsersFunc (requires golang.org/x/crypto):
+//
+//	server.Use(basicauth.New(basicauth.Config{
+//	    HashedUsers: map[string]string{
+//	        "admin": "$2a$10$...", // bcrypt hash
+//	    },
+//	    HashedUsersFunc: func(hash, password string) bool {
+//	        return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+//	    },
+//	}))
 //
 // Custom validator with context access:
 //

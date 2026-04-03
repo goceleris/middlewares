@@ -1,10 +1,27 @@
 package requestid
 
 import (
+	"context"
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/goceleris/celeris"
 )
+
+// stdContextKey is an unexported type used as the key for storing the
+// request ID in a stdlib context.Context value.
+type stdContextKey struct{}
+
+// FromStdContext returns the request ID from a stdlib [context.Context].
+// Returns an empty string if no request ID was stored.
+func FromStdContext(ctx context.Context) string {
+	v, ok := ctx.Value(stdContextKey{}).(string)
+	if !ok {
+		return ""
+	}
+	return v
+}
 
 // ContextKey is the context store key for the request ID.
 const ContextKey = "request_id"
@@ -95,9 +112,17 @@ func New(config ...Config) celeris.HandlerFunc {
 
 		c.SetHeader(header, id)
 		c.Set(ContextKey, id)
+		c.SetContext(context.WithValue(c.Context(), stdContextKey{}, id))
 
 		if afterGenerate != nil {
-			afterGenerate(c, id)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						fmt.Fprintf(os.Stderr, "requestid: AfterGenerate panic: %v\n", r)
+					}
+				}()
+				afterGenerate(c, id)
+			}()
 		}
 
 		return c.Next()

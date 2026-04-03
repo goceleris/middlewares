@@ -129,11 +129,15 @@ func parseBasicAuth(auth string) (user, pass string, result authResult) {
 		result = authMalformed
 		return
 	}
-	n, err := base64.StdEncoding.Decode(buf[:],
-		unsafe.Slice(unsafe.StringData(payload), len(payload)))
+	payloadBytes := unsafe.Slice(unsafe.StringData(payload), len(payload))
+	n, err := base64.StdEncoding.Decode(buf[:], payloadBytes)
 	if err != nil {
-		result = authMalformed
-		return
+		// Retry with unpadded base64 (some clients omit trailing '=').
+		n, err = base64.RawStdEncoding.Decode(buf[:], payloadBytes)
+		if err != nil {
+			result = authMalformed
+			return
+		}
 	}
 
 	decoded := string(buf[:n])

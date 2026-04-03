@@ -668,7 +668,10 @@ func TestContentLengthRequiredRespectSkipFunc(t *testing.T) {
 // --- parseSize PB/EB tests ---
 
 func TestPBParsing(t *testing.T) {
-	n := parseSize("1PB")
+	n, err := parseSize("1PB")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := int64(1) << 50
 	if n != want {
 		t.Fatalf("1PB: got %d, want %d", n, want)
@@ -676,7 +679,10 @@ func TestPBParsing(t *testing.T) {
 }
 
 func TestEBParsing(t *testing.T) {
-	n := parseSize("1EB")
+	n, err := parseSize("1EB")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := int64(1) << 60
 	if n != want {
 		t.Fatalf("1EB: got %d, want %d", n, want)
@@ -699,14 +705,20 @@ func TestPBLimitMiddleware(t *testing.T) {
 // --- parseSize IEC unit tests ---
 
 func TestKiBParsing(t *testing.T) {
-	n := parseSize("1KiB")
+	n, err := parseSize("1KiB")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if n != 1024 {
 		t.Fatalf("1KiB: got %d, want 1024", n)
 	}
 }
 
 func TestMiBParsing(t *testing.T) {
-	n := parseSize("1MiB")
+	n, err := parseSize("1MiB")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := int64(1) << 20
 	if n != want {
 		t.Fatalf("1MiB: got %d, want %d", n, want)
@@ -714,7 +726,10 @@ func TestMiBParsing(t *testing.T) {
 }
 
 func TestGiBParsing(t *testing.T) {
-	n := parseSize("1GiB")
+	n, err := parseSize("1GiB")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := int64(1) << 30
 	if n != want {
 		t.Fatalf("1GiB: got %d, want %d", n, want)
@@ -722,7 +737,10 @@ func TestGiBParsing(t *testing.T) {
 }
 
 func TestTiBParsing(t *testing.T) {
-	n := parseSize("1TiB")
+	n, err := parseSize("1TiB")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := int64(1) << 40
 	if n != want {
 		t.Fatalf("1TiB: got %d, want %d", n, want)
@@ -730,7 +748,10 @@ func TestTiBParsing(t *testing.T) {
 }
 
 func TestPiBParsing(t *testing.T) {
-	n := parseSize("1PiB")
+	n, err := parseSize("1PiB")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := int64(1) << 50
 	if n != want {
 		t.Fatalf("1PiB: got %d, want %d", n, want)
@@ -738,7 +759,10 @@ func TestPiBParsing(t *testing.T) {
 }
 
 func TestEiBParsing(t *testing.T) {
-	n := parseSize("1EiB")
+	n, err := parseSize("1EiB")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := int64(1) << 60
 	if n != want {
 		t.Fatalf("1EiB: got %d, want %d", n, want)
@@ -746,7 +770,10 @@ func TestEiBParsing(t *testing.T) {
 }
 
 func TestIECCaseInsensitive(t *testing.T) {
-	n := parseSize("10mib")
+	n, err := parseSize("10mib")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := int64(10) << 20
 	if n != want {
 		t.Fatalf("10mib: got %d, want %d", n, want)
@@ -754,7 +781,10 @@ func TestIECCaseInsensitive(t *testing.T) {
 }
 
 func TestIECFractional(t *testing.T) {
-	n := parseSize("1.5GiB")
+	n, err := parseSize("1.5GiB")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := int64(1.5 * float64(int64(1)<<30))
 	if n != want {
 		t.Fatalf("1.5GiB: got %d, want %d", n, want)
@@ -812,4 +842,40 @@ func TestParseSizeRejectsNegativeFractionalGB(t *testing.T) {
 		}
 	}()
 	New(Config{Limit: "-0.5GB"})
+}
+
+// --- parseSize returns error tests ---
+
+func TestParseSizeReturnsErrorInvalidFormat(t *testing.T) {
+	_, err := parseSize("notasize")
+	if err == nil {
+		t.Fatal("expected error for invalid format")
+	}
+}
+
+func TestParseSizeReturnsErrorEmpty(t *testing.T) {
+	_, err := parseSize("")
+	if err == nil {
+		t.Fatal("expected error for empty string")
+	}
+}
+
+func TestParseSizeReturnsErrorNegative(t *testing.T) {
+	_, err := parseSize("-1MB")
+	if err == nil {
+		t.Fatal("expected error for negative value")
+	}
+	if err.Error() != "bodylimit: Limit must not be negative" {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestParseSizeReturnsNilOnValid(t *testing.T) {
+	n, err := parseSize("10MB")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 10*1024*1024 {
+		t.Fatalf("10MB: got %d, want %d", n, 10*1024*1024)
+	}
 }

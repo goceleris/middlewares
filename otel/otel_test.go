@@ -1457,3 +1457,74 @@ func TestResponseHeaderPropagationDisableMetrics(t *testing.T) {
 		t.Fatalf("traceparent should start with version 00-, got %q", traceparent)
 	}
 }
+
+// --- truncateString UTF-8 safety tests ---
+
+func TestTruncateStringASCII(t *testing.T) {
+	got := truncateString("hello world", 5)
+	if got != "hello" {
+		t.Fatalf("expected %q, got %q", "hello", got)
+	}
+}
+
+func TestTruncateStringNoTruncation(t *testing.T) {
+	got := truncateString("short", 100)
+	if got != "short" {
+		t.Fatalf("expected %q, got %q", "short", got)
+	}
+}
+
+func TestTruncateStringExactLength(t *testing.T) {
+	got := truncateString("exact", 5)
+	if got != "exact" {
+		t.Fatalf("expected %q, got %q", "exact", got)
+	}
+}
+
+func TestTruncateStringMultiByteNotSplit(t *testing.T) {
+	// "\u00e4" is U+00E4 (a-umlaut), 2 bytes in UTF-8: 0xC3 0xA4
+	s := "a\u00e4b" // "a" (1) + "a-umlaut" (2) + "b" (1) = 4 bytes
+	// Truncate at 2 bytes: should NOT split the 2-byte rune.
+	got := truncateString(s, 2)
+	// Byte 0 is 'a', bytes 1-2 are the a-umlaut. maxLen=2 would cut into
+	// the rune at byte 1. The function should back up to byte 1.
+	if got != "a" {
+		t.Fatalf("expected %q, got %q", "a", got)
+	}
+}
+
+func TestTruncateStringMultiByteExactBoundary(t *testing.T) {
+	// "a" (1) + "a-umlaut" (2) = 3 bytes. Truncate at 3 keeps the whole thing.
+	s := "a\u00e4"
+	got := truncateString(s, 3)
+	if got != s {
+		t.Fatalf("expected %q, got %q", s, got)
+	}
+}
+
+func TestTruncateString3ByteRune(t *testing.T) {
+	// U+4E16 (CJK char) is 3 bytes in UTF-8.
+	s := "ab\u4e16c" // 2 + 3 + 1 = 6 bytes
+	// Truncate at 4 would split the 3-byte rune starting at byte 2.
+	got := truncateString(s, 4)
+	if got != "ab" {
+		t.Fatalf("expected %q, got %q", "ab", got)
+	}
+}
+
+func TestTruncateString4ByteRune(t *testing.T) {
+	// U+1F600 (grinning face emoji) is 4 bytes in UTF-8.
+	s := "x\U0001F600y" // 1 + 4 + 1 = 6 bytes
+	// Truncate at 3 would split the 4-byte rune starting at byte 1.
+	got := truncateString(s, 3)
+	if got != "x" {
+		t.Fatalf("expected %q, got %q", "x", got)
+	}
+}
+
+func TestTruncateStringEmpty(t *testing.T) {
+	got := truncateString("", 10)
+	if got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+}

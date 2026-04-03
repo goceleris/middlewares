@@ -40,6 +40,15 @@ type Config struct {
 	// Use [HashPassword] to produce the hex-encoded hash values.
 	HashedUsers map[string]string
 
+	// HashedUsersFunc, when non-nil, replaces the built-in SHA-256
+	// comparison used by HashedUsers. It receives the stored hex-encoded
+	// hash and the plaintext password and returns true if they match.
+	// This lets callers plug in bcrypt, argon2, or any other password
+	// hashing algorithm without this package importing those libraries.
+	// HashedUsersFunc is only consulted when HashedUsers is used to
+	// build the auto-generated validator.
+	HashedUsersFunc func(hash, password string) bool
+
 	// Realm is the authentication realm. Default: "Restricted".
 	Realm string
 
@@ -110,31 +119,53 @@ func applyDefaults(cfg Config) Config {
 		}
 	}
 	if cfg.Validator == nil && cfg.ValidatorWithContext == nil && len(cfg.HashedUsers) > 0 {
-		// Deep-copy and decode hex hashes at init time.
-		type hashedEntry struct{ hashBytes [sha256.Size]byte }
-		entries := make(map[string]hashedEntry, len(cfg.HashedUsers))
-		for u, h := range cfg.HashedUsers {
-			b, err := hex.DecodeString(h)
-			if err != nil || len(b) != sha256.Size {
-				panic("basicauth: HashedUsers[" + u + "]: invalid hex-encoded SHA-256 hash")
+		if cfg.HashedUsersFunc != nil {
+			// Custom verify function (e.g., bcrypt, argon2).
+			// Deep-copy hashes at init time; no hex validation needed since
+			// the caller controls the hash format.
+			hashCopy := make(map[string]string, len(cfg.HashedUsers))
+			for u, h := range cfg.HashedUsers {
+				hashCopy[u] = h
 			}
-			var entry hashedEntry
-			copy(entry.hashBytes[:], b)
-			entries[u] = entry
-		}
-		// Random dummy hash for unknown-user timing side-channel prevention.
-		var dummyHash [sha256.Size]byte
-		if _, err := rand.Read(dummyHash[:]); err != nil {
-			panic("basicauth: crypto/rand failed: " + err.Error())
-		}
-		cfg.Validator = func(user, pass string) bool {
-			e, ok := entries[user]
-			passHash := sha256.Sum256([]byte(pass))
-			if !ok {
-				_ = subtle.ConstantTimeCompare(passHash[:], dummyHash[:])
-				return false
+			verifyFn := cfg.HashedUsersFunc
+			cfg.Validator = func(user, pass string) bool {
+				h, ok := hashCopy[user]
+				if !ok {
+					// Constant-time-ish: still call verify with a dummy
+					// to avoid leaking whether the user exists via timing.
+					verifyFn("", pass)
+					return false
+				}
+				return verifyFn(h, pass)
 			}
-			return subtle.ConstantTimeCompare(passHash[:], e.hashBytes[:]) == 1
+		} else {
+			// Built-in SHA-256 comparison.
+			// Deep-copy and decode hex hashes at init time.
+			type hashedEntry struct{ hashBytes [sha256.Size]byte }
+			entries := make(map[string]hashedEntry, len(cfg.HashedUsers))
+			for u, h := range cfg.HashedUsers {
+				b, err := hex.DecodeString(h)
+				if err != nil || len(b) != sha256.Size {
+					panic("basicauth: HashedUsers[" + u + "]: invalid hex-encoded SHA-256 hash")
+				}
+				var entry hashedEntry
+				copy(entry.hashBytes[:], b)
+				entries[u] = entry
+			}
+			// Random dummy hash for unknown-user timing side-channel prevention.
+			var dummyHash [sha256.Size]byte
+			if _, err := rand.Read(dummyHash[:]); err != nil {
+				panic("basicauth: crypto/rand failed: " + err.Error())
+			}
+			cfg.Validator = func(user, pass string) bool {
+				e, ok := entries[user]
+				passHash := sha256.Sum256([]byte(pass))
+				if !ok {
+					_ = subtle.ConstantTimeCompare(passHash[:], dummyHash[:])
+					return false
+				}
+				return subtle.ConstantTimeCompare(passHash[:], e.hashBytes[:]) == 1
+			}
 		}
 	}
 	return cfg
