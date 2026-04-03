@@ -574,11 +574,11 @@ func TestLogProtocol(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, err := testutil.RunChain(t, chain, "GET", "/proto",
-		celeristest.WithHeader(":protocol", "HTTP/2"),
+		celeristest.WithHeader("x-forwarded-proto", "https"),
 	)
 	testutil.AssertNoError(t, err)
 	out := buf.String()
-	if !strings.Contains(out, `"protocol":"HTTP/2"`) {
+	if !strings.Contains(out, `"protocol":"https"`) {
 		t.Fatalf("expected protocol field in log, got: %s", out)
 	}
 }
@@ -591,7 +591,7 @@ func TestLogProtocolDisabledByDefault(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, err := testutil.RunChain(t, chain, "GET", "/no-proto",
-		celeristest.WithHeader(":protocol", "HTTP/2"),
+		celeristest.WithHeader("x-forwarded-proto", "https"),
 	)
 	testutil.AssertNoError(t, err)
 	out := buf.String()
@@ -691,7 +691,7 @@ func TestAllOptInFieldsTogether(t *testing.T) {
 	_, err := testutil.RunChain(t, chain, "GET", "/all",
 		celeristest.WithHeader("user-agent", "AllTest/1.0"),
 		celeristest.WithHeader("referer", "https://all.example.com"),
-		celeristest.WithHeader(":protocol", "HTTP/1.1"),
+		celeristest.WithHeader("x-forwarded-proto", "https"),
 	)
 	testutil.AssertNoError(t, err)
 	out := buf.String()
@@ -1176,21 +1176,31 @@ func TestDefaultSensitiveHeadersDisabled(t *testing.T) {
 	}
 }
 
-func TestDefaultSensitiveHeadersVar(t *testing.T) {
-	// Verify the exported var has the expected entries.
+func TestDefaultSensitiveHeadersFunc(t *testing.T) {
+	// Verify the function returns the expected entries.
 	expected := map[string]bool{
 		"authorization": true,
 		"cookie":        true,
 		"set-cookie":    true,
 		"x-api-key":     true,
 	}
-	if len(DefaultSensitiveHeaders) != len(expected) {
-		t.Fatalf("DefaultSensitiveHeaders has %d entries, want %d",
-			len(DefaultSensitiveHeaders), len(expected))
+	got := DefaultSensitiveHeaders()
+	if len(got) != len(expected) {
+		t.Fatalf("DefaultSensitiveHeaders() has %d entries, want %d",
+			len(got), len(expected))
 	}
-	for _, h := range DefaultSensitiveHeaders {
+	for _, h := range got {
 		if !expected[h] {
-			t.Fatalf("unexpected header in DefaultSensitiveHeaders: %s", h)
+			t.Fatalf("unexpected header in DefaultSensitiveHeaders(): %s", h)
+		}
+	}
+	// Verify mutation safety: modifying the returned slice does not
+	// affect subsequent calls.
+	got[0] = "MUTATED"
+	got2 := DefaultSensitiveHeaders()
+	for _, h := range got2 {
+		if h == "MUTATED" {
+			t.Fatal("DefaultSensitiveHeaders() returned a shared slice — mutation leaked")
 		}
 	}
 }

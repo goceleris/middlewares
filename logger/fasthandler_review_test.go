@@ -169,6 +169,7 @@ func TestAppendTextValue_Edges(t *testing.T) {
 		{"long string", strings.Repeat("x", 10000), strings.Repeat("x", 10000)},
 		{"only spaces", "   ", `"   "`},
 		{"null byte", "a\x00b", `"a\x00b"`},
+		{"DEL char", "a\x7fb", `"a\x7fb"`},
 	}
 
 	for _, tc := range tests {

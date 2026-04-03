@@ -21,7 +21,7 @@ var cachedPID = os.Getpid()
 
 // New creates a logger middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := DefaultConfig()
 	if len(config) > 0 {
 		cfg = config[0]
 	}
@@ -36,7 +36,7 @@ func New(config ...Config) celeris.HandlerFunc {
 	// Resolve sensitive headers: nil → defaults, empty slice → disabled.
 	headers := cfg.SensitiveHeaders
 	if headers == nil {
-		headers = DefaultSensitiveHeaders
+		headers = DefaultSensitiveHeaders()
 	}
 	sensitiveMap := make(map[string]struct{}, len(headers))
 	for _, h := range headers {
@@ -149,7 +149,10 @@ func New(config ...Config) celeris.HandlerFunc {
 			}
 		}
 		if logProtocol {
-			if proto := c.Header(":protocol"); proto != "" {
+			// The HTTP version is not exposed as a standard request
+			// header. Read x-forwarded-proto (set by reverse proxies)
+			// as a best-effort signal for scheme/protocol information.
+			if proto := c.Header("x-forwarded-proto"); proto != "" {
 				attrs = append(attrs, slog.String("protocol", proto))
 			}
 		}
@@ -224,12 +227,12 @@ func New(config ...Config) celeris.HandlerFunc {
 			}
 			attrs = append(attrs, slog.String("response_body", string(body)))
 		}
+		// Sensitive header redaction: always emit every configured header
+		// with "[REDACTED]" so the log entry is identical whether the
+		// header was sent or not (constant-presence, no info leak).
 		if len(sensitiveMap) > 0 {
-			for _, kv := range c.RequestHeaders() {
-				key := strings.ToLower(kv[0])
-				if _, ok := sensitiveMap[key]; ok {
-					attrs = append(attrs, slog.String("header."+key, "[REDACTED]"))
-				}
+			for h := range sensitiveMap {
+				attrs = append(attrs, slog.String("header."+h, "[REDACTED]"))
 			}
 		}
 
@@ -242,7 +245,15 @@ func New(config ...Config) celeris.HandlerFunc {
 		r.AddAttrs(attrs...)
 		_ = handler.Handle(ctx, r)
 
-		*attrsPtr = attrs
+		// Cap the pooled slice to prevent unbounded growth from requests
+		// with many custom fields. If it grew past 64, replace with a
+		// fresh allocation so the oversized backing array is GC'd.
+		if cap(attrs) > 64 {
+			fresh := make([]slog.Attr, 0, 32)
+			*attrsPtr = fresh
+		} else {
+			*attrsPtr = attrs
+		}
 		attrPool.Put(attrsPtr)
 
 		if doneFn != nil {
