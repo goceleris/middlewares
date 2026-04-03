@@ -22,7 +22,7 @@ var ErrHeaderTooLarge = celeris.NewHTTPError(431, "Request Header Fields Too Lar
 
 // New creates a basic auth middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := defaultConfig
 	if len(config) > 0 {
 		cfg = config[0]
 	}
@@ -114,7 +114,7 @@ func parseBasicAuth(auth string) (user, pass string, result authResult) {
 		return
 	}
 	const prefix = "Basic "
-	if len(auth) < len(prefix) || auth[:len(prefix)] != prefix {
+	if len(auth) < len(prefix) || !strings.EqualFold(auth[:len(prefix)], prefix) {
 		result = authMissing
 		return
 	}
@@ -124,7 +124,7 @@ func parseBasicAuth(auth string) (user, pass string, result authResult) {
 		return
 	}
 
-	var buf [128]byte
+	var buf [192]byte
 	if base64.StdEncoding.DecodedLen(len(payload)) > len(buf) {
 		result = authMalformed
 		return

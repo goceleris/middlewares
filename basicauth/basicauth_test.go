@@ -3,6 +3,7 @@ package basicauth
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"strings"
 	"testing"
@@ -191,8 +192,8 @@ func TestWrongUserRightPassword(t *testing.T) {
 }
 
 func TestDefaultConfigNoArgs(t *testing.T) {
-	if DefaultConfig.Realm != "Restricted" {
-		t.Fatalf("default Realm: got %q, want %q", DefaultConfig.Realm, "Restricted")
+	if DefaultConfig().Realm != "Restricted" {
+		t.Fatalf("default Realm: got %q, want %q", DefaultConfig().Realm, "Restricted")
 	}
 }
 
@@ -496,14 +497,14 @@ func FuzzBasicAuthHeader(f *testing.F) {
 	f.Add("")
 	f.Add("Basic ")
 	f.Add("basic YWRtaW46c2VjcmV0")
+	mw := New(Config{
+		Validator: func(u, p string) bool { return u == "admin" && p == "secret" },
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
 	f.Fuzz(func(t *testing.T, header string) {
-		mw := New(Config{
-			Validator: func(u, p string) bool { return u == "admin" && p == "secret" },
-		})
-		handler := func(c *celeris.Context) error {
-			return c.String(200, "ok")
-		}
-		chain := []celeris.HandlerFunc{mw, handler}
 		opts := []celeristest.Option{}
 		if header != "" {
 			opts = append(opts, celeristest.WithHeader("authorization", header))
@@ -1211,6 +1212,41 @@ func TestParseBasicAuthControlChar(t *testing.T) {
 	_, _, result := parseBasicAuth("Basic YWRtaW4JOnBhc3N3b3Jk")
 	if result != authMalformed {
 		t.Fatalf("expected authMalformed, got %d", result)
+	}
+}
+
+func TestParseBasicAuthCaseInsensitiveScheme(t *testing.T) {
+	cases := []string{
+		"basic YWRtaW46c2VjcmV0",
+		"BASIC YWRtaW46c2VjcmV0",
+		"bAsIc YWRtaW46c2VjcmV0",
+	}
+	for _, auth := range cases {
+		user, pass, result := parseBasicAuth(auth)
+		if result != authOK {
+			t.Fatalf("parseBasicAuth(%q): expected authOK, got %d", auth, result)
+		}
+		if user != "admin" || pass != "secret" {
+			t.Fatalf("parseBasicAuth(%q): got %q:%q, want admin:secret", auth, user, pass)
+		}
+	}
+}
+
+func TestParseBasicAuthLargeCredentials(t *testing.T) {
+	// 128-byte decoded credentials were rejected by the old [128]byte buffer
+	// because base64.StdEncoding.DecodedLen overestimates. The new [192]byte
+	// buffer handles up to 192 decoded bytes (256 base64 chars).
+	user := strings.Repeat("u", 60)
+	pass := strings.Repeat("p", 67)
+	// user(60) + ":" + pass(67) = 128 bytes decoded
+	creds := user + ":" + pass
+	encoded := base64.StdEncoding.EncodeToString([]byte(creds))
+	gotUser, gotPass, result := parseBasicAuth("Basic " + encoded)
+	if result != authOK {
+		t.Fatalf("128-byte creds: expected authOK, got %d", result)
+	}
+	if gotUser != user || gotPass != pass {
+		t.Fatalf("128-byte creds: got %q:%q, want %q:%q", gotUser, gotPass, user, pass)
 	}
 }
 
