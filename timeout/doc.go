@@ -68,9 +68,31 @@
 // In preemptive mode, the done-signal channels are pooled via sync.Pool
 // to avoid allocating a new channel per request.
 //
-// [ErrServiceUnavailable] is the exported sentinel error (503) returned
-// on timeout, usable with errors.Is for error handling in upstream
-// middleware.
+// # Error Handling
+//
+// [ErrServiceUnavailable] is the exported sentinel error (*celeris.HTTPError
+// with code 503) returned when a request times out and no custom error
+// handler is configured. Upstream middleware can match it with errors.Is:
+//
+//	var he *celeris.HTTPError
+//	if errors.As(err, &he) && he.Code == 503 { ... }
+//
+// To customize the timeout response, set [Config].ErrorHandler. To inspect
+// the failure reason (deadline exceeded, matched TimeoutErrors entry, or
+// recovered panic), set [Config].ErrorHandlerWithError instead — it takes
+// precedence over ErrorHandler when both are set:
+//
+//	server.Use(timeout.New(timeout.Config{
+//	    Timeout: 5 * time.Second,
+//	    ErrorHandlerWithError: func(c *celeris.Context, err error) error {
+//	        log.Printf("timeout cause: %v", err)
+//	        return c.JSON(503, map[string]string{"error": "timed out"})
+//	    },
+//	}))
+//
+// If the error handler itself panics, the middleware recovers and returns
+// [ErrServiceUnavailable] as a last-resort fallback.
+//
 // # Skipping
 //
 // Set [Config].Skip to bypass the middleware dynamically, or

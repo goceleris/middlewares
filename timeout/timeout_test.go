@@ -282,6 +282,38 @@ func TestPreemptiveSkipBypass(t *testing.T) {
 	testutil.AssertBodyContains(t, rec, "skipped")
 }
 
+func TestPreemptiveSkipPathsBypass(t *testing.T) {
+	mw := New(Config{
+		Timeout:    10 * time.Millisecond,
+		Preemptive: true,
+		SkipPaths:  []string{"/health", "/ready"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "alive")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// Skipped path bypasses timeout entirely (no buffering, no goroutine).
+	rec, err := testutil.RunChain(t, chain, "GET", "/health")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertBodyContains(t, rec, "alive")
+
+	rec, err = testutil.RunChain(t, chain, "GET", "/ready")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+
+	// Non-skipped path with slow handler should timeout.
+	slowHandler := func(c *celeris.Context) error {
+		<-c.Context().Done()
+		return c.Context().Err()
+	}
+	c, _ := celeristest.NewContext("GET", "/api/slow", celeristest.WithHandlers(mw, slowHandler))
+	err = c.Next()
+	celeristest.ReleaseContext(c)
+	testutil.AssertHTTPError(t, err, 503)
+}
+
 func TestPreemptiveContextCancelled(t *testing.T) {
 	mw := New(Config{Timeout: 10 * time.Millisecond, Preemptive: true})
 	var ctxDone bool
@@ -726,6 +758,174 @@ func TestPreemptiveErrorHandlerReturnsError(t *testing.T) {
 	if !errors.Is(err, errCustom) {
 		t.Fatalf("expected errHandler error, got: %v", err)
 	}
+}
+
+// --- ErrorHandlerWithError tests ---
+
+func TestErrorHandlerWithErrorReceivesDeadlineExceeded(t *testing.T) {
+	var received error
+	mw := New(Config{
+		Timeout: 1 * time.Millisecond,
+		ErrorHandlerWithError: func(_ *celeris.Context, err error) error {
+			received = err
+			return celeris.NewHTTPError(504, "custom timeout")
+		},
+	})
+	handler := func(_ *celeris.Context) error {
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/deadline-err")
+	testutil.AssertHTTPError(t, err, 504)
+	if !errors.Is(received, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got: %v", received)
+	}
+}
+
+func TestErrorHandlerWithErrorReceivesTimeoutError(t *testing.T) {
+	var received error
+	mw := New(Config{
+		Timeout:       1 * time.Second,
+		TimeoutErrors: []error{errDBTimeout},
+		ErrorHandlerWithError: func(_ *celeris.Context, err error) error {
+			received = err
+			return celeris.NewHTTPError(504, "db timeout")
+		},
+	})
+	handler := func(_ *celeris.Context) error {
+		return fmt.Errorf("query failed: %w", errDBTimeout)
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/te-err")
+	testutil.AssertHTTPError(t, err, 504)
+	if !errors.Is(received, errDBTimeout) {
+		t.Fatalf("expected errDBTimeout, got: %v", received)
+	}
+}
+
+func TestErrorHandlerWithErrorPreemptiveDeadline(t *testing.T) {
+	var received error
+	mw := New(Config{
+		Timeout:    10 * time.Millisecond,
+		Preemptive: true,
+		ErrorHandlerWithError: func(_ *celeris.Context, err error) error {
+			received = err
+			return celeris.NewHTTPError(504, "preemptive timeout")
+		},
+	})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	handler := func(c *celeris.Context) error {
+		defer wg.Done()
+		<-c.Context().Done()
+		return c.Context().Err()
+	}
+	c, _ := celeristest.NewContext("GET", "/pre-deadline", celeristest.WithHandlers(mw, handler))
+	err := c.Next()
+	wg.Wait()
+	celeristest.ReleaseContext(c)
+	testutil.AssertHTTPError(t, err, 504)
+	if !errors.Is(received, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got: %v", received)
+	}
+}
+
+func TestErrorHandlerWithErrorPreemptiveTimeoutError(t *testing.T) {
+	var received error
+	mw := New(Config{
+		Timeout:       1 * time.Second,
+		Preemptive:    true,
+		TimeoutErrors: []error{errDBTimeout},
+		ErrorHandlerWithError: func(_ *celeris.Context, err error) error {
+			received = err
+			return celeris.NewHTTPError(504, "preemptive db timeout")
+		},
+	})
+	handler := func(_ *celeris.Context) error {
+		return errDBTimeout
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/pre-te-err")
+	testutil.AssertHTTPError(t, err, 504)
+	if !errors.Is(received, errDBTimeout) {
+		t.Fatalf("expected errDBTimeout, got: %v", received)
+	}
+}
+
+func TestErrorHandlerWithErrorTakesPrecedence(t *testing.T) {
+	mw := New(Config{
+		Timeout: 1 * time.Millisecond,
+		ErrorHandler: func(_ *celeris.Context) error {
+			return celeris.NewHTTPError(504, "old handler")
+		},
+		ErrorHandlerWithError: func(_ *celeris.Context, _ error) error {
+			return celeris.NewHTTPError(502, "new handler")
+		},
+	})
+	handler := func(_ *celeris.Context) error {
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/precedence")
+	testutil.AssertHTTPError(t, err, 502)
+}
+
+// --- ErrorHandler panic recovery tests ---
+
+func TestErrorHandlerPanicReturns503(t *testing.T) {
+	mw := New(Config{
+		Timeout: 1 * time.Millisecond,
+		ErrorHandler: func(_ *celeris.Context) error {
+			panic("error handler exploded")
+		},
+	})
+	handler := func(_ *celeris.Context) error {
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/panic-handler")
+	testutil.AssertHTTPError(t, err, 503)
+}
+
+func TestErrorHandlerWithErrorPanicReturns503(t *testing.T) {
+	mw := New(Config{
+		Timeout: 1 * time.Millisecond,
+		ErrorHandlerWithError: func(_ *celeris.Context, _ error) error {
+			panic("error handler with error exploded")
+		},
+	})
+	handler := func(_ *celeris.Context) error {
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/panic-handler-err")
+	testutil.AssertHTTPError(t, err, 503)
+}
+
+func TestPreemptiveErrorHandlerPanicReturns503(t *testing.T) {
+	mw := New(Config{
+		Timeout:    10 * time.Millisecond,
+		Preemptive: true,
+		ErrorHandler: func(_ *celeris.Context) error {
+			panic("preemptive error handler exploded")
+		},
+	})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	handler := func(c *celeris.Context) error {
+		defer wg.Done()
+		<-c.Context().Done()
+		return c.Context().Err()
+	}
+	c, _ := celeristest.NewContext("GET", "/pre-panic", celeristest.WithHandlers(mw, handler))
+	err := c.Next()
+	wg.Wait()
+	celeristest.ReleaseContext(c)
+	testutil.AssertHTTPError(t, err, 503)
 }
 
 func FuzzTimeoutDurations(f *testing.F) {

@@ -25,7 +25,15 @@ type Config struct {
 	TimeoutFunc func(c *celeris.Context) time.Duration
 
 	// ErrorHandler handles timeout errors. Default: 503 Service Unavailable.
+	// If ErrorHandlerWithError is also set, it takes precedence.
 	ErrorHandler func(c *celeris.Context) error
+
+	// ErrorHandlerWithError is like ErrorHandler but receives the error that
+	// triggered the timeout response. The err parameter is
+	// context.DeadlineExceeded for a deadline timeout, the matched
+	// TimeoutErrors entry for a semantic timeout, or a panic-wrapped error
+	// for a recovered panic. When set, it takes precedence over ErrorHandler.
+	ErrorHandlerWithError func(c *celeris.Context, err error) error
 
 	// SkipPaths lists paths to skip (exact match).
 	SkipPaths []string
@@ -70,7 +78,7 @@ func applyDefaults(cfg Config) Config {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = defaultConfig.Timeout
 	}
-	if cfg.ErrorHandler == nil {
+	if cfg.ErrorHandler == nil && cfg.ErrorHandlerWithError == nil {
 		cfg.ErrorHandler = defaultErrorHandler
 	}
 	return cfg
