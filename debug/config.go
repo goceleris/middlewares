@@ -33,8 +33,8 @@ type Config struct {
 
 	// Endpoints selectively enables or disables individual debug endpoints.
 	// Keys are endpoint names: "status", "metrics", "config", "routes",
-	// "memory", "build". A true value enables the endpoint; false disables it.
-	// When nil (default), all endpoints are enabled.
+	// "memory", "build", "runtime". A true value enables the endpoint;
+	// false disables it. When nil (default), all endpoints are enabled.
 	Endpoints map[string]bool
 
 	// MemStatsTTL controls how long the /memory endpoint caches
@@ -77,6 +77,11 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.MemStatsTTL <= 0 {
 		cfg.MemStatsTTL = time.Second
+	}
+	// Floor: ReadMemStats triggers a stop-the-world pause; allowing sub-100ms
+	// TTLs under load would cause back-to-back STW storms.
+	if cfg.MemStatsTTL > 0 && cfg.MemStatsTTL < 100*time.Millisecond {
+		cfg.MemStatsTTL = 100 * time.Millisecond
 	}
 	return cfg
 }

@@ -375,6 +375,25 @@ func TestSkipBypassesDebug(t *testing.T) {
 	testutil.AssertBodyContains(t, rec, "ok")
 }
 
+func TestSkipNotCalledForNonDebugPaths(t *testing.T) {
+	called := false
+	mw := New(Config{
+		AuthFunc: openAuth(),
+		Skip: func(_ *celeris.Context) bool {
+			called = true
+			return false
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/api/users")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertBodyContains(t, rec, "ok")
+	if called {
+		t.Fatal("Skip should not be called for non-debug paths")
+	}
+}
+
 func TestEndpointsFilterDisable(t *testing.T) {
 	mw := New(Config{
 		AuthFunc: openAuth(),
@@ -627,6 +646,23 @@ func TestNegativeMemStatsTTLUsesDefault(t *testing.T) {
 	cfg := applyDefaults(Config{Prefix: "/debug", MemStatsTTL: -1 * time.Second})
 	if cfg.MemStatsTTL != time.Second {
 		t.Fatalf("negative MemStatsTTL should use default: got %v, want 1s", cfg.MemStatsTTL)
+	}
+}
+
+func TestMemStatsTTLFloor(t *testing.T) {
+	cfg := applyDefaults(Config{Prefix: "/debug", MemStatsTTL: time.Millisecond})
+	if cfg.MemStatsTTL != 100*time.Millisecond {
+		t.Fatalf("MemStatsTTL below floor should be clamped to 100ms: got %v", cfg.MemStatsTTL)
+	}
+	// Exactly at the floor should remain unchanged.
+	cfg = applyDefaults(Config{Prefix: "/debug", MemStatsTTL: 100 * time.Millisecond})
+	if cfg.MemStatsTTL != 100*time.Millisecond {
+		t.Fatalf("MemStatsTTL at floor should stay 100ms: got %v", cfg.MemStatsTTL)
+	}
+	// Above the floor should remain unchanged.
+	cfg = applyDefaults(Config{Prefix: "/debug", MemStatsTTL: 500 * time.Millisecond})
+	if cfg.MemStatsTTL != 500*time.Millisecond {
+		t.Fatalf("MemStatsTTL above floor should stay 500ms: got %v", cfg.MemStatsTTL)
 	}
 }
 

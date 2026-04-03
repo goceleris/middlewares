@@ -16,20 +16,21 @@
 //
 // Endpoints:
 //
-//   - {prefix}/        -- index: returns a JSON array of available endpoint paths
-//   - {prefix}/status  -- uptime and Go version
-//   - {prefix}/metrics -- observe.Snapshot as JSON
-//   - {prefix}/config  -- runtime info (OS, arch, CPUs, goroutines)
-//   - {prefix}/routes  -- registered routes from Server.Routes()
-//   - {prefix}/memory  -- heap, GC, and allocation statistics
-//   - {prefix}/build   -- module path, Go version, and VCS info
+//   - {prefix}/         -- index: returns a JSON array of available endpoint paths
+//   - {prefix}/status   -- uptime and Go version
+//   - {prefix}/metrics  -- observe.Snapshot as JSON
+//   - {prefix}/config   -- runtime info (OS, arch, CPUs, goroutines)
+//   - {prefix}/routes   -- registered routes from Server.Routes()
+//   - {prefix}/memory   -- heap, GC, and allocation statistics
+//   - {prefix}/build    -- module path, Go version, and VCS info
+//   - {prefix}/runtime  -- goroutine count, NumCPU, and GOMAXPROCS
 //
 // # Selective Endpoints
 //
 // [Config].Endpoints selectively enables or disables individual endpoints.
 // Keys are endpoint names ("status", "metrics", "config", "routes", "memory",
-// "build"). A true value enables the endpoint; false disables it (404).
-// When nil (default), all endpoints are enabled. The index endpoint
+// "build", "runtime"). A true value enables the endpoint; false disables it
+// (404). When nil (default), all endpoints are enabled. The index endpoint
 // reflects only the enabled endpoints.
 //
 //	server.Use(debug.New(debug.Config{
@@ -48,8 +49,17 @@
 // to attackers for fingerprinting and exploit development.
 //
 // By default, the middleware restricts access to loopback addresses
-// (127.0.0.1 and ::1). In production deployments, always set AuthFunc
-// to enforce authentication appropriate for your environment:
+// (127.0.0.1 and ::1) using the TCP peer address from [celeris.Context.RemoteAddr].
+// This check uses the raw connection source address and does NOT consult
+// X-Forwarded-For or similar headers. Behind a reverse proxy, all requests
+// appear to originate from the proxy's address, so the default AuthFunc
+// will either allow all traffic (if the proxy is on localhost) or block
+// all traffic (if it is not). When deploying behind a proxy, always set
+// AuthFunc to a scheme that does not rely on RemoteAddr — for example, a
+// shared secret header or bearer token.
+//
+// In production deployments, always set AuthFunc to enforce authentication
+// appropriate for your environment:
 //
 //	server.Use(debug.New(debug.Config{
 //	    Server: server,
@@ -72,8 +82,10 @@
 // # Skipping
 //
 // Use [Config].Skip to dynamically bypass the debug middleware for
-// certain requests. When Skip returns true, the request is passed
-// directly to the next handler without prefix matching or auth checks.
+// certain requests. Skip is only consulted for requests whose path
+// matches the debug prefix; non-debug requests are passed through
+// without calling Skip. When Skip returns true, the request is passed
+// directly to the next handler without auth checks.
 //
 // # Graceful Degradation
 //
