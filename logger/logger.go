@@ -44,6 +44,9 @@ func New(config ...Config) celeris.HandlerFunc {
 	}
 
 	handler := cfg.Output.Handler()
+	if cfg.DisableColors {
+		disableHandlerColors(handler)
+	}
 	levelFn := cfg.Level
 	fieldsFn := cfg.Fields
 	doneFn := cfg.Done
@@ -261,6 +264,16 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 
 		return err
+	}
+}
+
+// disableHandlerColors sets color=false on FastHandler or groupHandler.
+func disableHandlerColors(h slog.Handler) {
+	switch v := h.(type) {
+	case *FastHandler:
+		v.color = false
+	case *groupHandler:
+		v.color = false
 	}
 }
 

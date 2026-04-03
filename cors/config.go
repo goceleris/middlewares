@@ -130,15 +130,30 @@ func (cfg Config) redactOrigin(origin string) string {
 }
 
 // wildcardPattern represents a parsed wildcard origin like "https://*.example.com".
+// maxSubdomainDepth limits how many additional dot-separated labels the wildcard
+// portion may contain. A depth of 1 (the default) means "*.example.com" matches
+// "sub.example.com" but NOT "a.b.example.com". Set to 0 for unlimited depth.
 type wildcardPattern struct {
-	prefix string
-	suffix string
+	prefix            string
+	suffix            string
+	maxSubdomainDepth int
 }
 
 func (w wildcardPattern) match(origin string) bool {
-	return len(origin) >= len(w.prefix)+len(w.suffix)+1 &&
-		strings.HasPrefix(origin, w.prefix) &&
-		strings.HasSuffix(origin, w.suffix)
+	if len(origin) < len(w.prefix)+len(w.suffix)+1 {
+		return false
+	}
+	if !strings.HasPrefix(origin, w.prefix) || !strings.HasSuffix(origin, w.suffix) {
+		return false
+	}
+	if w.maxSubdomainDepth > 0 {
+		middle := origin[len(w.prefix) : len(origin)-len(w.suffix)]
+		dots := strings.Count(middle, ".")
+		if dots >= w.maxSubdomainDepth {
+			return false
+		}
+	}
+	return true
 }
 
 // precomputed holds pre-joined header values for zero-alloc responses.
@@ -205,8 +220,9 @@ func precompute(cfg Config) precomputed {
 				norm := normalizeOrigin(o)
 				idx := strings.Index(norm, "*")
 				p.wildcardPatterns = append(p.wildcardPatterns, wildcardPattern{
-					prefix: norm[:idx],
-					suffix: norm[idx+1:],
+					prefix:            norm[:idx],
+					suffix:            norm[idx+1:],
+					maxSubdomainDepth: 1,
 				})
 			} else {
 				p.originSet[normalizeOrigin(o)] = struct{}{}
