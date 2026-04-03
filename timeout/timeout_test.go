@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -80,20 +81,29 @@ func TestCustomTimeoutDuration(t *testing.T) {
 }
 
 func TestDefaultConfigValues(t *testing.T) {
-	if DefaultConfig.Timeout != 5*time.Second {
-		t.Fatalf("default timeout: got %v, want 5s", DefaultConfig.Timeout)
+	cfg := DefaultConfig()
+	if cfg.Timeout != 5*time.Second {
+		t.Fatalf("default timeout: got %v, want 5s", cfg.Timeout)
 	}
 }
 
 func TestApplyDefaultsFixesZeroTimeout(t *testing.T) {
-	cfg := applyDefaults(Config{Timeout: 0})
+	// With TimeoutFunc set, applyDefaults should fix zero Timeout to 5s.
+	cfg := applyDefaults(Config{
+		Timeout:     0,
+		TimeoutFunc: func(_ *celeris.Context) time.Duration { return time.Second },
+	})
 	if cfg.Timeout != 5*time.Second {
 		t.Fatalf("expected 5s, got %v", cfg.Timeout)
 	}
 }
 
 func TestApplyDefaultsFixesNegativeTimeout(t *testing.T) {
-	cfg := applyDefaults(Config{Timeout: -1 * time.Second})
+	// With TimeoutFunc set, applyDefaults should fix negative Timeout to 5s.
+	cfg := applyDefaults(Config{
+		Timeout:     -1 * time.Second,
+		TimeoutFunc: func(_ *celeris.Context) time.Duration { return time.Second },
+	})
 	if cfg.Timeout != 5*time.Second {
 		t.Fatalf("expected 5s, got %v", cfg.Timeout)
 	}
@@ -131,6 +141,26 @@ func TestContextCancelCalled(t *testing.T) {
 		// context was cancelled
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("expected context to be cancelled after middleware returns")
+	}
+}
+
+func TestCooperativeContextRestored(t *testing.T) {
+	mw := New(Config{Timeout: 1 * time.Second})
+	var origCtx, afterCtx context.Context
+	outer := func(c *celeris.Context) error {
+		origCtx = c.Context()
+		err := c.Next()
+		afterCtx = c.Context()
+		return err
+	}
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{outer, mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/restore")
+	testutil.AssertNoError(t, err)
+	if origCtx != afterCtx {
+		t.Fatal("expected cooperative mode to restore the original context")
 	}
 }
 
@@ -285,6 +315,15 @@ func TestPreemptivePanicRecovery(t *testing.T) {
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, err := testutil.RunChain(t, chain, "GET", "/panic")
 	testutil.AssertHTTPError(t, err, 500)
+
+	// Verify the panic value is included in the error message.
+	var he *celeris.HTTPError
+	if !errors.As(err, &he) {
+		t.Fatal("expected *HTTPError")
+	}
+	if !strings.Contains(he.Message, "handler panic in goroutine") {
+		t.Fatalf("expected panic value in message, got: %s", he.Message)
+	}
 }
 
 func TestPreemptiveRaceDetector(t *testing.T) {
@@ -609,7 +648,7 @@ func TestTimeoutErrorsPreemptiveWrapped(t *testing.T) {
 	testutil.AssertHTTPError(t, err, 503)
 }
 
-func TestValidateTimeoutMustBePositiveOrTimeoutFuncSet(t *testing.T) {
+func TestValidatePanicsOnZeroTimeoutWithoutTimeoutFunc(t *testing.T) {
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -620,21 +659,52 @@ func TestValidateTimeoutMustBePositiveOrTimeoutFuncSet(t *testing.T) {
 			t.Fatalf("unexpected panic message: %v", r)
 		}
 	}()
-	// Both applyDefaults and validate run. applyDefaults sets Timeout to 5s
-	// for zero/negative, so we must defeat that. But actually, applyDefaults
-	// runs first and fixes Timeout to 5s, so this won't panic via New().
-	// We call validate() directly to test the guard.
-	cfg := Config{Timeout: 0}
-	cfg.validate()
+	// applyDefaults now contains the validation check, so calling it with
+	// zero Timeout and no TimeoutFunc panics immediately.
+	applyDefaults(Config{Timeout: 0})
+}
+
+func TestValidateNewPanicsOnZeroTimeoutWithoutTimeoutFunc(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic from New() for zero Timeout without TimeoutFunc")
+		}
+	}()
+	New(Config{Timeout: 0, TimeoutFunc: nil})
 }
 
 func TestValidateTimeoutFuncSetBypassesPanic(t *testing.T) {
 	// Should NOT panic: TimeoutFunc is set even though Timeout <= 0.
-	cfg := Config{
+	applyDefaults(Config{
 		Timeout:     0,
 		TimeoutFunc: func(_ *celeris.Context) time.Duration { return time.Second },
+	})
+}
+
+func TestPreemptiveErrorHandlerReturnsError(t *testing.T) {
+	errCustom := errors.New("errHandler failed")
+	mw := New(Config{
+		Timeout:    10 * time.Millisecond,
+		Preemptive: true,
+		ErrorHandler: func(_ *celeris.Context) error {
+			return errCustom
+		},
+	})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	handler := func(c *celeris.Context) error {
+		defer wg.Done()
+		<-c.Context().Done()
+		return c.Context().Err()
 	}
-	cfg.validate()
+	c, _ := celeristest.NewContext("GET", "/err-handler", celeristest.WithHandlers(mw, handler))
+	err := c.Next()
+	wg.Wait()
+	celeristest.ReleaseContext(c)
+	if !errors.Is(err, errCustom) {
+		t.Fatalf("expected errHandler error, got: %v", err)
+	}
 }
 
 func FuzzTimeoutDurations(f *testing.F) {
@@ -644,7 +714,11 @@ func FuzzTimeoutDurations(f *testing.F) {
 	f.Add(int64(5000000000)) // 5s
 	f.Add(int64(9223372036854775807))
 	f.Fuzz(func(t *testing.T, ns int64) {
-		mw := New(Config{Timeout: time.Duration(ns)})
+		d := time.Duration(ns)
+		if d <= 0 {
+			d = time.Second
+		}
+		mw := New(Config{Timeout: d})
 		handler := func(c *celeris.Context) error {
 			return c.String(200, "ok")
 		}

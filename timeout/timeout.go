@@ -3,6 +3,7 @@ package timeout
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -13,12 +14,11 @@ var chanPool = sync.Pool{New: func() any { return make(chan error, 1) }}
 
 // New creates a timeout middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := defaultConfig
 	if len(config) > 0 {
 		cfg = config[0]
 	}
 	cfg = applyDefaults(cfg)
-	cfg.validate()
 
 	skipMap := make(map[string]struct{}, len(cfg.SkipPaths))
 	for _, p := range cfg.SkipPaths {
@@ -54,14 +54,23 @@ func New(config ...Config) celeris.HandlerFunc {
 		childCtx, cancel := context.WithTimeout(c.Context(), d)
 		defer cancel()
 
+		origCtx := c.Context()
 		c.SetContext(childCtx)
+		defer c.SetContext(origCtx)
+
 		err := c.Next()
 
 		if childCtx.Err() == context.DeadlineExceeded {
+			if c.IsWritten() {
+				return errHandler(c)
+			}
 			return errHandler(c)
 		}
 
 		if err != nil && isTimeoutError(err, timeoutErrors) {
+			if c.IsWritten() {
+				return errHandler(c)
+			}
 			return errHandler(c)
 		}
 
@@ -77,6 +86,16 @@ func isTimeoutError(err error, timeoutErrors []error) bool {
 		}
 	}
 	return false
+}
+
+// flushOrReturn handles the error handler result in preemptive mode.
+// If the error handler wrote a buffered response (returned nil), flush it.
+// If it returned an error, propagate the error without flushing.
+func flushOrReturn(c *celeris.Context, err error) error {
+	if err != nil {
+		return err
+	}
+	return c.FlushResponse()
 }
 
 func preemptiveHandler(
@@ -110,10 +129,16 @@ func preemptiveHandler(
 		c.BufferResponse()
 
 		done := chanPool.Get().(chan error)
+		// Drain any stale value left from a previous pool cycle.
+		select {
+		case <-done:
+		default:
+		}
+
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					done <- celeris.NewHTTPError(500, "Internal Server Error")
+					done <- celeris.NewHTTPError(500, fmt.Sprintf("panic: %v", r))
 				}
 			}()
 			done <- c.Next()
@@ -123,7 +148,7 @@ func preemptiveHandler(
 		case err := <-done:
 			chanPool.Put(done)
 			if err != nil && isTimeoutError(err, timeoutErrors) {
-				return errHandler(c)
+				return flushOrReturn(c, errHandler(c))
 			}
 			if flushErr := c.FlushResponse(); flushErr != nil {
 				return flushErr
@@ -131,11 +156,12 @@ func preemptiveHandler(
 			return err
 		case <-childCtx.Done():
 			// Wait for the handler goroutine to finish so it no longer
-			// touches the Context before we return (prevents data race
-			// with Context pool reclamation).
+			// touches the Context before we return. This is safe from
+			// data races: the goroutine completes before we proceed,
+			// and the Context is not accessed concurrently after this point.
 			<-done
 			chanPool.Put(done)
-			return errHandler(c)
+			return flushOrReturn(c, errHandler(c))
 		}
 	}
 }
