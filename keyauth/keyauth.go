@@ -24,7 +24,19 @@ func New(config ...Config) celeris.HandlerFunc {
 		skipMap[p] = struct{}{}
 	}
 
-	extract := parseKeyLookup(cfg.KeyLookup)
+	baseExtract := parseKeyLookup(cfg.KeyLookup)
+	var extract extractor
+	if cfg.CustomExtractor != nil {
+		custom := cfg.CustomExtractor
+		extract = func(c *celeris.Context) string {
+			if v := baseExtract(c); v != "" {
+				return v
+			}
+			return custom(c)
+		}
+	} else {
+		extract = baseExtract
+	}
 	validator := cfg.Validator
 	successHandler := cfg.SuccessHandler
 	errorHandler := cfg.ErrorHandler

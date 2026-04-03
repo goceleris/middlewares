@@ -1063,25 +1063,13 @@ func TestContinueOnIgnoredErrorValidKeyStillWorks(t *testing.T) {
 
 // --- Issue #6: Realm/Scope/Description escaping ---
 
-func TestWWWAuthenticateEscapesQuotesInScope(t *testing.T) {
+func TestWWWAuthenticateScopeValidTokens(t *testing.T) {
 	got := wwwAuthenticateValue(Config{
 		Realm:          "API",
 		AuthScheme:     "Bearer",
-		ChallengeScope: `read "write"`,
+		ChallengeScope: "read write",
 	})
-	expected := `Bearer realm="API", scope="read \"write\""`
-	if got != expected {
-		t.Fatalf("wwwAuthenticateValue:\n  got  %q\n  want %q", got, expected)
-	}
-}
-
-func TestWWWAuthenticateEscapesBackslashInScope(t *testing.T) {
-	got := wwwAuthenticateValue(Config{
-		Realm:          "API",
-		AuthScheme:     "Bearer",
-		ChallengeScope: `read\write`,
-	})
-	expected := `Bearer realm="API", scope="read\\write"`
+	expected := `Bearer realm="API", scope="read write"`
 	if got != expected {
 		t.Fatalf("wwwAuthenticateValue:\n  got  %q\n  want %q", got, expected)
 	}
@@ -1241,6 +1229,155 @@ func TestDefaultConfigReturnsCopy(t *testing.T) {
 	if c2.KeyLookup != "header:X-API-Key" {
 		t.Fatalf("DefaultConfig() returned shared state: got %q", c2.KeyLookup)
 	}
+}
+
+// --- CustomExtractor tests ---
+
+func TestCustomExtractorFallback(t *testing.T) {
+	mw := New(Config{
+		KeyLookup: "header:X-API-Key",
+		Validator: validatorFor("custom-key"),
+		CustomExtractor: func(c *celeris.Context) string {
+			return c.Header("x-custom-key")
+		},
+	})
+	var storedKey string
+	handler := func(c *celeris.Context) error {
+		storedKey = KeyFromContext(c)
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// KeyLookup finds nothing; CustomExtractor provides the key.
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-custom-key", "custom-key"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	if storedKey != "custom-key" {
+		t.Fatalf("key from custom extractor: got %q, want %q", storedKey, "custom-key")
+	}
+}
+
+func TestCustomExtractorKeyLookupTakesPrecedence(t *testing.T) {
+	mw := New(Config{
+		KeyLookup: "header:X-API-Key",
+		Validator: validatorFor("primary-key"),
+		CustomExtractor: func(_ *celeris.Context) string {
+			return "fallback-key"
+		},
+	})
+	var storedKey string
+	handler := func(c *celeris.Context) error {
+		storedKey = KeyFromContext(c)
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// KeyLookup finds the key; CustomExtractor should NOT be used.
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-api-key", "primary-key"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	if storedKey != "primary-key" {
+		t.Fatalf("key should come from KeyLookup: got %q, want %q", storedKey, "primary-key")
+	}
+}
+
+func TestCustomExtractorBothEmpty(t *testing.T) {
+	mw := New(Config{
+		Validator: validatorFor("any"),
+		CustomExtractor: func(_ *celeris.Context) string {
+			return ""
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// Neither KeyLookup nor CustomExtractor returns a key.
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertHTTPError(t, err, 401)
+	if !errors.Is(err, ErrMissingKey) {
+		t.Fatalf("expected ErrMissingKey, got %v", err)
+	}
+}
+
+func TestCustomExtractorNilIsIgnored(t *testing.T) {
+	// CustomExtractor nil should not cause issues.
+	mw := New(Config{
+		Validator:       validatorFor("test-key"),
+		CustomExtractor: nil,
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-api-key", "test-key"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+// --- ChallengeScope NQCHAR validation tests ---
+
+func TestChallengeScopeValidNQCHAR(t *testing.T) {
+	// Should not panic: valid NQCHAR tokens.
+	New(Config{
+		Validator:      validatorFor("x"),
+		ChallengeScope: "read write admin",
+	})
+}
+
+func TestChallengeScopeWithQuotePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for ChallengeScope with double-quote")
+		}
+	}()
+	New(Config{
+		Validator:      validatorFor("x"),
+		ChallengeScope: `read "write"`,
+	})
+}
+
+func TestChallengeScopeWithBackslashPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for ChallengeScope with backslash")
+		}
+	}()
+	New(Config{
+		Validator:      validatorFor("x"),
+		ChallengeScope: `read\write`,
+	})
+}
+
+func TestChallengeScopeWithControlCharPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for ChallengeScope with control char")
+		}
+	}()
+	New(Config{
+		Validator:      validatorFor("x"),
+		ChallengeScope: "read\x00write",
+	})
+}
+
+func TestChallengeScopeWithSpacePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for ChallengeScope with double space (empty token)")
+		}
+	}()
+	New(Config{
+		Validator:      validatorFor("x"),
+		ChallengeScope: "read  write",
+	})
 }
 
 func FuzzKeyAuthHeader(f *testing.F) {
