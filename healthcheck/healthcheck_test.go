@@ -247,6 +247,13 @@ func TestExportedPathConstants(t *testing.T) {
 	}
 }
 
+func TestFastPathTimeoutConstant(t *testing.T) {
+	t.Parallel()
+	if FastPathTimeout != -1*time.Second {
+		t.Fatalf("FastPathTimeout: got %v, want -1s", FastPathTimeout)
+	}
+}
+
 func FuzzHealthcheckPaths(f *testing.F) {
 	f.Add("/livez")
 	f.Add("/readyz")
@@ -439,7 +446,7 @@ func TestFastPathNoTimeout(t *testing.T) {
 		LivePath:       "/livez",
 		ReadyPath:      "/readyz",
 		StartPath:      "/startupz",
-		CheckerTimeout: -1, // negative = fast-path, no goroutine
+		CheckerTimeout: FastPathTimeout, // negative = fast-path, no goroutine
 		LiveChecker: func(_ *celeris.Context) bool {
 			called = true
 			return true
@@ -467,7 +474,7 @@ func TestFastPathReturnsFalse(t *testing.T) {
 		LivePath:       "/livez",
 		ReadyPath:      "/readyz",
 		StartPath:      "/startupz",
-		CheckerTimeout: -1,
+		CheckerTimeout: FastPathTimeout,
 		ReadyChecker: func(_ *celeris.Context) bool {
 			return false
 		},
@@ -491,7 +498,7 @@ func TestFastPathAllProbes(t *testing.T) {
 		LivePath:       "/livez",
 		ReadyPath:      "/readyz",
 		StartPath:      "/startupz",
-		CheckerTimeout: -1,
+		CheckerTimeout: FastPathTimeout,
 		LiveChecker:    func(_ *celeris.Context) bool { return true },
 		ReadyChecker:   func(_ *celeris.Context) bool { return false },
 		StartChecker:   func(_ *celeris.Context) bool { return true },
@@ -745,7 +752,7 @@ func TestCheckerPanicFastPathReturns503(t *testing.T) {
 		LivePath:       "/livez",
 		ReadyPath:      "/readyz",
 		StartPath:      "/startupz",
-		CheckerTimeout: -1,
+		CheckerTimeout: FastPathTimeout,
 		LiveChecker: func(_ *celeris.Context) bool {
 			panic("boom in fast-path")
 		},

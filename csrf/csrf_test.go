@@ -28,8 +28,8 @@ func TestSafeMethodGeneratesToken(t *testing.T) {
 	if token == "" {
 		t.Fatal("expected non-empty CSRF token in context")
 	}
-	if len(token) != 64 { // 32 bytes hex-encoded = 64 chars
-		t.Fatalf("token length: got %d, want 64", len(token))
+	if len(token) != 128 { // 32 bytes masked: hex(mask) + hex(masked) = 128 chars
+		t.Fatalf("token length: got %d, want 128", len(token))
 	}
 }
 
@@ -71,19 +71,21 @@ func TestSafeMethodReusesExistingCookie(t *testing.T) {
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
-	if token != existing {
-		t.Fatalf("expected reused token %q, got %q", existing, token)
+	// Token in context is masked, so it differs from the raw cookie.
+	// Unmasking should recover the original token.
+	if unmaskToken(token, 32) != existing {
+		t.Fatalf("unmasked token %q does not match original %q", unmaskToken(token, 32), existing)
 	}
-	// Cookie should be re-set with the same value.
+	// Cookie should be re-set with a masked (different from raw) value.
 	found := false
 	for _, h := range rec.Headers {
-		if h[0] == "set-cookie" && containsSubstring(h[1], existing) {
+		if h[0] == "set-cookie" && containsSubstring(h[1], "_csrf=") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("expected set-cookie with existing token value")
+		t.Fatal("expected set-cookie header for CSRF token")
 	}
 }
 
@@ -944,13 +946,14 @@ func TestStorageSafeMethodStoresToken(t *testing.T) {
 	if token == "" {
 		t.Fatal("expected token")
 	}
-	// Token should be in storage under the hashed key.
-	stored, ok := store.Get(storageKey(token))
+	// Context token is masked; unmask to recover the raw token for storage lookup.
+	raw := unmaskToken(token, 32)
+	stored, ok := store.Get(storageKey(raw))
 	if !ok {
 		t.Fatal("token not found in storage")
 	}
-	if stored != token {
-		t.Fatalf("stored token %q != context token %q", stored, token)
+	if stored != raw {
+		t.Fatalf("stored token %q != raw token %q", stored, raw)
 	}
 }
 
@@ -958,16 +961,17 @@ func TestStorageUnsafeMethodValidates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(storageKey(token), token, time.Hour)
+	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	store.Set(storageKey(raw), raw, time.Hour)
+	masked := maskToken(raw, 32)
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", masked),
+		celeristest.WithCookie("_csrf", masked),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
@@ -977,18 +981,19 @@ func TestStorageUnsafeMethodRejectsExpiredToken(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	// Store with a past expiry.
-	store.Set(storageKey(token), token, time.Nanosecond)
+	store.Set(storageKey(raw), raw, time.Nanosecond)
 	time.Sleep(time.Millisecond)
+	masked := maskToken(raw, 32)
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", masked),
+		celeristest.WithCookie("_csrf", masked),
 	)
 	testutil.AssertHTTPError(t, err, 403)
 }
@@ -997,7 +1002,8 @@ func TestStorageUnsafeMethodRejectsMissingStorageToken(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	masked := maskToken(raw, 32)
 	// Token in cookie but NOT in storage.
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
@@ -1005,8 +1011,8 @@ func TestStorageUnsafeMethodRejectsMissingStorageToken(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", masked),
+		celeristest.WithCookie("_csrf", masked),
 	)
 	testutil.AssertHTTPError(t, err, 403)
 }
@@ -1015,8 +1021,9 @@ func TestStorageUnsafeMethodRejectsMismatchedRequestToken(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(storageKey(token), token, time.Hour)
+	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	store.Set(storageKey(raw), raw, time.Hour)
+	masked := maskToken(raw, 32)
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
@@ -1024,7 +1031,7 @@ func TestStorageUnsafeMethodRejectsMismatchedRequestToken(t *testing.T) {
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, err := testutil.RunChain(t, chain, "POST", "/submit",
 		celeristest.WithHeader("x-csrf-token", "wrong"),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithCookie("_csrf", masked),
 	)
 	testutil.AssertHTTPError(t, err, 403)
 }
@@ -1060,8 +1067,9 @@ func TestSingleUseTokenDeletesAfterValidation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(storageKey(token), token, time.Hour)
+	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	store.Set(storageKey(raw), raw, time.Hour)
+	masked := maskToken(raw, 32)
 	mw := New(Config{Storage: store, SingleUseToken: true})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
@@ -1070,22 +1078,22 @@ func TestSingleUseTokenDeletesAfterValidation(t *testing.T) {
 
 	// First request: succeeds.
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", masked),
+		celeristest.WithCookie("_csrf", masked),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
 
 	// Token should be deleted from storage.
-	_, ok := store.Get(storageKey(token))
+	_, ok := store.Get(storageKey(raw))
 	if ok {
 		t.Fatal("expected token to be deleted from storage after single use")
 	}
 
 	// Second request with same token: fails.
 	_, err = testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", masked),
+		celeristest.WithCookie("_csrf", masked),
 	)
 	testutil.AssertHTTPError(t, err, 403)
 }
@@ -1413,8 +1421,9 @@ func TestDeleteTokenWithStorage(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(storageKey(token), token, time.Hour)
+	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	store.Set(storageKey(raw), raw, time.Hour)
+	masked := maskToken(raw, 32)
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
 		err := DeleteToken(c)
@@ -1425,13 +1434,13 @@ func TestDeleteTokenWithStorage(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithCookie("_csrf", masked),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
 
 	// Token should be removed from storage.
-	_, ok := store.Get(storageKey(token))
+	_, ok := store.Get(storageKey(raw))
 	if ok {
 		t.Fatal("expected token to be deleted from storage")
 	}
@@ -1524,8 +1533,9 @@ func TestHandlerDeleteToken(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(storageKey(token), token, time.Hour)
+	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	store.Set(storageKey(raw), raw, time.Hour)
+	masked := maskToken(raw, 32)
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
 		h := HandlerFromContext(c)
@@ -1536,11 +1546,11 @@ func TestHandlerDeleteToken(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithCookie("_csrf", masked),
 	)
 	testutil.AssertNoError(t, err)
 
-	_, ok := store.Get(storageKey(token))
+	_, ok := store.Get(storageKey(raw))
 	if ok {
 		t.Fatal("expected token deleted")
 	}
@@ -2001,8 +2011,9 @@ func TestSingleUseTokenAtomicGetAndDelete(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(storageKey(token), token, time.Hour)
+	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	store.Set(storageKey(raw), raw, time.Hour)
+	masked := maskToken(raw, 32)
 	mw := New(Config{Storage: store, SingleUseToken: true})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
@@ -2011,14 +2022,14 @@ func TestSingleUseTokenAtomicGetAndDelete(t *testing.T) {
 
 	// First request succeeds and atomically deletes the token.
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", masked),
+		celeristest.WithCookie("_csrf", masked),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
 
 	// Verify token is gone.
-	_, ok := store.Get(storageKey(token))
+	_, ok := store.Get(storageKey(raw))
 	if ok {
 		t.Fatal("expected token deleted after single use")
 	}

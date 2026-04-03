@@ -33,3 +33,11 @@ func ExampleNew_customPaths() {
 		StartPath: "/health/startup",
 	}))
 }
+
+func ExampleNew_fastPath() {
+	server := celeris.New(celeris.Config{})
+
+	server.Use(healthcheck.New(healthcheck.Config{
+		CheckerTimeout: healthcheck.FastPathTimeout,
+	}))
+}

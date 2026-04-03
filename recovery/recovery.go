@@ -88,6 +88,17 @@ func New(config ...Config) celeris.HandlerFunc {
 					)
 				}
 
+				// Guard: if context cancelled (client disconnected), skip writing.
+				if c.Context().Err() != nil {
+					log.LogAttrs(c.Context(), slog.LevelWarn, "panic after context cancelled",
+						slog.String("method", c.Method()),
+						slog.String("path", c.Path()),
+						slog.String("error", fmt.Sprint(r)),
+					)
+					retErr = fmt.Errorf("recovery: panic: %v", r)
+					return
+				}
+
 				// Guard: if response already committed, skip writing.
 				if c.IsWritten() {
 					log.LogAttrs(c.Context(), slog.LevelError, "panic after response committed",

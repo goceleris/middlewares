@@ -54,11 +54,11 @@
 // # Performance
 //
 // When [Config].CheckerTimeout is zero or negative (after applyDefaults,
-// set it to -1 to opt in), the checker runs synchronously inline with
-// zero goroutine, channel, or context overhead. Use this fast-path for
-// trivial checkers that cannot block:
+// set it to [FastPathTimeout] to opt in), the checker runs synchronously
+// inline with zero goroutine, channel, or context overhead. Use this
+// fast-path for trivial checkers that cannot block:
 //
-//	healthcheck.New(healthcheck.Config{CheckerTimeout: -1})
+//	healthcheck.New(healthcheck.Config{CheckerTimeout: healthcheck.FastPathTimeout})
 //
 // # Disabling Probes
 //
