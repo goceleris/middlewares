@@ -3,14 +3,16 @@ package keyauth
 import "github.com/goceleris/celeris"
 
 // ErrUnauthorized is returned when the API key is invalid.
+// Do not mutate: this is a shared sentinel value used with errors.Is.
 var ErrUnauthorized = celeris.NewHTTPError(401, "Unauthorized")
 
 // ErrMissingKey is returned when no API key is found in the request.
+// Do not mutate: this is a shared sentinel value used with errors.Is.
 var ErrMissingKey = celeris.NewHTTPError(401, "Missing API key")
 
 // New creates a key auth middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := DefaultConfig()
 	if len(config) > 0 {
 		cfg = config[0]
 	}
@@ -36,11 +38,11 @@ func New(config ...Config) celeris.HandlerFunc {
 	}
 
 	handleError := func(c *celeris.Context, err error) error {
-		c.SetHeader("www-authenticate", wwwAuth)
 		herr := errorHandler(c, err)
 		if herr == nil && continueOnIgnored {
 			return c.Next()
 		}
+		c.SetHeader("www-authenticate", wwwAuth)
 		return herr
 	}
 

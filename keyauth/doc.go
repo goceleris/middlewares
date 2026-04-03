@@ -79,8 +79,19 @@
 // [ErrUnauthorized] and [ErrMissingKey] are the exported sentinel errors
 // (both 401) returned on authentication failure, usable with errors.Is for
 // error handling in upstream middleware.
+//
 // # Skipping
 //
 // Set [Config].Skip to bypass the middleware dynamically, or
-// [Config].SkipPaths for exact-match path exclusions.
+// [Config].SkipPaths for exact-match path exclusions. SkipPaths uses
+// literal string equality against [celeris.Context.Path] -- no glob,
+// regex, or prefix matching is performed.
+//
+// # Input Key Size
+//
+// This middleware does not enforce an upper bound on the extracted key
+// length. In practice, upstream HTTP header parsing (typically 8 KB
+// per header line) limits the key size for header-based extraction.
+// Callers using query, form, or param extraction should apply their
+// own size limits if needed.
 package keyauth

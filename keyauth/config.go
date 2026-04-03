@@ -3,6 +3,7 @@ package keyauth
 import (
 	"crypto/subtle"
 	"fmt"
+	"math"
 	"net/url"
 	"strings"
 
@@ -70,14 +71,21 @@ type Config struct {
 	ContinueOnIgnoredError bool
 }
 
-// DefaultConfig is the default key auth configuration.
-var DefaultConfig = Config{
+// defaultConfig is the default key auth configuration.
+// It is unexported to prevent callers from mutating shared state.
+// Use DefaultConfig() to obtain a copy.
+var defaultConfig = Config{
 	KeyLookup: "header:X-API-Key",
+}
+
+// DefaultConfig returns a copy of the default key auth configuration.
+func DefaultConfig() Config {
+	return defaultConfig
 }
 
 func applyDefaults(cfg Config) Config {
 	if cfg.KeyLookup == "" {
-		cfg.KeyLookup = DefaultConfig.KeyLookup
+		cfg.KeyLookup = defaultConfig.KeyLookup
 	}
 	if cfg.Realm == "" {
 		cfg.Realm = "Restricted"
@@ -88,6 +96,20 @@ func applyDefaults(cfg Config) Config {
 func (cfg Config) validate() {
 	if cfg.Validator == nil {
 		panic("keyauth: Validator is required")
+	}
+	if cfg.AuthScheme != "" {
+		for _, r := range cfg.AuthScheme {
+			if !isTokenChar(r) {
+				panic("keyauth: AuthScheme contains invalid character (must be HTTP token chars only)")
+			}
+		}
+	}
+	if cfg.Realm != "" {
+		for _, r := range cfg.Realm {
+			if r == '"' || r == '\\' || r < 0x20 || r == 0x7f {
+				panic("keyauth: Realm contains invalid character (quotes, backslashes, and control chars are not allowed)")
+			}
+		}
 	}
 	if cfg.ChallengeError != "" {
 		switch cfg.ChallengeError {
@@ -104,9 +126,24 @@ func (cfg Config) validate() {
 	}
 }
 
+// isTokenChar reports whether r is a valid HTTP token character per RFC 7230 section 3.2.6.
+func isTokenChar(r rune) bool {
+	if r < '!' || r > '~' {
+		return false
+	}
+	switch r {
+	case '(', ')', '<', '>', '@', ',', ';', ':', '\\', '"', '/', '[', ']', '?', '=', '{', '}':
+		return false
+	}
+	return true
+}
+
 // StaticKeys returns a constant-time validator that checks the key against a
 // fixed set of valid keys. All comparisons use a uniform code path to prevent
 // timing side-channels on key existence or length.
+//
+// Duplicate keys in the input are not deduplicated; each copy is compared
+// independently. This has no effect on correctness.
 func StaticKeys(keys ...string) func(*celeris.Context, string) (bool, error) {
 	if len(keys) == 0 {
 		return func(_ *celeris.Context, _ string) (bool, error) {
@@ -127,14 +164,15 @@ func StaticKeys(keys ...string) func(*celeris.Context, string) (bool, error) {
 	}
 
 	return func(_ *celeris.Context, key string) (bool, error) {
+		if len(key) > math.MaxInt32 {
+			return false, nil
+		}
 		var kb []byte
 		if maxLen <= 256 {
 			var buf [256]byte
 			kb = buf[:maxLen]
+			clear(kb)
 			copy(kb, key)
-			for i := len(key); i < maxLen; i++ {
-				kb[i] = 0
-			}
 		} else {
 			kb = padTo([]byte(key), maxLen) //nolint:staticcheck // kb is used in the loop below
 		}
@@ -166,18 +204,35 @@ func wwwAuthenticateValue(cfg Config) string {
 	} else {
 		b.WriteString("ApiKey")
 	}
-	fmt.Fprintf(&b, ` realm="%s"`, cfg.Realm)
+	fmt.Fprintf(&b, ` realm="%s"`, escapeQuotedString(cfg.Realm))
 	if cfg.ChallengeScope != "" {
-		fmt.Fprintf(&b, `, scope="%s"`, cfg.ChallengeScope)
+		fmt.Fprintf(&b, `, scope="%s"`, escapeQuotedString(cfg.ChallengeScope))
 	}
 	if cfg.ChallengeError != "" {
 		fmt.Fprintf(&b, `, error="%s"`, cfg.ChallengeError)
 	}
 	if cfg.ChallengeErrorDescription != "" {
-		fmt.Fprintf(&b, `, error_description="%s"`, cfg.ChallengeErrorDescription)
+		fmt.Fprintf(&b, `, error_description="%s"`, escapeQuotedString(cfg.ChallengeErrorDescription))
 	}
 	if cfg.ChallengeErrorURI != "" {
 		fmt.Fprintf(&b, `, error_uri="%s"`, cfg.ChallengeErrorURI)
+	}
+	return b.String()
+}
+
+// escapeQuotedString escapes backslashes and double-quotes for use in
+// HTTP quoted-string values (RFC 7230 section 3.2.6).
+func escapeQuotedString(s string) string {
+	if !strings.ContainsAny(s, `"\`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 4)
+	for _, r := range s {
+		if r == '"' || r == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
 	}
 	return b.String()
 }
