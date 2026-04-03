@@ -1,6 +1,10 @@
 package requestid
 
-import "github.com/goceleris/celeris"
+import (
+	"strings"
+
+	"github.com/goceleris/celeris"
+)
 
 // ContextKey is the context store key for the request ID.
 const ContextKey = "request_id"
@@ -36,7 +40,7 @@ const maxGeneratorRetries = 3
 
 // New creates a request ID middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := defaultConfig
 	if len(config) > 0 {
 		cfg = config[0]
 	}
@@ -48,20 +52,21 @@ func New(config ...Config) celeris.HandlerFunc {
 	gen := cfg.Generator
 	trustProxy := !cfg.DisableTrustProxy
 	afterGenerate := cfg.AfterGenerate
+	skip := cfg.Skip
 
 	fallbackGen := defaultGenerator.UUID
 
 	skipMap := make(map[string]struct{}, len(cfg.SkipPaths))
 	for _, p := range cfg.SkipPaths {
-		skipMap[p] = struct{}{}
+		skipMap[strings.TrimRight(p, "/")] = struct{}{}
 	}
 
 	return func(c *celeris.Context) error {
-		if cfg.Skip != nil && cfg.Skip(c) {
+		if skip != nil && skip(c) {
 			return c.Next()
 		}
 
-		if _, ok := skipMap[c.Path()]; ok {
+		if _, ok := skipMap[strings.TrimRight(c.Path(), "/")]; ok {
 			return c.Next()
 		}
 
@@ -73,17 +78,18 @@ func New(config ...Config) celeris.HandlerFunc {
 			}
 		}
 		if id == "" {
-			id = gen()
-			if id == "" && isCustomGen {
-				for range maxGeneratorRetries - 1 {
-					id = gen()
-					if id != "" {
-						break
-					}
+			for range maxGeneratorRetries {
+				id = gen()
+				if validID(id) {
+					break
 				}
-				if id == "" {
-					id = fallbackGen()
+				id = ""
+				if !isCustomGen {
+					break
 				}
+			}
+			if id == "" {
+				id = fallbackGen()
 			}
 		}
 

@@ -49,7 +49,21 @@
 // # Skipping
 //
 // Use [Config].Skip for dynamic skip logic or [Config].SkipPaths for
-// exact-match path exclusions (e.g., health check endpoints).
+// path exclusions. SkipPaths uses exact matching after trimming trailing
+// slashes from both the configured paths and the request path.
+//
+// # AfterGenerate
+//
+// [Config].AfterGenerate is called after the request ID is set. Panics
+// in AfterGenerate are not recovered by this middleware and will
+// propagate to the caller (or any upstream recovery middleware).
+//
+// # Custom Generator Validation
+//
+// Custom generator output is validated with the same rules as inbound
+// headers (printable ASCII, max 128 characters). If the generator
+// returns an invalid or empty string, it is retried up to 3 times
+// before falling back to the built-in UUID generator.
 //
 // [CounterGenerator] returns a monotonic ID generator ("{prefix}-{N}")
 // with zero syscalls after initialization.

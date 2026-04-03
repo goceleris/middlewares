@@ -36,8 +36,10 @@ type Config struct {
 	AfterGenerate func(c *celeris.Context, id string)
 }
 
-// DefaultConfig is the default request ID configuration.
-var DefaultConfig = Config{
+// defaultConfig is the default request ID configuration.
+// It is unexported to prevent mutation; use New() with no arguments
+// for the default behavior.
+var defaultConfig = Config{
 	Header: "x-request-id",
 }
 
@@ -55,6 +57,10 @@ func applyDefaults(cfg Config) Config {
 	return cfg
 }
 
-func (cfg Config) validate() {}
+func (cfg Config) validate() {
+	if cfg.Header == "" {
+		panic("requestid: Header must not be empty")
+	}
+}
 
 var defaultGenerator = newBufferedGenerator()

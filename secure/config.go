@@ -27,7 +27,7 @@ type Config struct {
 	XSSProtection string `yaml:"xss_protection"`
 
 	// HSTSMaxAge sets the max-age directive of Strict-Transport-Security in seconds.
-	// Set to -1 to omit the header entirely. Default: 63072000 (2 years).
+	// Set to 0 or -1 to omit the header entirely. Default: 63072000 (2 years).
 	HSTSMaxAge int `yaml:"hsts_max_age"`
 
 	// HSTSExcludeSubdomains opts out of includeSubDomains in the HSTS header.
@@ -83,8 +83,10 @@ type Config struct {
 	XDownloadOptions string `yaml:"x_download_options"`
 }
 
-// DefaultConfig is the default security headers configuration.
-var DefaultConfig = Config{
+// defaultConfig is the default security headers configuration.
+// It is unexported to prevent mutation; use New() with no arguments
+// for the default behavior.
+var defaultConfig = Config{
 	XContentTypeOptions:       "nosniff",
 	XFrameOptions:             "SAMEORIGIN",
 	XSSProtection:             "0",
@@ -99,42 +101,42 @@ var DefaultConfig = Config{
 	XDownloadOptions:          "noopen",
 }
 
-func applyDefaults(cfg Config) Config {
+func applyDefaults(cfg Config, hstsExplicit bool) Config {
 	if cfg.XContentTypeOptions == "" {
-		cfg.XContentTypeOptions = DefaultConfig.XContentTypeOptions
+		cfg.XContentTypeOptions = defaultConfig.XContentTypeOptions
 	}
 	if cfg.XFrameOptions == "" {
-		cfg.XFrameOptions = DefaultConfig.XFrameOptions
+		cfg.XFrameOptions = defaultConfig.XFrameOptions
 	}
 	if cfg.XSSProtection == "" {
-		cfg.XSSProtection = DefaultConfig.XSSProtection
+		cfg.XSSProtection = defaultConfig.XSSProtection
 	}
-	if cfg.HSTSMaxAge == 0 {
-		cfg.HSTSMaxAge = DefaultConfig.HSTSMaxAge
+	if cfg.HSTSMaxAge == 0 && !hstsExplicit {
+		cfg.HSTSMaxAge = defaultConfig.HSTSMaxAge
 	}
 	if cfg.ReferrerPolicy == "" {
-		cfg.ReferrerPolicy = DefaultConfig.ReferrerPolicy
+		cfg.ReferrerPolicy = defaultConfig.ReferrerPolicy
 	}
 	if cfg.CrossOriginOpenerPolicy == "" {
-		cfg.CrossOriginOpenerPolicy = DefaultConfig.CrossOriginOpenerPolicy
+		cfg.CrossOriginOpenerPolicy = defaultConfig.CrossOriginOpenerPolicy
 	}
 	if cfg.CrossOriginResourcePolicy == "" {
-		cfg.CrossOriginResourcePolicy = DefaultConfig.CrossOriginResourcePolicy
+		cfg.CrossOriginResourcePolicy = defaultConfig.CrossOriginResourcePolicy
 	}
 	if cfg.CrossOriginEmbedderPolicy == "" {
-		cfg.CrossOriginEmbedderPolicy = DefaultConfig.CrossOriginEmbedderPolicy
+		cfg.CrossOriginEmbedderPolicy = defaultConfig.CrossOriginEmbedderPolicy
 	}
 	if cfg.XDNSPrefetchControl == "" {
-		cfg.XDNSPrefetchControl = DefaultConfig.XDNSPrefetchControl
+		cfg.XDNSPrefetchControl = defaultConfig.XDNSPrefetchControl
 	}
 	if cfg.XPermittedCrossDomain == "" {
-		cfg.XPermittedCrossDomain = DefaultConfig.XPermittedCrossDomain
+		cfg.XPermittedCrossDomain = defaultConfig.XPermittedCrossDomain
 	}
 	if cfg.OriginAgentCluster == "" {
-		cfg.OriginAgentCluster = DefaultConfig.OriginAgentCluster
+		cfg.OriginAgentCluster = defaultConfig.OriginAgentCluster
 	}
 	if cfg.XDownloadOptions == "" {
-		cfg.XDownloadOptions = DefaultConfig.XDownloadOptions
+		cfg.XDownloadOptions = defaultConfig.XDownloadOptions
 	}
 	return cfg
 }
@@ -159,13 +161,16 @@ func (cfg Config) validate() {
 	if cfg.CSPReportOnly && cfg.ContentSecurityPolicy == "" {
 		panic("secure: CSPReportOnly requires a non-empty ContentSecurityPolicy")
 	}
+	if cfg.CSPReportOnly && cfg.ContentSecurityPolicy == Suppress {
+		panic("secure: CSPReportOnly with ContentSecurityPolicy=Suppress is a no-op; set CSPReportOnly=false or provide a policy")
+	}
 }
 
 // buildHeaders pre-computes the header key-value pairs from the config.
 // Empty string values are excluded. HSTS is excluded here because it
 // requires a runtime HTTPS check; see secure.go.
 func buildHeaders(cfg Config) [][2]string {
-	headers := make([][2]string, 0, 14)
+	headers := make([][2]string, 0, 13)
 
 	if shouldEmit(cfg.XContentTypeOptions) {
 		headers = append(headers, [2]string{"x-content-type-options", cfg.XContentTypeOptions})

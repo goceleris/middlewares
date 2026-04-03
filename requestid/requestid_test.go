@@ -228,11 +228,16 @@ func FuzzGeneratorOutputFormat(f *testing.F) {
 	f.Add(0)
 	f.Add(1)
 	f.Add(255)
-	f.Fuzz(func(t *testing.T, _ int) {
+	f.Fuzz(func(t *testing.T, n int) {
 		g := newBufferedGenerator()
-		id := g.UUID()
-		if !uuidRe.MatchString(id) {
-			t.Fatalf("invalid UUID format: %q", id)
+		// Use the fuzz input to vary the number of UUIDs generated,
+		// exercising buffer refill paths at different offsets.
+		count := (n % 512) + 1
+		for range count {
+			id := g.UUID()
+			if !uuidRe.MatchString(id) {
+				t.Fatalf("invalid UUID format: %q", id)
+			}
 		}
 	})
 }
