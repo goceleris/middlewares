@@ -49,7 +49,12 @@ type Config struct {
 	TokenLookup string
 
 	// Claims is the template for the claims type. The middleware clones
-	// this for each request. Default: jwt.MapClaims{}.
+	// this for each request via [cloneClaims]. For built-in types
+	// ([MapClaims], *[RegisteredClaims]) this is zero-cost. For custom
+	// struct types, reflect.New is used to create a fresh zero-value
+	// instance -- the template's field values are NOT copied. For
+	// maximum control and to avoid reflect overhead, use ClaimsFactory
+	// instead. Default: jwt.MapClaims{}.
 	Claims jwtparse.Claims
 
 	// ClaimsFactory creates a fresh Claims instance per request. When set,
@@ -78,6 +83,11 @@ type Config struct {
 	// but before parsing. Use it for decryption, decompression, or other
 	// transformations. If it returns an error, the middleware returns
 	// ErrTokenInvalid wrapping that error.
+	//
+	// The returned string must be a valid compact JWS (3-part
+	// dot-separated). Returning an empty string or a non-JWS value will
+	// cause a parse error. The original raw token is NOT preserved;
+	// Token.Raw will contain the transformed value.
 	TokenProcessorFunc func(token string) (string, error)
 
 	// TokenContextKey overrides the context store key for the parsed token.
@@ -103,10 +113,15 @@ type Config struct {
 	SuccessHandler func(c *celeris.Context)
 
 	// ContinueOnIgnoredError, when true, causes the middleware to call
-	// c.Next() when ErrorHandler returns nil. By default, when
+	// c.Next() when ErrorHandler returns nil. By default (false), when
 	// ErrorHandler returns nil the middleware returns nil immediately
-	// (short-circuiting the chain). Enable this to allow downstream
-	// handlers to run after a suppressed authentication error.
+	// without calling c.Next(), short-circuiting the handler chain.
+	// Note: when false and ErrorHandler returns nil, the middleware
+	// itself returns nil (not the original error). The framework's
+	// outer handler loop then runs downstream handlers independently;
+	// errors from those handlers are NOT propagated through this
+	// middleware's return value. Enable ContinueOnIgnoredError to
+	// explicitly call c.Next() and propagate downstream errors.
 	ContinueOnIgnoredError bool
 
 	// BeforeFunc is called before any JWT processing (token extraction,
@@ -272,7 +287,7 @@ func headerExtractor(key, prefix string) extractor {
 			return ""
 		}
 		if prefix != "" {
-			if len(val) > len(prefix) && val[:len(prefix)] == prefix {
+			if len(val) > len(prefix) && strings.EqualFold(val[:len(prefix)], prefix) {
 				return val[len(prefix):]
 			}
 			return ""

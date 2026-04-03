@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"sync"
@@ -58,7 +59,14 @@ func (f *jwksFetcher) keyFunc(t *jwtparse.Token) (any, error) {
 		stale = time.Since(f.lastFetch) > f.refresh
 		f.mu.RUnlock()
 		if stale {
-			_ = f.fetch() // ignore error, fall through to stale key check
+			if err := f.fetch(); err != nil {
+				log.Printf("jwt: JWKS refresh from %s failed: %v", f.url, err)
+				// Update lastFetch even on error to prevent a retry storm;
+				// stale keys remain available as a fallback.
+				f.mu.Lock()
+				f.lastFetch = time.Now()
+				f.mu.Unlock()
+			}
 		}
 	}
 
@@ -97,13 +105,17 @@ func (f *jwksFetcher) fetch() error {
 		return fmt.Errorf("jwt: invalid JWKS JSON: %w", err)
 	}
 
-	keys := make(map[string]any, len(jwks.Keys))
+	newKeys := make(map[string]any, len(jwks.Keys))
 	for _, key := range jwks.Keys {
 		use, _ := key["use"].(string)
 		if use != "" && use != "sig" {
 			continue
 		}
 		kid, _ := key["kid"].(string)
+		// Skip keys with empty kid when there are multiple keys (#13).
+		if kid == "" && len(jwks.Keys) > 1 {
+			continue
+		}
 		kty, _ := key["kty"].(string)
 		switch kty {
 		case "RSA":
@@ -111,24 +123,34 @@ func (f *jwksFetcher) fetch() error {
 			if err != nil {
 				continue
 			}
-			keys[kid] = pub
+			newKeys[kid] = pub
 		case "EC":
 			pub, err := parseECKey(key)
 			if err != nil {
 				continue
 			}
-			keys[kid] = pub
+			newKeys[kid] = pub
 		case "OKP":
 			pub, err := parseOKPKey(key)
 			if err != nil {
 				continue
 			}
-			keys[kid] = pub
+			newKeys[kid] = pub
 		}
 	}
 
+	// Merge: start from existing keys, overlay with new ones.
+	// This preserves keys that were removed from a partial/degraded JWKS
+	// response while still picking up rotated keys.
 	f.mu.Lock()
-	f.keys = keys
+	merged := make(map[string]any, len(f.keys)+len(newKeys))
+	for k, v := range f.keys {
+		merged[k] = v
+	}
+	for k, v := range newKeys {
+		merged[k] = v
+	}
+	f.keys = merged
 	f.lastFetch = time.Now()
 	f.mu.Unlock()
 
@@ -153,10 +175,15 @@ func parseRSAKey(key map[string]any) (*rsa.PublicKey, error) {
 		return nil, fmt.Errorf("jwt: RSA exponent too large")
 	}
 
-	return &rsa.PublicKey{
+	pub := &rsa.PublicKey{
 		N: n,
 		E: int(e.Int64()),
-	}, nil
+	}
+	// Enforce minimum 2048-bit RSA keys per NIST SP 800-57.
+	if pub.N.BitLen() < 2048 {
+		return nil, fmt.Errorf("jwt: RSA key size %d bits is below the 2048-bit minimum", pub.N.BitLen())
+	}
+	return pub, nil
 }
 
 func parseECKey(key map[string]any) (*ecdsa.PublicKey, error) {

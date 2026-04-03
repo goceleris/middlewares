@@ -176,7 +176,9 @@ func newClaims(factory func() jwtparse.Claims, template jwtparse.Claims) jwtpars
 
 // cloneClaims creates a fresh claims instance matching the template type.
 // MapClaims gets a new empty map; RegisteredClaims gets a new zero struct.
-// For other types, reflect.New creates a fresh zero-value struct.
+// For other struct types, reflect.New creates a fresh zero-value struct.
+// Non-struct, non-map types that do not implement Claims via a pointer
+// receiver will panic -- use ClaimsFactory for such types.
 func cloneClaims(template jwtparse.Claims) jwtparse.Claims {
 	switch template.(type) {
 	case jwtparse.MapClaims:
@@ -186,7 +188,13 @@ func cloneClaims(template jwtparse.Claims) jwtparse.Claims {
 	default:
 		t := reflect.TypeOf(template)
 		if t.Kind() == reflect.Ptr {
+			if t.Elem().Kind() != reflect.Struct {
+				panic(fmt.Sprintf("jwt: unsupported custom claims type %T; use ClaimsFactory for non-struct pointer types", template))
+			}
 			return reflect.New(t.Elem()).Interface().(jwtparse.Claims)
+		}
+		if t.Kind() != reflect.Struct && t.Kind() != reflect.Map {
+			panic(fmt.Sprintf("jwt: unsupported custom claims type %T; use ClaimsFactory for non-struct types", template))
 		}
 		return reflect.New(t).Elem().Interface().(jwtparse.Claims)
 	}

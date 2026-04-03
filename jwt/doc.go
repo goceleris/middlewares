@@ -108,6 +108,22 @@
 // When using JWKS auto-discovery via [Config].JWKSURL, always serve the
 // JWKS endpoint over HTTPS. Set [Config].JWKSRefresh to a reasonable
 // interval (e.g., 30 minutes) to balance freshness with performance.
+//
+// # Algorithm-Key-Type Binding
+//
+// The middleware does NOT enforce that the signing key type matches the
+// configured signing algorithm. For example, if [Config].SigningMethod
+// is set to RS256, the caller must supply an *rsa.PublicKey as
+// [Config].SigningKey. Supplying a []byte HMAC secret with an RSA
+// algorithm (or vice versa) will result in a runtime error from the
+// signing method's Verify function, not a configuration-time panic.
+// Always ensure the key type matches the algorithm:
+//
+//   - HS256/HS384/HS512: []byte
+//   - RS256/RS384/RS512/PS256/PS384/PS512: *rsa.PublicKey (verify) / *rsa.PrivateKey (sign)
+//   - ES256/ES384/ES512: *ecdsa.PublicKey (verify) / *ecdsa.PrivateKey (sign)
+//   - EdDSA: ed25519.PublicKey (verify) / ed25519.PrivateKey (sign)
+//
 // # Skipping
 //
 // Set [Config].Skip to bypass the middleware dynamically, or
