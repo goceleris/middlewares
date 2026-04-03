@@ -47,10 +47,23 @@
 // Set [Config].DisableBrokenPipeLog to true to suppress the WARN log
 // entirely (useful in environments where broken pipes are routine).
 //
+// # ErrorHandler Return Behavior
+//
+// If [Config].ErrorHandler returns a non-nil error, it propagates up to the
+// framework's error handler (the routerAdapter safety net). This lets custom
+// handlers signal errors — for example, returning a [celeris.HTTPError] —
+// without writing a response themselves.
+//
 // # Nested Recovery
 //
 // If [Config].ErrorHandler itself panics, the middleware falls back to a
 // default 500 Internal Server Error response.
+//
+// # Log Level
+//
+// Set [Config].LogLevel to control the slog level for normal panic log
+// entries (default: [slog.LevelError]). Broken pipe panics are always
+// logged at [slog.LevelWarn] regardless of this setting.
 //
 // # Stack Options
 //

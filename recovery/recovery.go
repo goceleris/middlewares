@@ -34,6 +34,7 @@ func New(config ...Config) celeris.HandlerFunc {
 	stackAll := cfg.StackAll
 	disableBrokenPipeLog := cfg.DisableBrokenPipeLog
 	log := cfg.Logger
+	logLevel := cfg.LogLevel
 
 	return func(c *celeris.Context) (retErr error) {
 		if cfg.Skip != nil && cfg.Skip(c) {
@@ -46,12 +47,22 @@ func New(config ...Config) celeris.HandlerFunc {
 					panic(r)
 				}
 
+				var panicVal string
+				switch v := r.(type) {
+				case string:
+					panicVal = v
+				case error:
+					panicVal = v.Error()
+				default:
+					panicVal = fmt.Sprint(r)
+				}
+
 				if isBrokenPipe(r) {
 					if !disableBrokenPipeLog {
 						log.LogAttrs(c.Context(), slog.LevelWarn, "broken pipe",
 							slog.String("method", c.Method()),
 							slog.String("path", c.Path()),
-							slog.String("error", fmt.Sprint(r)),
+							slog.String("error", panicVal),
 						)
 					}
 					if brokenPipeHandler != nil {
@@ -72,19 +83,19 @@ func New(config ...Config) celeris.HandlerFunc {
 						buf = make([]byte, stackSize)
 					}
 					n := runtime.Stack(buf[:stackSize], stackAll)
-					log.LogAttrs(c.Context(), slog.LevelError, "panic recovered",
+					log.LogAttrs(c.Context(), logLevel, "panic recovered",
 						slog.String("method", c.Method()),
 						slog.String("path", c.Path()),
-						slog.String("error", fmt.Sprint(r)),
+						slog.String("error", panicVal),
 						slog.String("stack", string(buf[:n])),
 					)
 					*bufPtr = buf
 					stackPool.Put(bufPtr)
 				} else if logStack {
-					log.LogAttrs(c.Context(), slog.LevelError, "panic recovered",
+					log.LogAttrs(c.Context(), logLevel, "panic recovered",
 						slog.String("method", c.Method()),
 						slog.String("path", c.Path()),
-						slog.String("error", fmt.Sprint(r)),
+						slog.String("error", panicVal),
 					)
 				}
 
@@ -93,7 +104,7 @@ func New(config ...Config) celeris.HandlerFunc {
 					log.LogAttrs(c.Context(), slog.LevelWarn, "panic after context cancelled",
 						slog.String("method", c.Method()),
 						slog.String("path", c.Path()),
-						slog.String("error", fmt.Sprint(r)),
+						slog.String("error", panicVal),
 					)
 					retErr = fmt.Errorf("recovery: panic: %v", r)
 					return
@@ -101,10 +112,10 @@ func New(config ...Config) celeris.HandlerFunc {
 
 				// Guard: if response already committed, skip writing.
 				if c.IsWritten() {
-					log.LogAttrs(c.Context(), slog.LevelError, "panic after response committed",
+					log.LogAttrs(c.Context(), logLevel, "panic after response committed",
 						slog.String("method", c.Method()),
 						slog.String("path", c.Path()),
-						slog.String("error", fmt.Sprint(r)),
+						slog.String("error", panicVal),
 					)
 					retErr = fmt.Errorf("recovery: panic after response committed: %v", r)
 					return
@@ -113,7 +124,7 @@ func New(config ...Config) celeris.HandlerFunc {
 				func() {
 					defer func() {
 						if r2 := recover(); r2 != nil {
-							log.LogAttrs(c.Context(), slog.LevelError, "panic in error handler",
+							log.LogAttrs(c.Context(), logLevel, "panic in error handler",
 								slog.String("method", c.Method()),
 								slog.String("path", c.Path()),
 								slog.String("error", fmt.Sprint(r2)),
@@ -136,12 +147,12 @@ func isBrokenPipe(v any) bool {
 		return false
 	}
 	// Check directly without requiring a net.OpError wrapper.
-	if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
+	if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED) {
 		return true
 	}
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
-		return errors.Is(opErr.Err, syscall.EPIPE) || errors.Is(opErr.Err, syscall.ECONNRESET)
+		return errors.Is(opErr.Err, syscall.EPIPE) || errors.Is(opErr.Err, syscall.ECONNRESET) || errors.Is(opErr.Err, syscall.ECONNABORTED)
 	}
 	return false
 }

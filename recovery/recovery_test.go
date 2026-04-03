@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"net"
@@ -432,6 +433,111 @@ func TestDeprecatedLogStackOverridesDisableLogStack(t *testing.T) {
 	_, _ = testutil.RunChain(t, chain, "GET", "/compat")
 	if !strings.Contains(buf.String(), "goroutine") {
 		t.Fatalf("expected stack trace when LogStack=true overrides DisableLogStack, got: %s", buf.String())
+	}
+}
+
+// errConnAborted implements error and wraps syscall.ECONNABORTED for testing.
+type errConnAborted struct{}
+
+func (e *errConnAborted) Error() string { return "connection aborted" }
+func (e *errConnAborted) Is(target error) bool {
+	return target == syscall.ECONNABORTED
+}
+
+func TestBrokenPipeECONNABORTED(t *testing.T) {
+	mw := New(Config{DisableLogStack: true})
+	handler := func(_ *celeris.Context) error {
+		panic(&errConnAborted{})
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/broken-connaborted")
+	if !errors.Is(err, ErrBrokenPipe) {
+		t.Fatalf("expected ErrBrokenPipe sentinel for ECONNABORTED, got %v", err)
+	}
+}
+
+func TestBrokenPipeECONNABORTEDOpError(t *testing.T) {
+	mw := New(Config{DisableLogStack: true})
+	handler := func(_ *celeris.Context) error {
+		panic(&net.OpError{Op: "write", Err: &errConnAborted{}})
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/broken-connaborted-op")
+	if !errors.Is(err, ErrBrokenPipe) {
+		t.Fatalf("expected ErrBrokenPipe sentinel for ECONNABORTED via OpError, got %v", err)
+	}
+}
+
+func TestPanicAfterResponseWritten(t *testing.T) {
+	mw := New(Config{DisableLogStack: true})
+	handler := func(c *celeris.Context) error {
+		_ = c.String(200, "ok")
+		panic("late panic")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/written-then-panic")
+	// The middleware should NOT overwrite the already-committed 200 response.
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertBodyContains(t, rec, "ok")
+	// The error should propagate instead of writing a second response.
+	testutil.AssertError(t, err)
+	if !strings.Contains(err.Error(), "response committed") {
+		t.Fatalf("expected 'response committed' in error, got: %v", err)
+	}
+}
+
+func TestPanicAfterContextCancelled(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, nil))
+	mw := New(Config{Logger: log})
+	handler := func(c *celeris.Context) error {
+		// Cancel the context before panicking.
+		ctx, cancel := context.WithCancel(c.Context())
+		cancel()
+		c.SetContext(ctx)
+		panic("cancelled panic")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/cancelled-panic")
+	// The middleware should return an error without writing a response.
+	testutil.AssertError(t, err)
+	if !strings.Contains(err.Error(), "recovery: panic:") {
+		t.Fatalf("expected 'recovery: panic:' in error, got: %v", err)
+	}
+	// Verify the WARN-level "context cancelled" log was emitted.
+	output := buf.String()
+	if !strings.Contains(output, "panic after context cancelled") {
+		t.Fatalf("expected 'panic after context cancelled' in log, got: %s", output)
+	}
+}
+
+func TestLogLevelConfig(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	mw := New(Config{Logger: log, StackSize: 4096, LogLevel: slog.LevelWarn})
+	handler := func(_ *celeris.Context) error {
+		panic("level test")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "GET", "/log-level")
+	output := buf.String()
+	if !strings.Contains(output, `"level":"WARN"`) {
+		t.Fatalf("expected WARN level in log, got: %s", output)
+	}
+}
+
+func TestLogLevelDefaultIsError(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, nil))
+	mw := New(Config{Logger: log, StackSize: 4096})
+	handler := func(_ *celeris.Context) error {
+		panic("default level")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "GET", "/log-level-default")
+	output := buf.String()
+	if !strings.Contains(output, `"level":"ERROR"`) {
+		t.Fatalf("expected ERROR level in log (default), got: %s", output)
 	}
 }
 

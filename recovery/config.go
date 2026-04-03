@@ -55,6 +55,11 @@ type Config struct {
 
 	// Logger is the slog logger for panic logging. Default: slog.Default().
 	Logger *slog.Logger
+
+	// LogLevel is the slog level used for normal panic log entries.
+	// Default: slog.LevelError. Broken pipe panics are always logged
+	// at slog.LevelWarn regardless of this setting.
+	LogLevel slog.Level
 }
 
 // defaultStackSize is the default stack trace capture size in bytes.
@@ -64,6 +69,7 @@ const defaultStackSize = 4096
 func defaultConfig() Config {
 	return Config{
 		StackSize: defaultStackSize,
+		LogLevel:  slog.LevelError,
 	}
 }
 
@@ -76,6 +82,9 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	if cfg.LogLevel == 0 {
+		cfg.LogLevel = slog.LevelError
 	}
 	// Backward compatibility: LogStack (deprecated) overrides DisableLogStack.
 	if cfg.LogStack {
