@@ -2,7 +2,6 @@ package keyauth
 
 import (
 	"crypto/subtle"
-	"fmt"
 	"math"
 	"net/url"
 	"strings"
@@ -32,7 +31,16 @@ type Config struct {
 	KeyLookup string
 
 	// Validator checks the extracted key. Required -- panics if nil.
+	//
+	// Implementations SHOULD use crypto/subtle.ConstantTimeCompare or
+	// equivalent to prevent timing attacks. See StaticKeys for a
+	// ready-made constant-time validator.
 	Validator func(c *celeris.Context, key string) (bool, error)
+
+	// CustomExtractor provides a user-defined key extraction function.
+	// When set, it is tried AFTER the KeyLookup extractors as a fallback.
+	// Return an empty string to indicate no key was found.
+	CustomExtractor func(c *celeris.Context) string
 
 	// SuccessHandler is called after a key is successfully validated,
 	// before c.Next(). Use it to enrich the context (e.g., set tenant ID
@@ -124,6 +132,18 @@ func (cfg Config) validate() {
 			panic("keyauth: ChallengeErrorURI must be a valid absolute URI")
 		}
 	}
+	if cfg.ChallengeScope != "" {
+		for _, tok := range strings.Split(cfg.ChallengeScope, " ") {
+			if tok == "" {
+				panic("keyauth: ChallengeScope contains empty token (double space)")
+			}
+			for _, r := range tok {
+				if !isNQCHAR(r) {
+					panic("keyauth: ChallengeScope contains invalid character (must be NQCHAR per RFC 6750 Section 3)")
+				}
+			}
+		}
+	}
 }
 
 // isTokenChar reports whether r is a valid HTTP token character per RFC 7230 section 3.2.6.
@@ -136,6 +156,21 @@ func isTokenChar(r rune) bool {
 		return false
 	}
 	return true
+}
+
+// isNQCHAR reports whether r is a valid NQCHAR per RFC 6749 Appendix A:
+// %x21 / %x23-5B / %x5D-7E (printable ASCII except DQUOTE and backslash).
+func isNQCHAR(r rune) bool {
+	if r == 0x21 {
+		return true
+	}
+	if r >= 0x23 && r <= 0x5B {
+		return true
+	}
+	if r >= 0x5D && r <= 0x7E {
+		return true
+	}
+	return false
 }
 
 // StaticKeys returns a constant-time validator that checks the key against a
@@ -204,18 +239,28 @@ func wwwAuthenticateValue(cfg Config) string {
 	} else {
 		b.WriteString("ApiKey")
 	}
-	fmt.Fprintf(&b, ` realm="%s"`, escapeQuotedString(cfg.Realm))
+	b.WriteString(` realm="`)
+	b.WriteString(escapeQuotedString(cfg.Realm))
+	b.WriteByte('"')
 	if cfg.ChallengeScope != "" {
-		fmt.Fprintf(&b, `, scope="%s"`, escapeQuotedString(cfg.ChallengeScope))
+		b.WriteString(`, scope="`)
+		b.WriteString(escapeQuotedString(cfg.ChallengeScope))
+		b.WriteByte('"')
 	}
 	if cfg.ChallengeError != "" {
-		fmt.Fprintf(&b, `, error="%s"`, cfg.ChallengeError)
+		b.WriteString(`, error="`)
+		b.WriteString(cfg.ChallengeError)
+		b.WriteByte('"')
 	}
 	if cfg.ChallengeErrorDescription != "" {
-		fmt.Fprintf(&b, `, error_description="%s"`, escapeQuotedString(cfg.ChallengeErrorDescription))
+		b.WriteString(`, error_description="`)
+		b.WriteString(escapeQuotedString(cfg.ChallengeErrorDescription))
+		b.WriteByte('"')
 	}
 	if cfg.ChallengeErrorURI != "" {
-		fmt.Fprintf(&b, `, error_uri="%s"`, cfg.ChallengeErrorURI)
+		b.WriteString(`, error_uri="`)
+		b.WriteString(cfg.ChallengeErrorURI)
+		b.WriteByte('"')
 	}
 	return b.String()
 }
