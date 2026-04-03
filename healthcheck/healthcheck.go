@@ -7,14 +7,13 @@ import (
 	"github.com/goceleris/celeris"
 )
 
-type probeResponse struct {
-	Status string `json:"status"`
-}
-
+// Pre-serialized JSON responses avoid per-request encoding overhead.
 var (
-	responseOK          = probeResponse{Status: "ok"}
-	responseUnavailable = probeResponse{Status: "unavailable"}
+	jsonOK          = []byte(`{"status":"ok"}`)
+	jsonUnavailable = []byte(`{"status":"unavailable"}`)
 )
+
+const jsonContentType = "application/json"
 
 // New creates a healthcheck middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
@@ -115,14 +114,13 @@ func safeCheck(checker Checker, c *celeris.Context) (ok bool) {
 
 func respond(c *celeris.Context, ok bool, head bool) error {
 	status := 503
+	body := jsonUnavailable
 	if ok {
 		status = 200
+		body = jsonOK
 	}
 	if head {
 		return c.NoContent(status)
 	}
-	if ok {
-		return c.JSON(status, responseOK)
-	}
-	return c.JSON(status, responseUnavailable)
+	return c.Blob(status, jsonContentType, body)
 }

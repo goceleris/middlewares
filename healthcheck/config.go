@@ -52,8 +52,11 @@ type Config struct {
 	// the probe returns 503 unavailable.
 	//
 	// Special values:
-	//   0                — use default (5s)
-	//   FastPathTimeout  — run synchronously without goroutine/channel/context
+	//   0               — use default (5s)
+	//   FastPathTimeout — run synchronously without goroutine/channel/context
+	//                     overhead (recommended for trivial checkers that
+	//                     cannot block; use the FastPathTimeout constant
+	//                     rather than a raw negative literal)
 	//
 	// Default: 5s.
 	CheckerTimeout time.Duration
