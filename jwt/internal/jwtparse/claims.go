@@ -98,6 +98,12 @@ func (c RegisteredClaims) Valid() error {
 }
 
 // MapClaims is an unstructured claims type backed by a map.
+//
+// Numeric claims (exp, nbf, iat) are stored as float64 when parsed from
+// JSON by the internal parser. When constructing MapClaims
+// programmatically, int64 and int values are also accepted by
+// numericClaim and the time-validation methods. json.Number (from
+// encoding/json with UseNumber) is also supported.
 type MapClaims map[string]any
 
 // Valid validates exp, nbf, and iat claims against the current time.
@@ -125,6 +131,9 @@ func (c MapClaims) Valid() error {
 	return nil
 }
 
+// numericClaim extracts a numeric claim as int64. Handles float64 (from
+// the internal parser), json.Number (from encoding/json), and int64/int
+// (from programmatic MapClaims construction).
 func (c MapClaims) numericClaim(key string) (int64, bool) {
 	v, ok := c[key]
 	if !ok {
@@ -132,6 +141,10 @@ func (c MapClaims) numericClaim(key string) (int64, bool) {
 	}
 	switch n := v.(type) {
 	case float64:
+		return int64(n), true
+	case int64:
+		return n, true
+	case int:
 		return int64(n), true
 	case json.Number:
 		if i, err := n.Int64(); err == nil {

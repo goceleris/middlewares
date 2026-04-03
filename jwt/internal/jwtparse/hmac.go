@@ -13,7 +13,13 @@ import (
 type signingMethodHMAC struct {
 	alg  string
 	hash crypto.Hash
-	pool sync.Pool // stores *hmacEntry
+	// pool caches *hmacEntry instances to amortize HMAC hasher creation.
+	// Each entry contains the hash.Hash and the key it was created with.
+	// On Get, we verify the pooled entry's key matches via constant-time
+	// compare; on mismatch we discard it and create a new hasher. This
+	// is safe because sync.Pool items are per-P and have no cross-goroutine
+	// sharing guarantees -- the pool only provides a performance hint.
+	pool sync.Pool
 }
 
 type hmacEntry struct {
@@ -96,8 +102,14 @@ func (m *signingMethodHMAC) Sign(signingInput string, key any) ([]byte, error) {
 	return result, nil
 }
 
-// stringToBytes converts a string to []byte without copying.
-// The returned slice MUST NOT be modified.
+// stringToBytes converts a string to []byte without copying, using
+// unsafe.Slice on the string's underlying data pointer. This is safe
+// because the returned slice is only used for read-only operations
+// (HMAC write, hash write, ed25519.Verify). The slice MUST NOT be
+// modified, as the underlying memory belongs to an immutable Go string.
+//
+// This avoids a heap allocation per Verify/Sign call on the signing
+// input, which is a substring of the original token string.
 func stringToBytes(s string) []byte {
 	return unsafe.Slice(unsafe.StringData(s), len(s))
 }

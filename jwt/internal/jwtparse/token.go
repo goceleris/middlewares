@@ -120,16 +120,27 @@ func (p *Parser) ParseWithClaims(tokenString string, claims Claims, keyFunc Keyf
 		return nil, ErrTokenMalformed
 	}
 
-	// 2. Decode header into stack buffer.
+	// 2. Decode header into stack buffer; fall back to heap for large headers.
 	headerSeg := tokenString[:dot1]
+	var headerBytes []byte
 	var headerBuf [256]byte
 	hn, err := base64Decode(headerBuf[:], headerSeg)
 	if err != nil {
-		return nil, ErrTokenMalformed
+		if base64.RawURLEncoding.DecodedLen(len(headerSeg)) > len(headerBuf) {
+			headerBytes, err = base64DecodeAlloc(headerSeg)
+			if err != nil {
+				return nil, ErrTokenMalformed
+			}
+		} else {
+			return nil, ErrTokenMalformed
+		}
+	}
+	if headerBytes == nil {
+		headerBytes = headerBuf[:hn]
 	}
 
 	var header Header
-	if err := parseHeader(headerBuf[:hn], &header); err != nil {
+	if err := parseHeader(headerBytes, &header); err != nil {
 		return nil, ErrTokenMalformed
 	}
 
@@ -149,15 +160,27 @@ func (p *Parser) ParseWithClaims(tokenString string, claims Claims, keyFunc Keyf
 		}
 	}
 
-	// 5. Decode claims. Use stack buffer for MapClaims (typical JWT claims < 1KB).
+	// 5. Decode claims. Use stack buffer for MapClaims (typical JWT claims < 1KB);
+	// fall back to heap allocation when the decoded payload exceeds the buffer.
 	claimsSeg := tokenString[dot1+1 : dot2]
 	if _, ok := claims.(MapClaims); ok {
+		var claimsData []byte
 		var claimsBuf [1024]byte
-		cn, err := base64Decode(claimsBuf[:], claimsSeg)
-		if err != nil {
-			return nil, ErrTokenMalformed
+		cn, cerr := base64Decode(claimsBuf[:], claimsSeg)
+		if cerr != nil {
+			if base64.RawURLEncoding.DecodedLen(len(claimsSeg)) > len(claimsBuf) {
+				claimsData, cerr = base64DecodeAlloc(claimsSeg)
+				if cerr != nil {
+					return nil, ErrTokenMalformed
+				}
+			} else {
+				return nil, ErrTokenMalformed
+			}
 		}
-		if err := unmarshalClaims(claimsBuf[:cn], claims); err != nil {
+		if claimsData == nil {
+			claimsData = claimsBuf[:cn]
+		}
+		if err := unmarshalClaims(claimsData, claims); err != nil {
 			return nil, ErrTokenMalformed
 		}
 	} else {
@@ -170,14 +193,26 @@ func (p *Parser) ParseWithClaims(tokenString string, claims Claims, keyFunc Keyf
 		}
 	}
 
-	// 6. Decode signature into stack buffer.
+	// 6. Decode signature into stack buffer (1024B covers RSA-4096 and future key sizes);
+	// fall back to heap for unusually large signatures.
 	sigSeg := tokenString[dot2+1:]
-	var sigBuf [512]byte
+	var sigBytes []byte
+	var sigBuf [1024]byte
 	sn, err := base64Decode(sigBuf[:], sigSeg)
 	if err != nil {
-		return nil, ErrTokenMalformed
+		if base64.RawURLEncoding.DecodedLen(len(sigSeg)) > len(sigBuf) {
+			sigBytes, err = base64DecodeAlloc(sigSeg)
+			if err != nil {
+				return nil, ErrTokenMalformed
+			}
+		} else {
+			return nil, ErrTokenMalformed
+		}
 	}
-	sig := sigBuf[:sn]
+	if sigBytes == nil {
+		sigBytes = sigBuf[:sn]
+	}
+	sig := sigBytes
 
 	// 7. Build token, call keyfunc.
 	token := &Token{

@@ -546,17 +546,32 @@ func TestParamExtractorSupported(t *testing.T) {
 	assertStatus(t, rec, 200)
 }
 
-func TestBearerPrefixCaseSensitive(t *testing.T) {
+func TestBearerPrefixCaseInsensitive(t *testing.T) {
 	tokenStr := signToken(jwtparse.MapClaims{"sub": "1234"})
 	mw := New(Config{SigningKey: testSecret})
 	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
 	chain := []celeris.HandlerFunc{mw, handler}
 
-	// Lowercase "bearer" should NOT match "Bearer " prefix.
-	_, err := runChain(t, chain, "GET", "/",
+	// Lowercase "bearer" should match "Bearer " prefix (case-insensitive).
+	rec, err := runChain(t, chain, "GET", "/",
 		celeristest.WithHeader("authorization", "bearer "+tokenStr),
 	)
-	assertHTTPError(t, err, 401)
+	assertNoError(t, err)
+	assertStatus(t, rec, 200)
+
+	// Mixed case "BEARER" should also match.
+	rec, err = runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "BEARER "+tokenStr),
+	)
+	assertNoError(t, err)
+	assertStatus(t, rec, 200)
+
+	// "BeArEr" should also match.
+	rec, err = runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "BeArEr "+tokenStr),
+	)
+	assertNoError(t, err)
+	assertStatus(t, rec, 200)
 }
 
 func TestSkipDoesNotStoreToken(t *testing.T) {

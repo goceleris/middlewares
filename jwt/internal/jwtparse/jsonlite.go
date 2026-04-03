@@ -179,6 +179,8 @@ func internHeaderString(b []byte) (string, bool) {
 }
 
 // skipValue skips a JSON value at the current position.
+// Tolerates unterminated strings/structures at EOF (the caller's
+// enclosing parse loop will detect the structural error).
 func (p *jsonParser) skipValue() {
 	p.skipWS()
 	if p.pos >= len(p.data) {
@@ -191,7 +193,10 @@ func (p *jsonParser) skipValue() {
 		for p.pos < len(p.data) {
 			switch p.data[p.pos] {
 			case '\\':
-				p.pos += 2
+				p.pos++
+				if p.pos < len(p.data) {
+					p.pos++
+				}
 			case '"':
 				p.pos++
 				return
@@ -227,7 +232,10 @@ func (p *jsonParser) skipBraced(open, closeByte byte) {
 			p.pos++
 			for p.pos < len(p.data) {
 				if p.data[p.pos] == '\\' {
-					p.pos += 2
+					p.pos++
+					if p.pos < len(p.data) {
+						p.pos++
+					}
 				} else if p.data[p.pos] == '"' {
 					p.pos++
 					break
@@ -470,6 +478,10 @@ func (p *jsonParser) parseString() (string, error) {
 			}
 			return s, nil
 		}
+		// Reject bare control characters (U+0000-U+001F) per RFC 8259 section 7.
+		if c < 0x20 {
+			return "", errJSON
+		}
 		p.pos++
 	}
 	return "", errJSON
@@ -477,14 +489,53 @@ func (p *jsonParser) parseString() (string, error) {
 
 func (p *jsonParser) parseNumber() (float64, error) {
 	start := p.pos
-	for p.pos < len(p.data) {
-		c := p.data[p.pos]
-		if (c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E' {
+
+	// Optional leading minus.
+	if p.pos < len(p.data) && p.data[p.pos] == '-' {
+		p.pos++
+	}
+
+	// Integer part: '0' or non-zero digit followed by more digits.
+	if p.pos >= len(p.data) || p.data[p.pos] < '0' || p.data[p.pos] > '9' {
+		return 0, errJSON
+	}
+	if p.data[p.pos] == '0' {
+		p.pos++
+		// Leading zero must not be followed by another digit (e.g. 01).
+		if p.pos < len(p.data) && p.data[p.pos] >= '0' && p.data[p.pos] <= '9' {
+			return 0, errJSON
+		}
+	} else {
+		for p.pos < len(p.data) && p.data[p.pos] >= '0' && p.data[p.pos] <= '9' {
 			p.pos++
-		} else {
-			break
 		}
 	}
+
+	// Optional fraction.
+	if p.pos < len(p.data) && p.data[p.pos] == '.' {
+		p.pos++
+		if p.pos >= len(p.data) || p.data[p.pos] < '0' || p.data[p.pos] > '9' {
+			return 0, errJSON
+		}
+		for p.pos < len(p.data) && p.data[p.pos] >= '0' && p.data[p.pos] <= '9' {
+			p.pos++
+		}
+	}
+
+	// Optional exponent.
+	if p.pos < len(p.data) && (p.data[p.pos] == 'e' || p.data[p.pos] == 'E') {
+		p.pos++
+		if p.pos < len(p.data) && (p.data[p.pos] == '+' || p.data[p.pos] == '-') {
+			p.pos++
+		}
+		if p.pos >= len(p.data) || p.data[p.pos] < '0' || p.data[p.pos] > '9' {
+			return 0, errJSON
+		}
+		for p.pos < len(p.data) && p.data[p.pos] >= '0' && p.data[p.pos] <= '9' {
+			p.pos++
+		}
+	}
+
 	if p.pos == start {
 		return 0, errJSON
 	}
@@ -573,10 +624,30 @@ func unescapeJSON(s string) (string, error) {
 			if err != nil {
 				return "", errJSON
 			}
+			i += 4
+			// Handle UTF-16 surrogate pairs: \uD800-\uDBFF followed by \uDC00-\uDFFF.
+			if r >= 0xD800 && r <= 0xDBFF {
+				if i+6 < len(s) && s[i+1] == '\\' && s[i+2] == 'u' {
+					lo, err2 := strconv.ParseUint(s[i+3:i+7], 16, 32)
+					if err2 != nil {
+						return "", errJSON
+					}
+					if lo >= 0xDC00 && lo <= 0xDFFF {
+						r = 0x10000 + (r-0xD800)*0x400 + (lo - 0xDC00)
+						i += 6
+					} else {
+						return "", errJSON
+					}
+				} else {
+					return "", errJSON
+				}
+			} else if r >= 0xDC00 && r <= 0xDFFF {
+				// Lone low surrogate is invalid.
+				return "", errJSON
+			}
 			var ubuf [4]byte
 			n := utf8.EncodeRune(ubuf[:], rune(r))
 			buf = append(buf, ubuf[:n]...)
-			i += 4
 		default:
 			return "", errJSON
 		}
