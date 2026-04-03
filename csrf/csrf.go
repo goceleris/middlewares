@@ -2,6 +2,7 @@ package csrf
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"net/url"
@@ -18,32 +19,36 @@ const ContextKey = "csrf_token"
 // handlerContextKey is the context store key for the Handler instance.
 const handlerContextKey = "csrf_handler"
 
-// ErrForbidden is returned when the submitted CSRF token does not match
-// the cookie token.
-var ErrForbidden = celeris.NewHTTPError(403, "Forbidden")
+// Sentinel errors returned by the CSRF middleware. These are package-level
+// variables for use with errors.Is. Do not reassign them.
+var (
+	// ErrForbidden is returned when the submitted CSRF token does not match
+	// the cookie token.
+	ErrForbidden = celeris.NewHTTPError(403, "Forbidden")
 
-// ErrMissingToken is returned when the CSRF token is absent from the
-// cookie or the request source.
-var ErrMissingToken = celeris.NewHTTPError(403, "Missing CSRF token")
+	// ErrMissingToken is returned when the CSRF token is absent from the
+	// cookie or the request source.
+	ErrMissingToken = celeris.NewHTTPError(403, "Missing CSRF token")
 
-// ErrTokenNotFound is returned by DeleteToken when no token exists.
-var ErrTokenNotFound = celeris.NewHTTPError(404, "Token not found")
+	// ErrTokenNotFound is returned by DeleteToken when no token exists.
+	ErrTokenNotFound = celeris.NewHTTPError(404, "Token not found")
 
-// ErrOriginMismatch is returned when the Origin header does not match
-// the request host or any trusted origin.
-var ErrOriginMismatch = celeris.NewHTTPError(403, "csrf: origin does not match")
+	// ErrOriginMismatch is returned when the Origin header does not match
+	// the request host or any trusted origin.
+	ErrOriginMismatch = celeris.NewHTTPError(403, "csrf: origin does not match")
 
-// ErrRefererMissing is returned when the Referer header is absent on an
-// HTTPS request with no Origin header.
-var ErrRefererMissing = celeris.NewHTTPError(403, "csrf: referer header missing")
+	// ErrRefererMissing is returned when the Referer header is absent on an
+	// HTTPS request with no Origin header.
+	ErrRefererMissing = celeris.NewHTTPError(403, "csrf: referer header missing")
 
-// ErrRefererMismatch is returned when the Referer header does not match
-// the request host or any trusted origin.
-var ErrRefererMismatch = celeris.NewHTTPError(403, "csrf: referer does not match")
+	// ErrRefererMismatch is returned when the Referer header does not match
+	// the request host or any trusted origin.
+	ErrRefererMismatch = celeris.NewHTTPError(403, "csrf: referer does not match")
 
-// ErrSecFetchSite is returned when the Sec-Fetch-Site header value is
-// "cross-site", indicating a cross-site request.
-var ErrSecFetchSite = celeris.NewHTTPError(403, "csrf: sec-fetch-site is cross-site")
+	// ErrSecFetchSite is returned when the Sec-Fetch-Site header value is
+	// "cross-site", indicating a cross-site request.
+	ErrSecFetchSite = celeris.NewHTTPError(403, "csrf: sec-fetch-site is cross-site")
+)
 
 // tokenExtractor extracts a token string from the request.
 type tokenExtractor func(c *celeris.Context) string
@@ -72,7 +77,7 @@ func (h *Handler) DeleteToken(c *celeris.Context) error {
 		return ErrTokenNotFound
 	}
 	if h.storage != nil {
-		h.storage.Delete(cookieToken)
+		h.storage.Delete(storageKey(cookieToken))
 	}
 	c.SetCookie(&celeris.Cookie{
 		Name:     h.cookieName,
@@ -193,16 +198,19 @@ func New(config ...Config) celeris.HandlerFunc {
 
 		if safe {
 			token, err := c.Cookie(cookieName)
+			newToken := false
 			if err != nil || token == "" {
 				token = genToken()
+				newToken = true
 			} else if storage != nil {
 				// In storage mode, verify the cookie token still exists.
-				if _, ok := storage.Get(token); !ok {
+				if _, ok := storage.Get(storageKey(token)); !ok {
 					token = genToken()
+					newToken = true
 				}
 			}
-			if storage != nil {
-				storage.Set(token, token, expiration)
+			if storage != nil && newToken {
+				storage.Set(storageKey(token), token, expiration)
 			}
 			setCookie(c, token)
 			c.AddHeader("vary", "Cookie")
@@ -229,7 +237,11 @@ func New(config ...Config) celeris.HandlerFunc {
 			if referer == "" {
 				return errorHandler(c, ErrRefererMissing)
 			}
-			if !isOriginAllowed(referer, c.Host(), trustedOrigins, wildcardOrigins) {
+			refOrigin := extractOrigin(referer)
+			if refOrigin == "" {
+				return errorHandler(c, ErrRefererMismatch)
+			}
+			if !isOriginAllowed(refOrigin, c.Host(), trustedOrigins, wildcardOrigins) {
 				return errorHandler(c, ErrRefererMismatch)
 			}
 		}
@@ -245,16 +257,24 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 
 		if storage != nil {
-			// Server-side validation: token must exist in storage.
-			storedToken, ok := storage.Get(cookieToken)
+			key := storageKey(cookieToken)
+			var storedToken string
+			var ok bool
+			if singleUse {
+				// Atomic get-and-delete prevents TOCTOU race on single-use tokens.
+				var err error
+				storedToken, ok, err = storage.GetAndDelete(key)
+				if err != nil {
+					return errorHandler(c, ErrForbidden)
+				}
+			} else {
+				storedToken, ok = storage.Get(key)
+			}
 			if !ok {
 				return errorHandler(c, ErrForbidden)
 			}
 			if subtle.ConstantTimeCompare([]byte(storedToken), []byte(requestToken)) != 1 {
 				return errorHandler(c, ErrForbidden)
-			}
-			if singleUse {
-				storage.Delete(cookieToken)
 			}
 		} else {
 			if subtle.ConstantTimeCompare([]byte(cookieToken), []byte(requestToken)) != 1 {
@@ -291,6 +311,23 @@ func isOriginAllowed(origin, host string, trusted map[string]struct{}, wildcards
 		}
 	}
 	return false
+}
+
+// extractOrigin parses a URL and returns scheme + "://" + host.
+// Returns an empty string if parsing fails or the host is absent.
+func extractOrigin(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+// storageKey returns a SHA-256 hex digest of the token for use as a storage key.
+// This prevents leaking raw tokens through the storage backend.
+func storageKey(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
 }
 
 // TokenFromContext returns the CSRF token from the context store.
@@ -362,6 +399,9 @@ func buildExtractor(lookup string) tokenExtractor {
 
 func buildSingleExtractor(lookup string) tokenExtractor {
 	parts := strings.SplitN(lookup, ":", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		panic("csrf: TokenLookup segment must be \"source:name\", got \"" + lookup + "\"")
+	}
 	source := strings.ToLower(parts[0])
 	name := parts[1]
 
@@ -402,9 +442,14 @@ func generateToken(length int) string {
 	g.mu.Lock()
 	remaining := tokenBufSize - g.pos
 	if remaining < length {
-		if _, err := rand.Read(g.buf[:]); err != nil {
+		n, err := rand.Read(g.buf[:])
+		if err != nil {
 			g.mu.Unlock()
 			panic("csrf: crypto/rand failed: " + err.Error())
+		}
+		if n < tokenBufSize {
+			g.mu.Unlock()
+			panic("csrf: crypto/rand short read")
 		}
 		g.pos = 0
 	}

@@ -20,6 +20,12 @@ type Storage interface {
 
 	// Delete removes a token by key.
 	Delete(key string)
+
+	// GetAndDelete atomically retrieves and removes a token by key.
+	// Returns the token, true, and nil if found and not expired.
+	// Returns empty string, false, and nil if not found or expired.
+	// Used for single-use token validation to prevent TOCTOU races.
+	GetAndDelete(key string) (string, bool, error)
 }
 
 // MemoryStorageConfig configures the in-memory CSRF token store.
@@ -124,25 +130,50 @@ func (m *memoryStorage) Delete(key string) {
 	s.mu.Unlock()
 }
 
+func (m *memoryStorage) GetAndDelete(key string) (string, bool, error) {
+	s := m.shard(key)
+	s.mu.Lock()
+	item, ok := s.items[key]
+	if !ok {
+		s.mu.Unlock()
+		return "", false, nil
+	}
+	if item.expiry > 0 && time.Now().UnixNano() > item.expiry {
+		delete(s.items, key)
+		s.mu.Unlock()
+		return "", false, nil
+	}
+	token := item.token
+	delete(s.items, key)
+	s.mu.Unlock()
+	return token, true, nil
+}
+
 func (m *memoryStorage) cleanup(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	shardIdx := 0
+	shardsPerTick := 4
+	if len(m.shards) < shardsPerTick {
+		shardsPerTick = len(m.shards)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			s := &m.shards[shardIdx%len(m.shards)]
-			shardIdx++
 			nowNano := now.UnixNano()
-			s.mu.Lock()
-			for k, item := range s.items {
-				if item.expiry > 0 && nowNano > item.expiry {
-					delete(s.items, k)
+			for range shardsPerTick {
+				s := &m.shards[shardIdx%len(m.shards)]
+				shardIdx++
+				s.mu.Lock()
+				for k, item := range s.items {
+					if item.expiry > 0 && nowNano > item.expiry {
+						delete(s.items, k)
+					}
 				}
+				s.mu.Unlock()
 			}
-			s.mu.Unlock()
 		}
 	}
 }

@@ -205,4 +205,45 @@
 //	        return c.String(403, "CSRF validation failed")
 //	    },
 //	}))
+//
+// # CookieMaxAge Zero Value
+//
+// [Config].CookieMaxAge has a default of 86400 (24 hours). A zero value
+// is treated as "use the default", not "no max-age". To create a
+// session-scoped cookie (deleted when the browser closes), set
+// [Config].CookieSessionOnly to true instead.
+//
+// # HTTP Limitation
+//
+// On plain HTTP (non-TLS) requests, the Referer-based defense-in-depth
+// check is skipped because Referer headers are unreliable over
+// unencrypted connections. The Sec-Fetch-Site and Origin header checks
+// still apply when the browser sends them, but browsers may omit these
+// headers on HTTP. The double-submit cookie pattern remains the primary
+// defense. For full protection, deploy behind TLS.
+//
+// # Token Lifecycle
+//
+// Tokens persist until the cookie expires or is deleted (via
+// [DeleteToken]). The middleware does not regenerate tokens after
+// unsafe methods; this is intentional to avoid breaking concurrent
+// browser tabs that share the same CSRF cookie. Applications that
+// require per-request tokens should enable [Config].SingleUseToken
+// with server-side [Config].Storage.
+//
+// # Sec-Fetch-Site
+//
+// The Sec-Fetch-Site header check is defense-in-depth only. Not all
+// browsers send this header, and it can be absent on same-origin
+// requests in older user agents. The middleware rejects requests only
+// when the header is explicitly "cross-site"; absence of the header
+// does not trigger rejection. Do not rely on this check as the sole
+// CSRF defense.
+//
+// # Sentinel Errors
+//
+// The package exports sentinel errors ([ErrForbidden], [ErrMissingToken],
+// [ErrTokenNotFound], [ErrOriginMismatch], [ErrRefererMissing],
+// [ErrRefererMismatch], [ErrSecFetchSite]) as package-level variables
+// for use with errors.Is. Do not reassign these variables.
 package csrf

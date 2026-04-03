@@ -944,8 +944,8 @@ func TestStorageSafeMethodStoresToken(t *testing.T) {
 	if token == "" {
 		t.Fatal("expected token")
 	}
-	// Token should be in storage.
-	stored, ok := store.Get(token)
+	// Token should be in storage under the hashed key.
+	stored, ok := store.Get(storageKey(token))
 	if !ok {
 		t.Fatal("token not found in storage")
 	}
@@ -959,7 +959,7 @@ func TestStorageUnsafeMethodValidates(t *testing.T) {
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
 	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(token, token, time.Hour)
+	store.Set(storageKey(token), token, time.Hour)
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
@@ -979,7 +979,7 @@ func TestStorageUnsafeMethodRejectsExpiredToken(t *testing.T) {
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
 	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	// Store with a past expiry.
-	store.Set(token, token, time.Nanosecond)
+	store.Set(storageKey(token), token, time.Nanosecond)
 	time.Sleep(time.Millisecond)
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
@@ -1016,7 +1016,7 @@ func TestStorageUnsafeMethodRejectsMismatchedRequestToken(t *testing.T) {
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
 	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(token, token, time.Hour)
+	store.Set(storageKey(token), token, time.Hour)
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
@@ -1061,7 +1061,7 @@ func TestSingleUseTokenDeletesAfterValidation(t *testing.T) {
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
 	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(token, token, time.Hour)
+	store.Set(storageKey(token), token, time.Hour)
 	mw := New(Config{Storage: store, SingleUseToken: true})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
@@ -1077,7 +1077,7 @@ func TestSingleUseTokenDeletesAfterValidation(t *testing.T) {
 	testutil.AssertStatus(t, rec, 200)
 
 	// Token should be deleted from storage.
-	_, ok := store.Get(token)
+	_, ok := store.Get(storageKey(token))
 	if ok {
 		t.Fatal("expected token to be deleted from storage after single use")
 	}
@@ -1414,7 +1414,7 @@ func TestDeleteTokenWithStorage(t *testing.T) {
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
 	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(token, token, time.Hour)
+	store.Set(storageKey(token), token, time.Hour)
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
 		err := DeleteToken(c)
@@ -1431,7 +1431,7 @@ func TestDeleteTokenWithStorage(t *testing.T) {
 	testutil.AssertStatus(t, rec, 200)
 
 	// Token should be removed from storage.
-	_, ok := store.Get(token)
+	_, ok := store.Get(storageKey(token))
 	if ok {
 		t.Fatal("expected token to be deleted from storage")
 	}
@@ -1525,7 +1525,7 @@ func TestHandlerDeleteToken(t *testing.T) {
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
 	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(token, token, time.Hour)
+	store.Set(storageKey(token), token, time.Hour)
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
 		h := HandlerFromContext(c)
@@ -1540,7 +1540,7 @@ func TestHandlerDeleteToken(t *testing.T) {
 	)
 	testutil.AssertNoError(t, err)
 
-	_, ok := store.Get(token)
+	_, ok := store.Get(storageKey(token))
 	if ok {
 		t.Fatal("expected token deleted")
 	}
@@ -1947,4 +1947,240 @@ func TestValidateMixedOriginsAllValid(t *testing.T) {
 			"https://*.example.com",
 		},
 	})
+}
+
+// --- GetAndDelete tests ---
+
+func TestMemoryStorageGetAndDelete(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := NewMemoryStorage(MemoryStorageConfig{Shards: 2, CleanupContext: ctx})
+
+	// GetAndDelete on non-existent key.
+	_, ok, err := store.GetAndDelete("missing")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Fatal("expected not found")
+	}
+
+	// Set and GetAndDelete.
+	store.Set("key1", "token1", time.Hour)
+	val, ok, err := store.GetAndDelete("key1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok || val != "token1" {
+		t.Fatalf("expected token1, got %q (ok=%v)", val, ok)
+	}
+
+	// Key should be gone after GetAndDelete.
+	_, ok = store.Get("key1")
+	if ok {
+		t.Fatal("expected key to be deleted after GetAndDelete")
+	}
+}
+
+func TestMemoryStorageGetAndDeleteExpired(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
+	store.Set("key1", "token1", time.Nanosecond)
+	time.Sleep(time.Millisecond)
+	_, ok, err := store.GetAndDelete("key1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Fatal("expected expired token not found")
+	}
+}
+
+func TestSingleUseTokenAtomicGetAndDelete(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
+	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	store.Set(storageKey(token), token, time.Hour)
+	mw := New(Config{Storage: store, SingleUseToken: true})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// First request succeeds and atomically deletes the token.
+	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", token),
+		celeristest.WithCookie("_csrf", token),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+
+	// Verify token is gone.
+	_, ok := store.Get(storageKey(token))
+	if ok {
+		t.Fatal("expected token deleted after single use")
+	}
+}
+
+// --- extractOrigin tests ---
+
+func TestExtractOrigin(t *testing.T) {
+	tests := []struct {
+		name   string
+		rawURL string
+		want   string
+	}{
+		{"full URL with path", "https://example.com/path/to/page", "https://example.com"},
+		{"full URL with port", "https://example.com:8080/path", "https://example.com:8080"},
+		{"origin only", "https://example.com", "https://example.com"},
+		{"http scheme", "http://example.com/page", "http://example.com"},
+		{"invalid URL", "://bad", ""},
+		{"no host", "data:text/html,hello", ""},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractOrigin(tt.rawURL)
+			if got != tt.want {
+				t.Fatalf("extractOrigin(%q) = %q, want %q", tt.rawURL, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- storageKey tests ---
+
+func TestStorageKeyIsHashed(t *testing.T) {
+	token := "test-token"
+	key := storageKey(token)
+	// SHA-256 hex digest is 64 characters.
+	if len(key) != 64 {
+		t.Fatalf("expected 64-char hex digest, got %d chars", len(key))
+	}
+	// Key should not equal the raw token.
+	if key == token {
+		t.Fatal("storage key should be hashed, not plaintext")
+	}
+	// Same input should produce same key.
+	if storageKey(token) != key {
+		t.Fatal("storageKey is not deterministic")
+	}
+}
+
+// --- Referer parsing tests ---
+
+func TestRefererFullURLExtractsOriginForComparison(t *testing.T) {
+	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	mw := New(Config{
+		TrustedOrigins: []string{"https://trusted.example.com"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// Referer with path should match trusted origin (scheme+host extracted).
+	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", token),
+		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-forwarded-proto", "https"),
+		celeristest.WithHeader("referer", "https://trusted.example.com/some/path?q=1"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestRefererWithPathMatchesHost(t *testing.T) {
+	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	mw := New()
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// Referer "https://localhost/deep/path" should match host "localhost".
+	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", token),
+		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-forwarded-proto", "https"),
+		celeristest.WithHeader("referer", "https://localhost/deep/path?key=value"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestRefererWildcardMatchesOriginOnly(t *testing.T) {
+	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	mw := New(Config{
+		TrustedOrigins: []string{"https://*.example.com"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// Referer with path should work with wildcard trusted origins.
+	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", token),
+		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-forwarded-proto", "https"),
+		celeristest.WithHeader("referer", "https://app.example.com/api/v1/action"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+// --- buildSingleExtractor safety test ---
+
+func TestBuildSingleExtractorNoColonPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for TokenLookup segment without colon")
+		}
+	}()
+	buildSingleExtractor("headeronly")
+}
+
+func TestBuildSingleExtractorEmptyNamePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for TokenLookup segment with empty name")
+		}
+	}()
+	buildSingleExtractor("header:")
+}
+
+// --- Safe-method does not refresh expiry for existing tokens ---
+
+func TestSafeMethodDoesNotRefreshExpiryForExistingToken(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
+
+	// Simulate a token that was already stored.
+	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	store.Set(storageKey(token), token, 100*time.Millisecond)
+
+	mw := New(Config{Storage: store, Expiration: time.Hour})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// Safe-method request with existing cookie and token in storage.
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithCookie("_csrf", token),
+	)
+	testutil.AssertNoError(t, err)
+
+	// Wait for the original short expiry to pass.
+	time.Sleep(150 * time.Millisecond)
+
+	// The token should have expired because the safe method did NOT refresh it.
+	_, ok := store.Get(storageKey(token))
+	if ok {
+		t.Fatal("expected token to expire (safe method should not refresh expiry)")
+	}
 }
