@@ -35,6 +35,7 @@ func (g *bufferedGenerator) UUID() string {
 	g.mu.Unlock()
 
 	// Set version 4 and variant bits.
+	// Safe outside the critical section: raw is a local copy, not shared.
 	raw[6] = (raw[6] & 0x0f) | 0x40 // version 4
 	raw[8] = (raw[8] & 0x3f) | 0x80 // variant 10xx
 
@@ -54,6 +55,10 @@ func (g *bufferedGenerator) UUID() string {
 
 // CounterGenerator returns a monotonic ID generator: "{prefix}-{counter}".
 // Zero syscalls after init. For non-cryptographic use cases.
+//
+// The counter is process-local (in-memory atomic). Multiple processes
+// or restarts will produce overlapping sequences. For cross-process
+// uniqueness, include a process identifier in the prefix.
 func CounterGenerator(prefix string) func() string {
 	var counter atomic.Uint64
 	return func() string {

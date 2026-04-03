@@ -100,9 +100,14 @@ func TestHSTSIncludeSubdomainsDefault(t *testing.T) {
 }
 
 func TestHSTSIncludeSubdomainsDefaultWithCustomConfig(t *testing.T) {
-	// When user provides a partial config (e.g. just CSP), includeSubDomains
-	// should still be present because HSTSExcludeSubdomains defaults to false.
-	mw := New(Config{ContentSecurityPolicy: "default-src 'self'"})
+	// When user provides a partial config with an explicit HSTSMaxAge,
+	// includeSubDomains should be present because HSTSExcludeSubdomains
+	// defaults to false. Note: any user-provided Config treats HSTSMaxAge=0
+	// as explicit (disabling HSTS), so we set HSTSMaxAge to the default value.
+	mw := New(Config{
+		ContentSecurityPolicy: "default-src 'self'",
+		HSTSMaxAge:            63072000,
+	})
 	chain := []celeris.HandlerFunc{mw, okHandler}
 	rec, err := testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithHeader("x-forwarded-proto", "https"))
@@ -247,7 +252,7 @@ func TestSkipPaths(t *testing.T) {
 }
 
 func TestApplyDefaultsFillsEmptyFields(t *testing.T) {
-	cfg := applyDefaults(Config{})
+	cfg := applyDefaults(Config{}, false)
 	if cfg.XContentTypeOptions != "nosniff" {
 		t.Fatalf("XContentTypeOptions: got %q, want %q", cfg.XContentTypeOptions, "nosniff")
 	}
@@ -292,7 +297,7 @@ func TestApplyDefaultsPreservesCustomValues(t *testing.T) {
 		XFrameOptions:       "DENY",
 		HSTSMaxAge:          3600,
 		ReferrerPolicy:      "no-referrer",
-	})
+	}, true)
 	if cfg.XContentTypeOptions != "custom" {
 		t.Fatalf("XContentTypeOptions: got %q, want %q", cfg.XContentTypeOptions, "custom")
 	}
@@ -334,7 +339,7 @@ func TestBuildHeadersSkipsEmptyStrings(t *testing.T) {
 }
 
 func TestBuildHeadersDefaultCount(t *testing.T) {
-	cfg := applyDefaults(Config{})
+	cfg := applyDefaults(Config{}, false)
 	headers := buildHeaders(cfg)
 	// Default config should produce 11 headers (no CSP, no PermissionsPolicy).
 	// x-content-type-options, x-frame-options, x-xss-protection,
@@ -351,7 +356,7 @@ func TestBuildHeadersWithCSPAndPermissions(t *testing.T) {
 	cfg := applyDefaults(Config{
 		ContentSecurityPolicy: "default-src 'self'",
 		PermissionsPolicy:     "camera=()",
-	})
+	}, false)
 	headers := buildHeaders(cfg)
 	// 11 defaults + CSP + PermissionsPolicy = 13.
 	if len(headers) != 13 {
@@ -360,32 +365,32 @@ func TestBuildHeadersWithCSPAndPermissions(t *testing.T) {
 }
 
 func TestDefaultConfigValues(t *testing.T) {
-	if DefaultConfig.XContentTypeOptions != "nosniff" {
-		t.Fatalf("DefaultConfig.XContentTypeOptions: got %q, want %q", DefaultConfig.XContentTypeOptions, "nosniff")
+	if defaultConfig.XContentTypeOptions != "nosniff" {
+		t.Fatalf("defaultConfig.XContentTypeOptions: got %q, want %q", defaultConfig.XContentTypeOptions, "nosniff")
 	}
-	if DefaultConfig.XFrameOptions != "SAMEORIGIN" {
-		t.Fatalf("DefaultConfig.XFrameOptions: got %q, want %q", DefaultConfig.XFrameOptions, "SAMEORIGIN")
+	if defaultConfig.XFrameOptions != "SAMEORIGIN" {
+		t.Fatalf("defaultConfig.XFrameOptions: got %q, want %q", defaultConfig.XFrameOptions, "SAMEORIGIN")
 	}
-	if DefaultConfig.XSSProtection != "0" {
-		t.Fatalf("DefaultConfig.XSSProtection: got %q, want %q", DefaultConfig.XSSProtection, "0")
+	if defaultConfig.XSSProtection != "0" {
+		t.Fatalf("defaultConfig.XSSProtection: got %q, want %q", defaultConfig.XSSProtection, "0")
 	}
-	if DefaultConfig.HSTSMaxAge != 63072000 {
-		t.Fatalf("DefaultConfig.HSTSMaxAge: got %d, want %d", DefaultConfig.HSTSMaxAge, 63072000)
+	if defaultConfig.HSTSMaxAge != 63072000 {
+		t.Fatalf("defaultConfig.HSTSMaxAge: got %d, want %d", defaultConfig.HSTSMaxAge, 63072000)
 	}
-	if DefaultConfig.HSTSExcludeSubdomains {
-		t.Fatal("DefaultConfig.HSTSExcludeSubdomains: got true, want false")
+	if defaultConfig.HSTSExcludeSubdomains {
+		t.Fatal("defaultConfig.HSTSExcludeSubdomains: got true, want false")
 	}
-	if DefaultConfig.HSTSPreload {
-		t.Fatal("DefaultConfig.HSTSPreload: got true, want false")
+	if defaultConfig.HSTSPreload {
+		t.Fatal("defaultConfig.HSTSPreload: got true, want false")
 	}
-	if DefaultConfig.ReferrerPolicy != "strict-origin-when-cross-origin" {
-		t.Fatalf("DefaultConfig.ReferrerPolicy: got %q, want %q", DefaultConfig.ReferrerPolicy, "strict-origin-when-cross-origin")
+	if defaultConfig.ReferrerPolicy != "strict-origin-when-cross-origin" {
+		t.Fatalf("defaultConfig.ReferrerPolicy: got %q, want %q", defaultConfig.ReferrerPolicy, "strict-origin-when-cross-origin")
 	}
-	if DefaultConfig.OriginAgentCluster != "?1" {
-		t.Fatalf("DefaultConfig.OriginAgentCluster: got %q, want %q", DefaultConfig.OriginAgentCluster, "?1")
+	if defaultConfig.OriginAgentCluster != "?1" {
+		t.Fatalf("defaultConfig.OriginAgentCluster: got %q, want %q", defaultConfig.OriginAgentCluster, "?1")
 	}
-	if DefaultConfig.XDownloadOptions != "noopen" {
-		t.Fatalf("DefaultConfig.XDownloadOptions: got %q, want %q", DefaultConfig.XDownloadOptions, "noopen")
+	if defaultConfig.XDownloadOptions != "noopen" {
+		t.Fatalf("defaultConfig.XDownloadOptions: got %q, want %q", defaultConfig.XDownloadOptions, "noopen")
 	}
 }
 
@@ -574,7 +579,7 @@ func TestSuppressMultipleHeaders(t *testing.T) {
 
 func TestSuppressNotOverriddenByDefaults(t *testing.T) {
 	// Suppress is not an empty string, so applyDefaults should NOT override it.
-	cfg := applyDefaults(Config{XContentTypeOptions: Suppress})
+	cfg := applyDefaults(Config{XContentTypeOptions: Suppress}, false)
 	if cfg.XContentTypeOptions != Suppress {
 		t.Fatalf("expected Suppress sentinel to survive applyDefaults, got %q", cfg.XContentTypeOptions)
 	}
