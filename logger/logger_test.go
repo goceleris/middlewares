@@ -578,8 +578,8 @@ func TestLogProtocol(t *testing.T) {
 	)
 	testutil.AssertNoError(t, err)
 	out := buf.String()
-	if !strings.Contains(out, `"protocol":"https"`) {
-		t.Fatalf("expected protocol field in log, got: %s", out)
+	if !strings.Contains(out, `"scheme":"https"`) {
+		t.Fatalf("expected scheme field in log, got: %s", out)
 	}
 }
 
@@ -595,8 +595,8 @@ func TestLogProtocolDisabledByDefault(t *testing.T) {
 	)
 	testutil.AssertNoError(t, err)
 	out := buf.String()
-	if strings.Contains(out, `"protocol"`) {
-		t.Fatalf("protocol should not be logged by default, got: %s", out)
+	if strings.Contains(out, `"scheme"`) {
+		t.Fatalf("scheme should not be logged by default, got: %s", out)
 	}
 }
 
@@ -610,8 +610,8 @@ func TestLogProtocolEmpty(t *testing.T) {
 	_, err := testutil.RunChain(t, chain, "GET", "/no-proto-hdr")
 	testutil.AssertNoError(t, err)
 	out := buf.String()
-	if strings.Contains(out, `"protocol"`) {
-		t.Fatalf("protocol should be omitted when header absent, got: %s", out)
+	if strings.Contains(out, `"scheme"`) {
+		t.Fatalf("scheme should be omitted when header absent, got: %s", out)
 	}
 }
 
@@ -695,7 +695,7 @@ func TestAllOptInFieldsTogether(t *testing.T) {
 	)
 	testutil.AssertNoError(t, err)
 	out := buf.String()
-	for _, field := range []string{`"host"`, `"user_agent"`, `"referer"`, `"protocol"`} {
+	for _, field := range []string{`"host"`, `"user_agent"`, `"referer"`, `"scheme"`} {
 		if !strings.Contains(out, field) {
 			t.Fatalf("missing %s in log with all opt-in fields: %s", field, out)
 		}
@@ -1667,3 +1667,365 @@ func TestJSONConfigUsable(t *testing.T) {
 		t.Fatalf("expected JSON output with method, got: %s", out)
 	}
 }
+
+// --- ForceColors ---
+
+func TestForceColors(t *testing.T) {
+	var buf bytes.Buffer
+	fh := NewFastHandler(&buf, &FastHandlerOptions{Color: false})
+	log := slog.New(fh)
+	mw := New(Config{Output: log, ForceColors: true, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/force-color")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, "\033[") {
+		t.Fatalf("expected ANSI codes with ForceColors, got: %s", out)
+	}
+}
+
+func TestForceColorsOverridesDisableColors(t *testing.T) {
+	var buf bytes.Buffer
+	fh := NewFastHandler(&buf, &FastHandlerOptions{Color: true})
+	log := slog.New(fh)
+	// Both DisableColors and ForceColors true → ForceColors wins.
+	mw := New(Config{Output: log, DisableColors: true, ForceColors: true, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/force-override")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, "\033[") {
+		t.Fatalf("ForceColors should override DisableColors, got: %s", out)
+	}
+}
+
+func TestForceColorsGroupHandler(t *testing.T) {
+	var buf bytes.Buffer
+	fh := NewFastHandler(&buf, &FastHandlerOptions{Color: false})
+	gh := fh.WithGroup("grp")
+	log := slog.New(gh)
+	mw := New(Config{Output: log, ForceColors: true, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/force-grp")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, "\033[") {
+		t.Fatalf("expected ANSI codes with ForceColors on groupHandler, got: %s", out)
+	}
+}
+
+// --- Fuzz parseCookieNames ---
+
+func FuzzParseCookieNames(f *testing.F) {
+	f.Add("session=abc; theme=dark")
+	f.Add("a=1; b=2;")
+	f.Add("bare")
+	f.Add("")
+	f.Add("  ; ; ;  ")
+	f.Add("=noname; good=val")
+	f.Add(strings.Repeat("k=v; ", 1000))
+	f.Fuzz(func(t *testing.T, raw string) {
+		result := parseCookieNames(raw)
+		// Must not panic (implicit).
+		// Invariant: result never contains '=' (names are before '=').
+		if strings.Contains(result, "=") {
+			t.Errorf("parseCookieNames(%q) contains '=': %s", raw, result)
+		}
+		// Invariant: empty input → empty result.
+		trimmed := strings.TrimFunc(raw, func(r rune) bool {
+			return r == ' ' || r == ';'
+		})
+		if trimmed == "" && result != "" {
+			t.Errorf("parseCookieNames(%q) should be empty for blank input, got: %s", raw, result)
+		}
+	})
+}
+
+// --- validate() panic ---
+
+func TestValidatePanicNegativeMaxCapture(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected validate() to panic on negative MaxCaptureBytes")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("expected string panic, got %T: %v", r, r)
+		}
+		if !strings.Contains(msg, "MaxCaptureBytes") {
+			t.Fatalf("panic message should mention MaxCaptureBytes, got: %s", msg)
+		}
+	}()
+	cfg := Config{
+		CaptureRequestBody: true,
+		MaxCaptureBytes:    -1,
+	}
+	cfg.validate()
+}
+
+func TestValidateNoPanicWhenCaptureDisabled(t *testing.T) {
+	// Negative MaxCaptureBytes should NOT panic when capture is disabled.
+	cfg := Config{
+		CaptureRequestBody:  false,
+		CaptureResponseBody: false,
+		MaxCaptureBytes:     -1,
+	}
+	cfg.validate() // must not panic
+}
+
+// --- DefaultSensitiveFormFields ---
+
+func TestDefaultSensitiveFormFields(t *testing.T) {
+	got := DefaultSensitiveFormFields()
+	if len(got) == 0 {
+		t.Fatal("DefaultSensitiveFormFields() should not be empty")
+	}
+	expected := map[string]bool{
+		"password":      true,
+		"passwd":        true,
+		"secret":        true,
+		"token":         true,
+		"access_token":  true,
+		"refresh_token": true,
+		"credit_card":   true,
+		"card_number":   true,
+		"cvv":           true,
+		"ssn":           true,
+	}
+	for _, f := range got {
+		if !expected[f] {
+			t.Fatalf("unexpected field in DefaultSensitiveFormFields(): %s", f)
+		}
+	}
+	if len(got) != len(expected) {
+		t.Fatalf("DefaultSensitiveFormFields() has %d entries, want %d", len(got), len(expected))
+	}
+	// Mutation safety.
+	got[0] = "MUTATED"
+	got2 := DefaultSensitiveFormFields()
+	for _, f := range got2 {
+		if f == "MUTATED" {
+			t.Fatal("DefaultSensitiveFormFields() returned a shared slice")
+		}
+	}
+}
+
+func TestDefaultSensitiveFormFieldsRedaction(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{
+		Output:              log,
+		LogFormValues:       true,
+		SensitiveFormFields: DefaultSensitiveFormFields(),
+		SensitiveHeaders:    []string{},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "POST", "/form-defaults",
+		celeristest.WithHeader("content-type", "application/x-www-form-urlencoded"),
+		celeristest.WithBody([]byte("username=alice&password=hunter2&ssn=123-45-6789")),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, "alice") {
+		t.Fatalf("non-sensitive field should be visible, got: %s", out)
+	}
+	if strings.Contains(out, "hunter2") {
+		t.Fatalf("password should be redacted with DefaultSensitiveFormFields, got: %s", out)
+	}
+	if strings.Contains(out, "123-45-6789") {
+		t.Fatalf("ssn should be redacted with DefaultSensitiveFormFields, got: %s", out)
+	}
+}
+
+// --- LogProtocol emits "scheme" attr, not "protocol" ---
+
+func TestLogProtocolEmitsSchemeAttr(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{Output: log, LogProtocol: true, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/scheme-attr",
+		celeristest.WithHeader("x-forwarded-proto", "https"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	// Must emit "scheme", NOT "protocol".
+	if strings.Contains(out, `"protocol"`) {
+		t.Fatalf("LogProtocol should emit 'scheme' attr, not 'protocol', got: %s", out)
+	}
+	if !strings.Contains(out, `"scheme":"https"`) {
+		t.Fatalf("expected scheme attr with value https, got: %s", out)
+	}
+}
+
+// --- LogProtocol + LogScheme collision ---
+
+func TestValidatePanicLogProtocolAndLogScheme(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected validate() to panic when both LogProtocol and LogScheme are true")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("expected string panic, got %T: %v", r, r)
+		}
+		want := "logger: LogProtocol and LogScheme cannot both be enabled (they emit the same attribute)"
+		if msg != want {
+			t.Fatalf("panic message mismatch:\n  got:  %s\n  want: %s", msg, want)
+		}
+	}()
+	New(Config{LogProtocol: true, LogScheme: true})
+}
+
+func TestValidateNoPanicLogProtocolOnly(t *testing.T) {
+	New(Config{LogProtocol: true, LogScheme: false})
+}
+
+func TestValidateNoPanicLogSchemeOnly(t *testing.T) {
+	New(Config{LogProtocol: false, LogScheme: true})
+}
+
+// --- LogContextKeys ---
+
+func TestLogContextKeys(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{
+		Output:           log,
+		LogContextKeys:   []string{"tenant_id", "user_id"},
+		SensitiveHeaders: []string{},
+	})
+	handler := func(c *celeris.Context) error {
+		c.Set("tenant_id", "acme")
+		c.Set("user_id", "u-42")
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/ctx-keys")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, `"ctx.tenant_id":"acme"`) {
+		t.Fatalf("expected ctx.tenant_id in log, got: %s", out)
+	}
+	if !strings.Contains(out, `"ctx.user_id":"u-42"`) {
+		t.Fatalf("expected ctx.user_id in log, got: %s", out)
+	}
+}
+
+func TestLogContextKeysNonString(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{
+		Output:           log,
+		LogContextKeys:   []string{"count"},
+		SensitiveHeaders: []string{},
+	})
+	handler := func(c *celeris.Context) error {
+		c.Set("count", 42)
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/ctx-int")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, `"ctx.count":"42"`) {
+		t.Fatalf("expected ctx.count with fmt.Sprint value, got: %s", out)
+	}
+}
+
+func TestLogContextKeysMissing(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{
+		Output:           log,
+		LogContextKeys:   []string{"missing_key"},
+		SensitiveHeaders: []string{},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/ctx-missing")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if strings.Contains(out, `"ctx.missing_key"`) {
+		t.Fatalf("missing key should be omitted, got: %s", out)
+	}
+}
+
+func TestLogContextKeysEmpty(t *testing.T) {
+	log, buf := newTestLogger()
+	mw := New(Config{
+		Output:           log,
+		SensitiveHeaders: []string{},
+	})
+	handler := func(c *celeris.Context) error {
+		c.Set("something", "val")
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/ctx-empty")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if strings.Contains(out, `"ctx.`) {
+		t.Fatalf("no ctx. attrs expected when LogContextKeys is nil, got: %s", out)
+	}
+}
+
+// --- Data race test ---
+
+func TestLogger_DataRace(t *testing.T) {
+	log := slog.New(slog.NewJSONHandler(&discardWriter{}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	mw := New(Config{
+		Output:         log,
+		LogHost:        true,
+		LogUserAgent:   true,
+		LogReferer:     true,
+		LogScheme:      true,
+		LogRoute:       true,
+		LogPID:         true,
+		LogQueryParams: true,
+		LogBytesIn:     true,
+		LogContextKeys: []string{"rid"},
+	})
+	handler := func(c *celeris.Context) error {
+		c.Set("rid", "r-123")
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 100 {
+				ctx, _ := celeristest.NewContext("GET", "/race",
+					celeristest.WithHeader("user-agent", "RaceTest/1.0"),
+					celeristest.WithHeader("referer", "https://race.example.com"),
+				)
+				_ = chain[0](ctx)
+				celeristest.ReleaseContext(ctx)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// discardWriter is an io.Writer that discards all data (like io.Discard but
+// usable as a concrete type for the race test).
+type discardWriter struct{}
+
+func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }

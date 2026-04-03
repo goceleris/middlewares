@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"fmt"
 	"log/slog"
 	"net/url"
 	"os"
@@ -44,8 +45,11 @@ func New(config ...Config) celeris.HandlerFunc {
 	}
 
 	handler := cfg.Output.Handler()
-	if cfg.DisableColors {
+	if cfg.DisableColors && !cfg.ForceColors {
 		disableHandlerColors(handler)
+	}
+	if cfg.ForceColors {
+		enableHandlerColors(handler)
 	}
 	levelFn := cfg.Level
 	fieldsFn := cfg.Fields
@@ -64,11 +68,12 @@ func New(config ...Config) celeris.HandlerFunc {
 	logCookies := cfg.LogCookies
 	logBytesIn := cfg.LogBytesIn
 	logScheme := cfg.LogScheme
+	logContextKeys := cfg.LogContextKeys
 	logRespHeaders := cfg.LogResponseHeaders
-	// Build lowercased set for response header matching.
-	respHeaderSet := make([]string, len(logRespHeaders))
-	for i, h := range logRespHeaders {
-		respHeaderSet[i] = strings.ToLower(h)
+	// Build lowercased set for O(1) response header matching.
+	respHeaderSet := make(map[string]struct{}, len(logRespHeaders))
+	for _, h := range logRespHeaders {
+		respHeaderSet[strings.ToLower(h)] = struct{}{}
 	}
 	// Build lowercased set for sensitive form field matching.
 	var sensitiveFormSet map[string]struct{}
@@ -152,11 +157,10 @@ func New(config ...Config) celeris.HandlerFunc {
 			}
 		}
 		if logProtocol {
-			// The HTTP version is not exposed as a standard request
-			// header. Read x-forwarded-proto (set by reverse proxies)
-			// as a best-effort signal for scheme/protocol information.
-			if proto := c.Header("x-forwarded-proto"); proto != "" {
-				attrs = append(attrs, slog.String("protocol", proto))
+			// Read x-forwarded-proto (set by reverse proxies) as a
+			// best-effort signal for the upstream client-facing scheme.
+			if scheme := c.Header("x-forwarded-proto"); scheme != "" {
+				attrs = append(attrs, slog.String("scheme", scheme))
 			}
 		}
 		if logRoute {
@@ -202,14 +206,21 @@ func New(config ...Config) celeris.HandlerFunc {
 				attrs = append(attrs, slog.String("scheme", s))
 			}
 		}
+		for _, key := range logContextKeys {
+			if val, ok := c.Get(key); ok {
+				switch v := val.(type) {
+				case string:
+					attrs = append(attrs, slog.String("ctx."+key, v))
+				default:
+					attrs = append(attrs, slog.String("ctx."+key, fmt.Sprint(v)))
+				}
+			}
+		}
 		if len(respHeaderSet) > 0 {
 			for _, kv := range c.ResponseHeaders() {
 				key := strings.ToLower(kv[0])
-				for _, want := range respHeaderSet {
-					if key == want {
-						attrs = append(attrs, slog.String("resp_header."+key, kv[1]))
-						break
-					}
+				if _, ok := respHeaderSet[key]; ok {
+					attrs = append(attrs, slog.String("resp_header."+key, kv[1]))
 				}
 			}
 		}
@@ -274,6 +285,16 @@ func disableHandlerColors(h slog.Handler) {
 		v.color = false
 	case *groupHandler:
 		v.color = false
+	}
+}
+
+// enableHandlerColors sets color=true on FastHandler or groupHandler.
+func enableHandlerColors(h slog.Handler) {
+	switch v := h.(type) {
+	case *FastHandler:
+		v.color = true
+	case *groupHandler:
+		v.color = true
 	}
 }
 
