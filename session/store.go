@@ -45,6 +45,7 @@ type MemoryStoreConfig struct {
 type memoryStore struct {
 	shards []msShard
 	mask   uint64
+	cancel context.CancelFunc // cancels the cleanup goroutine
 }
 
 type msShard struct {
@@ -59,6 +60,12 @@ type msItem struct {
 
 // NewMemoryStore creates an in-memory session store backed by sharded maps.
 // A background goroutine periodically evicts expired sessions.
+//
+// MemoryStore should be created once and reused for the lifetime of the
+// application. Each call to NewMemoryStore spawns a cleanup goroutine;
+// call [MemoryStore.Close] to stop it if you need deterministic shutdown
+// (e.g., in tests). If you provide [MemoryStoreConfig].CleanupContext,
+// cancelling that context also stops the goroutine.
 func NewMemoryStore(config ...MemoryStoreConfig) Store {
 	var cfg MemoryStoreConfig
 	if len(config) > 0 {
@@ -72,21 +79,32 @@ func NewMemoryStore(config ...MemoryStoreConfig) Store {
 	}
 
 	n := nextPow2(cfg.Shards)
-	s := &memoryStore{
-		shards: make([]msShard, n),
-		mask:   uint64(n - 1),
-	}
-	for i := range s.shards {
-		s.shards[i].items = make(map[string]*msItem)
-	}
 
 	ctx := cfg.CleanupContext
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, cancel := context.WithCancel(ctx)
+
+	s := &memoryStore{
+		shards: make([]msShard, n),
+		mask:   uint64(n - 1),
+		cancel: cancel,
+	}
+	for i := range s.shards {
+		s.shards[i].items = make(map[string]*msItem)
+	}
+
 	go s.cleanup(ctx, cfg.CleanupInterval)
 
 	return s
+}
+
+// Close stops the background cleanup goroutine. It is safe to call
+// multiple times. After Close, the store is still usable for Get/Save/
+// Delete/Reset, but expired entries will no longer be evicted automatically.
+func (m *memoryStore) Close() {
+	m.cancel()
 }
 
 func (m *memoryStore) shard(id string) *msShard {
@@ -139,6 +157,12 @@ func (m *memoryStore) Delete(_ context.Context, id string) error {
 	return nil
 }
 
+// Reset wipes all sessions. Note: this is not atomic across shards.
+// Concurrent requests may observe a partially-reset state where some
+// shards are cleared and others are not. For most use cases (admin
+// logout-all, test cleanup) this is acceptable. If full atomicity is
+// required, use an external lock or a store backend that supports
+// transactional truncation.
 func (m *memoryStore) Reset(_ context.Context) error {
 	for i := range m.shards {
 		s := &m.shards[i]
@@ -153,21 +177,30 @@ func (m *memoryStore) cleanup(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	shardIdx := 0
+	// Process min(4, numShards) shards per tick to amortize cleanup
+	// across multiple ticks while making progress faster than one
+	// shard at a time.
+	perTick := 4
+	if len(m.shards) < perTick {
+		perTick = len(m.shards)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			s := &m.shards[shardIdx%len(m.shards)]
-			shardIdx++
 			nowNano := now.UnixNano()
-			s.mu.Lock()
-			for k, item := range s.items {
-				if item.expiry > 0 && nowNano > item.expiry {
-					delete(s.items, k)
+			for range perTick {
+				s := &m.shards[shardIdx%len(m.shards)]
+				shardIdx++
+				s.mu.Lock()
+				for k, item := range s.items {
+					if item.expiry > 0 && nowNano > item.expiry {
+						delete(s.items, k)
+					}
 				}
+				s.mu.Unlock()
 			}
-			s.mu.Unlock()
 		}
 	}
 }

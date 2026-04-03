@@ -76,6 +76,14 @@ type Config struct {
 	CookieDomain string
 
 	// CookieMaxAge is the cookie Max-Age in seconds. Default: 86400 (24h).
+	//
+	// Note: CookieMaxAge controls browser-side cookie lifetime and is
+	// independent of IdleTimeout (server-side store expiry). If CookieMaxAge
+	// is shorter than IdleTimeout, the browser will discard the cookie while
+	// the server still holds the session data. If longer, the browser may
+	// send a cookie for a session the server has already evicted. For
+	// consistent behavior, align CookieMaxAge with IdleTimeout (e.g.,
+	// CookieMaxAge = int(IdleTimeout.Seconds())).
 	CookieMaxAge int
 
 	// CookieSecure flags the cookie for HTTPS-only transmission.
@@ -150,6 +158,11 @@ func ChainExtractor(extractors ...Extractor) Extractor {
 }
 
 func applyDefaults(cfg Config) Config {
+	// When no store is provided, applyDefaults creates a MemoryStore which
+	// spawns a background cleanup goroutine. This is intentional: the
+	// middleware is typically created once at startup and the goroutine
+	// runs for the process lifetime. Use [MemoryStoreConfig].CleanupContext
+	// or the [memoryStore.Close] method for deterministic shutdown.
 	if cfg.Store == nil {
 		cfg.Store = NewMemoryStore()
 	}
