@@ -2,12 +2,17 @@ package session
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/goceleris/celeris"
 )
+
+// ErrSessionDestroyed is returned when Save is called after Destroy.
+var ErrSessionDestroyed = errors.New("session: cannot save a destroyed session")
 
 var sessionPool = sync.Pool{New: func() any { return &Session{} }}
 
@@ -74,8 +79,12 @@ func (s *Session) Set(key string, value any) {
 	s.modified = true
 }
 
-// Delete removes a key from the session and marks it as modified.
+// Delete removes a key from the session. The session is marked as modified
+// only if the key was actually present.
 func (s *Session) Delete(key string) {
+	if _, ok := s.data[key]; !ok {
+		return
+	}
 	delete(s.data, key)
 	s.modified = true
 }
@@ -124,7 +133,11 @@ func (s *Session) Len() int {
 // Save persists the session data to the store. This is called automatically
 // after the handler chain when the session has been modified; call it
 // explicitly only if you need to guarantee persistence mid-handler.
+// Returns [ErrSessionDestroyed] if the session has been destroyed.
 func (s *Session) Save() error {
+	if s.destroyed {
+		return ErrSessionDestroyed
+	}
 	return s.store.Save(s.ctx, s.id, s.data, s.expiry)
 }
 
@@ -139,13 +152,23 @@ func (s *Session) Destroy() error {
 
 // Regenerate issues a new session ID while preserving data. The old session
 // is deleted from the store. The data is saved under the new ID by the
-// post-handler save (since modified is set to true). This should be called
-// after privilege changes (e.g., login) to prevent session fixation.
+// post-handler save (since modified is set to true).
+//
+// The internal _abs_exp timestamp is reset to the current time so the
+// regenerated session gets a fresh absolute timeout window.
+//
+// Applications MUST call Regenerate after authentication state changes
+// (e.g., login, privilege escalation) to prevent session fixation attacks.
 func (s *Session) Regenerate() error {
 	oldID := s.id
 	s.id = s.keyGen()
 	if err := s.store.Delete(s.ctx, oldID); err != nil {
 		return err
+	}
+	// Reset _abs_exp so the regenerated session gets a fresh absolute
+	// timeout window.
+	if _, ok := s.data[absExpKey]; ok {
+		s.data[absExpKey] = time.Now().UnixNano()
 	}
 	s.modified = true
 	return nil
@@ -162,6 +185,11 @@ func (s *Session) SetIdleTimeout(d time.Duration) {
 // Reset is a convenience method that combines [Session.Clear],
 // [Session.Regenerate], and marks the session as modified in a single call.
 // Useful for "log out and start fresh" flows.
+//
+// Note: Reset is not atomic. If Clear succeeds but Regenerate fails
+// (e.g., store error on Delete), the session data is already cleared
+// but the old session ID is retained. Callers should handle the returned
+// error accordingly.
 func (s *Session) Reset() error {
 	s.Clear()
 	return s.Regenerate()
@@ -180,8 +208,11 @@ func FromContext(c *celeris.Context) *Session {
 }
 
 // validSessionID checks that s has the expected length and contains only
-// lowercase hex characters [0-9a-f]. When idLen is negative, validation
-// is disabled and any non-empty string passes.
+// lowercase hex characters [0-9a-f]. Uppercase hex (A-F) is intentionally
+// rejected because the default [bufferedKeyGenerator] produces lowercase
+// output; accepting uppercase would double the ID space without security
+// benefit and could mask tampered cookies. When idLen is negative,
+// validation is disabled and any non-empty string passes.
 func validSessionID(s string, idLen int) bool {
 	if idLen < 0 {
 		return s != ""
@@ -212,8 +243,10 @@ func (h *Handler) Middleware() celeris.HandlerFunc { return h.mw }
 // This is intended for admin tools, background jobs, or WebSocket handlers
 // that need to inspect session data outside of the middleware pipeline.
 //
-// The returned [Session] is read-only: changes will NOT be auto-saved.
-// Callers must not call Set, Delete, Clear, or Save on it.
+// The returned [Session] is read-only: use Get, GetString, GetInt,
+// GetBool, GetFloat64, Keys, Len, ID, and IsFresh. Calling Save,
+// Regenerate, or Destroy on a GetByID session panics with a descriptive
+// message because no store or context is bound.
 // Returns nil and no error if the session does not exist.
 func (h *Handler) GetByID(ctx context.Context, id string) (*Session, error) {
 	data, err := h.store.Get(ctx, id)
@@ -226,7 +259,29 @@ func (h *Handler) GetByID(ctx context.Context, id string) (*Session, error) {
 	return &Session{
 		id:   id,
 		data: data,
+		store: readOnlyStore{},
 	}, nil
+}
+
+// readOnlyStore is a sentinel Store that panics on any mutating operation.
+// It is assigned to sessions returned by [Handler.GetByID] to provide
+// clear error messages if callers accidentally attempt writes.
+type readOnlyStore struct{}
+
+func (readOnlyStore) Get(_ context.Context, _ string) (map[string]any, error) {
+	return nil, nil
+}
+
+func (readOnlyStore) Save(_ context.Context, _ string, _ map[string]any, _ time.Duration) error {
+	panic("session: Save called on a read-only session returned by GetByID; use the middleware pipeline for writes")
+}
+
+func (readOnlyStore) Delete(_ context.Context, _ string) error {
+	panic("session: Delete called on a read-only session returned by GetByID; use the middleware pipeline for writes")
+}
+
+func (readOnlyStore) Reset(_ context.Context) error {
+	panic("session: Reset called on a read-only session returned by GetByID; use the middleware pipeline for writes")
 }
 
 // NewHandler creates a session [Handler] that exposes both the middleware
@@ -313,6 +368,15 @@ func newMiddleware(cfg Config) celeris.HandlerFunc {
 		sess.fresh = false
 		sess.idleOverride = 0
 
+		// Ensure the session is returned to the pool on all exit paths
+		// (issue #12: pool leak on error paths).
+		returnToPool := func() {
+			c.Set(ContextKey, nil) // issue #1: clear context key before pool Put
+			sess.data = nil
+			sess.ctx = nil
+			sessionPool.Put(sess)
+		}
+
 		loaded := false
 		sid := extract(c)
 		if sid != "" && !validSessionID(sid, sessionIDLen) {
@@ -321,18 +385,34 @@ func newMiddleware(cfg Config) celeris.HandlerFunc {
 		if sid != "" {
 			data, loadErr := store.Get(reqCtx, sid)
 			if loadErr != nil {
+				returnToPool()
 				return errorHandler(c, loadErr)
 			}
 			if data != nil && !absDisabled {
 				// Check absolute timeout.
-				if ts, ok := data[absExpKey]; ok {
-					if created, ok := ts.(int64); ok {
-						if time.Since(time.Unix(0, created)) > absTimeout {
-							// Session exceeded absolute timeout; destroy and create fresh.
-							_ = store.Delete(reqCtx, sid)
-							data = nil
-						}
+				expired := false
+				ts, hasAbsExp := data[absExpKey]
+				if hasAbsExp {
+					// Handle both int64 (native) and float64 (JSON-decoded)
+					// type assertions (issue #4).
+					var created int64
+					switch v := ts.(type) {
+					case int64:
+						created = v
+					case float64:
+						created = int64(v)
 					}
+					if created > 0 && time.Since(time.Unix(0, created)) > absTimeout {
+						expired = true
+					}
+				} else {
+					// _abs_exp missing from a loaded session: treat as
+					// expired (issue #3).
+					expired = true
+				}
+				if expired {
+					_ = store.Delete(reqCtx, sid)
+					data = nil
 				}
 			}
 			if data != nil {
@@ -370,6 +450,12 @@ func newMiddleware(cfg Config) celeris.HandlerFunc {
 			}
 			saveErr := store.Save(reqCtx, sess.id, sess.data, expiry)
 			if saveErr != nil {
+				returnToPool()
+				// Issue #11: wrap chainErr with save error so neither
+				// is swallowed.
+				if chainErr != nil {
+					return errorHandler(c, fmt.Errorf("%w; handler chain error: %w", saveErr, chainErr))
+				}
 				return errorHandler(c, saveErr)
 			}
 			if useCookieExtractor {
@@ -384,9 +470,7 @@ func newMiddleware(cfg Config) celeris.HandlerFunc {
 			}
 		}
 
-		sess.data = nil
-		sess.ctx = nil
-		sessionPool.Put(sess)
+		returnToPool()
 
 		return chainErr
 	}

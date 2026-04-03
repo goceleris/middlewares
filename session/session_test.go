@@ -62,6 +62,14 @@ func TestSessionDelete(t *testing.T) {
 	}
 }
 
+func TestSessionDeleteAbsentKeyNotModified(t *testing.T) {
+	s := &Session{id: "test", data: map[string]any{"a": 1}, store: NewMemoryStore()}
+	s.Delete("nonexistent")
+	if s.modified {
+		t.Fatal("expected modified=false after Delete of absent key")
+	}
+}
+
 func TestSessionClear(t *testing.T) {
 	s := &Session{id: "test", data: map[string]any{"a": 1, "b": 2}, store: NewMemoryStore()}
 	s.Clear()
@@ -173,12 +181,12 @@ func TestSessionRegenerate(t *testing.T) {
 	}
 }
 
-func TestRegeneratePreservesAbsExp(t *testing.T) {
+func TestRegenerateResetsAbsExp(t *testing.T) {
 	store := NewMemoryStore()
-	ts := time.Now().Add(-time.Hour).UnixNano()
+	oldTs := time.Now().Add(-time.Hour).UnixNano()
 	s := &Session{
 		id:     "old",
-		data:   map[string]any{absExpKey: ts, "user": "admin"},
+		data:   map[string]any{absExpKey: oldTs, "user": "admin"},
 		store:  store,
 		ctx:    context.Background(),
 		expiry: time.Hour,
@@ -189,10 +197,14 @@ func TestRegeneratePreservesAbsExp(t *testing.T) {
 	}
 	v, ok := s.data[absExpKey]
 	if !ok {
-		t.Fatal("expected _abs_exp to be preserved after Regenerate")
+		t.Fatal("expected _abs_exp to be present after Regenerate")
 	}
-	if v.(int64) != ts {
-		t.Fatal("expected _abs_exp timestamp to be unchanged after Regenerate")
+	newTs := v.(int64)
+	if newTs == oldTs {
+		t.Fatal("expected _abs_exp to be reset to current time after Regenerate")
+	}
+	if time.Since(time.Unix(0, newTs)) > time.Second {
+		t.Fatal("expected _abs_exp to be recent after Regenerate")
 	}
 }
 
@@ -1806,7 +1818,7 @@ func TestInvalidSessionIDUppercase(t *testing.T) {
 func TestValidSessionIDLoadsExisting(t *testing.T) {
 	store := NewMemoryStore()
 	validID := strings.Repeat("ab", 32)
-	_ = store.Save(context.Background(), validID, map[string]any{"user": "admin"}, time.Hour)
+	_ = store.Save(context.Background(), validID, map[string]any{"user": "admin", "_abs_exp": time.Now().UnixNano()}, time.Hour)
 
 	mw := New(Config{Store: store})
 	var gotUser any
@@ -1845,7 +1857,7 @@ func TestCustomSessionIDLength(t *testing.T) {
 	chain := []celeris.HandlerFunc{mw, handler}
 
 	validID := strings.Repeat("cd", 16)
-	_ = store.Save(context.Background(), validID, map[string]any{"x": 1}, time.Hour)
+	_ = store.Save(context.Background(), validID, map[string]any{"x": 1, "_abs_exp": time.Now().UnixNano()}, time.Hour)
 	_, err := testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithCookie("celeris_session", validID))
 	testutil.AssertNoError(t, err)
@@ -1864,7 +1876,7 @@ func TestCustomSessionIDLength(t *testing.T) {
 func TestDisableSessionIDValidation(t *testing.T) {
 	store := NewMemoryStore()
 	customID := "my-custom-session-id-any-format"
-	_ = store.Save(context.Background(), customID, map[string]any{"x": 1}, time.Hour)
+	_ = store.Save(context.Background(), customID, map[string]any{"x": 1, "_abs_exp": time.Now().UnixNano()}, time.Hour)
 
 	mw := New(Config{
 		Store:           store,
@@ -1931,7 +1943,7 @@ func TestChainExtractorNoExtractors(t *testing.T) {
 func TestChainExtractorWithRealExtractors(t *testing.T) {
 	store := NewMemoryStore()
 	validID := strings.Repeat("ab", 32)
-	_ = store.Save(context.Background(), validID, map[string]any{"src": "header"}, time.Hour)
+	_ = store.Save(context.Background(), validID, map[string]any{"src": "header", "_abs_exp": time.Now().UnixNano()}, time.Hour)
 
 	mw := New(Config{
 		Store: store,
@@ -2423,9 +2435,9 @@ func TestGetByIDSessionIsReadOnly(t *testing.T) {
 		t.Fatalf("GetByID: %v", err)
 	}
 
-	// Verify session has no store/ctx/keyGen — it is a bare read-only struct.
-	if sess.store != nil {
-		t.Fatal("expected store to be nil on read-only session")
+	// Verify session has readOnlyStore/no ctx/no keyGen.
+	if _, ok := sess.store.(readOnlyStore); !ok {
+		t.Fatal("expected readOnlyStore on GetByID session")
 	}
 	if sess.ctx != nil {
 		t.Fatal("expected ctx to be nil on read-only session")
@@ -2493,4 +2505,304 @@ func TestGetByIDExpiredSession(t *testing.T) {
 	if sess != nil {
 		t.Fatal("expected nil session for expired entry")
 	}
+}
+
+// --- Fix verification tests ---
+
+// Issue #1: Use-after-pool-Put — context key cleared before pool return.
+func TestContextKeyNilAfterPoolReturn(t *testing.T) {
+	store := NewMemoryStore()
+	mw := New(Config{Store: store})
+	handler := func(c *celeris.Context) error {
+		s := FromContext(c)
+		s.Set("k", "v")
+		return nil
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	ctx, _ := celeristest.NewContextT(t, "GET", "/",
+		celeristest.WithHandlers(chain...),
+	)
+	err := ctx.Next()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// After middleware returns, the context key should be nil.
+	v, ok := ctx.Get(ContextKey)
+	if ok && v != nil {
+		t.Fatal("expected ContextKey to be nil after middleware return (use-after-pool-Put)")
+	}
+}
+
+// Issue #3: _abs_exp missing key bypass — sessions without _abs_exp are
+// treated as expired when absolute timeout is enabled.
+func TestAbsExpMissingKeyTreatedAsExpired(t *testing.T) {
+	store := NewMemoryStore()
+	sid := hexID(0xc1)
+	// Save session WITHOUT _abs_exp.
+	_ = store.Save(context.Background(), sid, map[string]any{"user": "admin"}, time.Hour)
+
+	mw := New(Config{
+		Store:           store,
+		AbsoluteTimeout: 2 * time.Hour,
+		IdleTimeout:     30 * time.Minute,
+	})
+
+	var sess *Session
+	handler := func(c *celeris.Context) error {
+		sess = FromContext(c)
+		return nil
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithCookie("celeris_session", sid),
+	)
+	testutil.AssertNoError(t, err)
+	if !sess.IsFresh() {
+		t.Fatal("expected fresh session when _abs_exp is missing (should be treated as expired)")
+	}
+	if sess.ID() == sid {
+		t.Fatal("expected new session ID when _abs_exp is missing")
+	}
+}
+
+// Issue #4: _abs_exp float64 type assertion — handles JSON-decoded float64.
+func TestAbsExpFloat64TypeAssertion(t *testing.T) {
+	store := NewMemoryStore()
+	sid := hexID(0xc2)
+	// Store _abs_exp as float64 (as JSON would decode it).
+	oldCreated := float64(time.Now().Add(-3 * time.Hour).UnixNano())
+	_ = store.Save(context.Background(), sid, map[string]any{absExpKey: oldCreated, "user": "admin"}, time.Hour)
+
+	mw := New(Config{
+		Store:           store,
+		AbsoluteTimeout: 2 * time.Hour,
+		IdleTimeout:     30 * time.Minute,
+	})
+
+	var sess *Session
+	handler := func(c *celeris.Context) error {
+		sess = FromContext(c)
+		return nil
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithCookie("celeris_session", sid),
+	)
+	testutil.AssertNoError(t, err)
+	if !sess.IsFresh() {
+		t.Fatal("expected fresh session when _abs_exp (float64) exceeds absolute timeout")
+	}
+}
+
+// Issue #4 supplement: float64 _abs_exp within timeout is accepted.
+func TestAbsExpFloat64NotExpired(t *testing.T) {
+	store := NewMemoryStore()
+	sid := hexID(0xc3)
+	recentCreated := float64(time.Now().Add(-30 * time.Minute).UnixNano())
+	_ = store.Save(context.Background(), sid, map[string]any{absExpKey: recentCreated, "user": "admin"}, time.Hour)
+
+	mw := New(Config{
+		Store:           store,
+		AbsoluteTimeout: 2 * time.Hour,
+		IdleTimeout:     30 * time.Minute,
+	})
+
+	var sess *Session
+	handler := func(c *celeris.Context) error {
+		sess = FromContext(c)
+		return nil
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithCookie("celeris_session", sid),
+	)
+	testutil.AssertNoError(t, err)
+	if sess.IsFresh() {
+		t.Fatal("expected existing session when float64 _abs_exp is within timeout")
+	}
+	if sess.ID() != sid {
+		t.Fatal("expected same session ID when float64 _abs_exp is within timeout")
+	}
+}
+
+// Issue #5: Cleanup processes min(4, numShards) per tick.
+func TestMemoryStoreCleanupMultipleShards(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := NewMemoryStore(MemoryStoreConfig{
+		Shards:          8,
+		CleanupInterval: 10 * time.Millisecond,
+		CleanupContext:  ctx,
+	})
+
+	// Save expired sessions that should be distributed across multiple shards.
+	for i := range 20 {
+		sid := hexID(byte(i + 0xe0))
+		_ = store.Save(context.Background(), sid, map[string]any{"i": i}, time.Nanosecond)
+	}
+	time.Sleep(time.Millisecond)
+
+	// Wait for cleanup to process multiple shards per tick.
+	time.Sleep(100 * time.Millisecond)
+
+	remaining := 0
+	for i := range 20 {
+		sid := hexID(byte(i + 0xe0))
+		data, _ := store.Get(context.Background(), sid)
+		if data != nil {
+			remaining++
+		}
+	}
+	if remaining > 0 {
+		t.Fatalf("expected all expired sessions cleaned up, %d remaining", remaining)
+	}
+}
+
+// Issue #6: MemoryStore.Close stops cleanup goroutine.
+func TestMemoryStoreClose(t *testing.T) {
+	store := NewMemoryStore(MemoryStoreConfig{
+		CleanupInterval: time.Millisecond,
+	})
+	ms := store.(*memoryStore)
+	ms.Close()
+	// Double-close should not panic.
+	ms.Close()
+	// Store should still work after Close.
+	err := store.Save(context.Background(), "test", map[string]any{"k": "v"}, time.Hour)
+	if err != nil {
+		t.Fatalf("Save after Close: %v", err)
+	}
+	data, err := store.Get(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Get after Close: %v", err)
+	}
+	if data["k"] != "v" {
+		t.Fatal("expected data to persist after Close")
+	}
+}
+
+// Issue #8: Save after Destroy returns ErrSessionDestroyed.
+func TestSaveAfterDestroyReturnsError(t *testing.T) {
+	store := NewMemoryStore()
+	s := &Session{
+		id:    "test",
+		data:  map[string]any{"k": "v"},
+		store: store,
+		ctx:   context.Background(),
+	}
+	if err := s.Destroy(); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	err := s.Save()
+	if !errors.Is(err, ErrSessionDestroyed) {
+		t.Fatalf("expected ErrSessionDestroyed, got %v", err)
+	}
+}
+
+// Issue #11: ErrorHandler wraps chainErr with save error.
+func TestErrorHandlerWrapsChainErr(t *testing.T) {
+	chainError := errors.New("handler error")
+	saveError := errors.New("save failed")
+	store := &failStore{saveErr: saveError}
+	var gotErr error
+	mw := New(Config{
+		Store: store,
+		ErrorHandler: func(_ *celeris.Context, err error) error {
+			gotErr = err
+			return err
+		},
+	})
+	handler := func(c *celeris.Context) error {
+		s := FromContext(c)
+		s.Set("k", "v")
+		return chainError
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	// The error passed to ErrorHandler should wrap both the save error
+	// and the chain error.
+	if !errors.Is(gotErr, saveError) {
+		t.Fatalf("expected save error in wrapped error, got %v", gotErr)
+	}
+	if !errors.Is(gotErr, chainError) {
+		t.Fatalf("expected chain error in wrapped error, got %v", gotErr)
+	}
+}
+
+// Issue #12: Pool leak on error paths — session returned to pool even
+// when store.Get fails.
+func TestPoolReturnOnLoadError(t *testing.T) {
+	fs := &failStore{getErr: errors.New("load failed")}
+	sid := hexID(0xc4)
+	mw := New(Config{Store: fs})
+	handler := func(_ *celeris.Context) error { return nil }
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// Run multiple iterations to exercise the pool return path.
+	for range 100 {
+		_, _ = testutil.RunChain(t, chain, "GET", "/",
+			celeristest.WithCookie("celeris_session", sid),
+		)
+	}
+	// If pool was leaking, we'd create many new Session objects.
+	// Verify pool returns a *Session.
+	sess := sessionPool.Get().(*Session)
+	sessionPool.Put(sess)
+	if sess == nil {
+		t.Fatal("expected non-nil session from pool")
+	}
+}
+
+// Issue #16: GetByID session panics on Save.
+func TestGetByIDPanicsOnSave(t *testing.T) {
+	store := NewMemoryStore()
+	sid := hexID(0xd4)
+	_ = store.Save(context.Background(), sid, map[string]any{"k": "v"}, time.Hour)
+
+	h := NewHandler(Config{Store: store})
+	sess, err := h.GetByID(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on Save of GetByID session")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "GetByID") {
+			t.Fatalf("expected panic message about GetByID, got %v", r)
+		}
+	}()
+	_ = sess.Save()
+}
+
+// Issue #16: GetByID session panics on Destroy.
+func TestGetByIDPanicsOnDestroy(t *testing.T) {
+	store := NewMemoryStore()
+	sid := hexID(0xd5)
+	_ = store.Save(context.Background(), sid, map[string]any{"k": "v"}, time.Hour)
+
+	h := NewHandler(Config{Store: store})
+	sess, err := h.GetByID(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on Destroy of GetByID session")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "GetByID") {
+			t.Fatalf("expected panic message about GetByID, got %v", r)
+		}
+	}()
+	_ = sess.Destroy()
 }

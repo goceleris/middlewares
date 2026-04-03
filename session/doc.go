@@ -69,7 +69,25 @@
 //
 // Modified sessions are automatically saved after the handler chain returns.
 // Call [Session.Destroy] to invalidate a session, or [Session.Regenerate] to
-// issue a new session ID (recommended after privilege changes).
+// issue a new session ID.
+//
+// # Session Fixation Prevention
+//
+// Applications MUST call [Session.Regenerate] (or [Session.Reset]) after
+// any authentication state change -- login, logout, privilege escalation,
+// or role switch. Failing to regenerate the session ID allows an attacker
+// who knows the pre-authentication ID to hijack the post-authentication
+// session. Example:
+//
+//	func loginHandler(c *celeris.Context) error {
+//	    // ... validate credentials ...
+//	    s := session.FromContext(c)
+//	    if err := s.Regenerate(); err != nil {
+//	        return err
+//	    }
+//	    s.Set("user", authenticatedUser)
+//	    return nil
+//	}
 //
 // # Session Methods
 //
@@ -161,6 +179,16 @@
 // If you use a custom KeyGenerator that produces IDs of a different
 // length, set SessionIDLength accordingly. Set SessionIDLength to -1 to
 // disable length and format validation entirely.
+//
+// # MemoryStore Lifecycle
+//
+// [NewMemoryStore] spawns a background goroutine for expired-entry cleanup.
+// Create a MemoryStore once and reuse it for the application's lifetime.
+// If you need deterministic shutdown (e.g., in tests), either provide a
+// cancellable context via [MemoryStoreConfig].CleanupContext or call
+// Close() on the returned store (type-assert to *memoryStore or use the
+// interface's Close if available). Creating a MemoryStore per-request
+// leaks goroutines.
 //
 // # Implementation Notes
 //
