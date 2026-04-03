@@ -62,14 +62,14 @@ func New(config ...Config) celeris.HandlerFunc {
 
 		if childCtx.Err() == context.DeadlineExceeded {
 			if c.IsWritten() {
-				return errHandler(c)
+				return ErrServiceUnavailable
 			}
 			return errHandler(c)
 		}
 
 		if err != nil && isTimeoutError(err, timeoutErrors) {
 			if c.IsWritten() {
-				return errHandler(c)
+				return ErrServiceUnavailable
 			}
 			return errHandler(c)
 		}
@@ -155,12 +155,19 @@ func preemptiveHandler(
 			}
 			return err
 		case <-childCtx.Done():
-			// Wait for the handler goroutine to finish so it no longer
-			// touches the Context before we return. This is safe from
-			// data races: the goroutine completes before we proceed,
-			// and the Context is not accessed concurrently after this point.
+			// Between childCtx.Done() firing and <-done completing, the
+			// handler goroutine may still be touching c (writing buffered
+			// response data, setting headers, etc.). The <-done receive
+			// serializes: once it returns, the goroutine has exited and
+			// the Context is safe to use exclusively from this goroutine.
 			<-done
 			chanPool.Put(done)
+			// The handler may have buffered a stale response. We do NOT
+			// need to explicitly discard it: errHandler's response methods
+			// (JSON, String, etc.) overwrite the captured fields while
+			// bufferDepth > 0, replacing the stale data. flushOrReturn
+			// then flushes the errHandler's response (or propagates its
+			// error without flushing).
 			return flushOrReturn(c, errHandler(c))
 		}
 	}
