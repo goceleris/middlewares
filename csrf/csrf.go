@@ -55,6 +55,12 @@ type tokenExtractor func(c *celeris.Context) string
 
 // Handler provides methods for managing CSRF tokens for a specific
 // middleware configuration. Retrieved via HandlerFromContext.
+//
+// The fields are copied from Config at construction time rather than
+// holding a Config reference. This is intentional for immutability:
+// the caller cannot mutate Handler state after New() returns, and the
+// middleware closure and Handler always see consistent values without
+// synchronization.
 type Handler struct {
 	storage           Storage
 	expiration        time.Duration
@@ -264,6 +270,14 @@ func New(config ...Config) celeris.HandlerFunc {
 			return errorHandler(c, ErrMissingToken)
 		}
 
+		// Cookie-injection defense: validate the cookie value is a
+		// well-formed hex token. An attacker with subdomain cookie-
+		// setting ability could inject a malformed value; rejecting
+		// non-hex or wrong-length values limits the attack surface.
+		if !isValidTokenHex(cookieToken, tokenLen) {
+			return errorHandler(c, ErrForbidden)
+		}
+
 		requestToken := extractor(c)
 		if requestToken == "" {
 			return errorHandler(c, ErrMissingToken)
@@ -350,6 +364,27 @@ func unmaskToken(token string, tokenByteLen int) string {
 		raw[i] = maskBytes[i] ^ maskedBytes[i]
 	}
 	return hex.EncodeToString(raw)
+}
+
+// isValidTokenHex checks that a cookie token value is a well-formed hex
+// string of the expected length. A valid token is either a raw hex token
+// (2*tokenByteLen chars) or a masked token (4*tokenByteLen chars). This
+// rejects injected or corrupted cookie values early, before any
+// cryptographic comparison.
+func isValidTokenHex(token string, tokenByteLen int) bool {
+	rawLen := tokenByteLen * 2
+	maskedLen := tokenByteLen * 4
+	n := len(token)
+	if n != rawLen && n != maskedLen {
+		return false
+	}
+	for i := 0; i < n; i++ {
+		c := token[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // isOriginAllowed checks if the request origin matches the host, an exact

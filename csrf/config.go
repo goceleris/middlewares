@@ -157,12 +157,25 @@ type wildcardOrigin struct {
 }
 
 func (w wildcardOrigin) match(origin string) bool {
-	return len(origin) >= len(w.prefix)+len(w.suffix)+1 &&
-		strings.HasPrefix(origin, w.prefix) &&
-		strings.HasSuffix(origin, w.suffix)
+	if len(origin) < len(w.prefix)+len(w.suffix)+1 {
+		return false
+	}
+	if !strings.HasPrefix(origin, w.prefix) || !strings.HasSuffix(origin, w.suffix) {
+		return false
+	}
+	// Extract the middle portion that the wildcard matched.
+	// Reject matches where it contains ".." or starts with "."
+	// to prevent subdomain traversal attacks (e.g. ".evil.com"
+	// matching "https://.evil.com.example.com").
+	middle := origin[len(w.prefix) : len(origin)-len(w.suffix)]
+	if strings.HasPrefix(middle, ".") || strings.Contains(middle, "..") {
+		return false
+	}
+	return true
 }
 
 func (cfg Config) validate() {
+	validateExtractorNotCookie(cfg.TokenLookup, cfg.CookieName)
 	validateTokenLookup(cfg.TokenLookup)
 	if cfg.TokenLength > 32 {
 		panic("csrf: TokenLength must not exceed 32")
@@ -176,6 +189,25 @@ func (cfg Config) validate() {
 	for _, o := range cfg.TrustedOrigins {
 		if strings.Contains(o, "*") && !strings.HasPrefix(o, "https://") {
 			panic("csrf: wildcard TrustedOrigins must use https:// scheme, got " + o)
+		}
+	}
+}
+
+// validateExtractorNotCookie panics if any TokenLookup segment extracts
+// from a cookie whose name matches CookieName. Extracting the CSRF token
+// from the CSRF cookie itself defeats the double-submit pattern entirely:
+// both the "cookie" and "request" tokens would always be identical,
+// providing zero CSRF protection.
+func validateExtractorNotCookie(lookup, cookieName string) {
+	for _, seg := range strings.Split(lookup, ",") {
+		seg = strings.TrimSpace(seg)
+		parts := strings.SplitN(seg, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if strings.ToLower(parts[0]) == "cookie" && parts[1] == cookieName {
+			panic("csrf: TokenLookup extracts from cookie:" + cookieName +
+				" which is the CSRF cookie itself — this defeats the double-submit pattern")
 		}
 	}
 }

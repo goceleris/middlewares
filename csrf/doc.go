@@ -240,6 +240,46 @@
 // does not trigger rejection. Do not rely on this check as the sole
 // CSRF defense.
 //
+// # Token Masking (BREACH Mitigation)
+//
+// The BREACH attack (Browser Reconnaissance and Exfiltration via
+// Adaptive Compression of Hypertext) exploits HTTP compression to
+// extract secrets from responses by observing compressed response
+// sizes across multiple requests. If the CSRF token appeared as the
+// same value in every response, an attacker could guess it one byte
+// at a time by injecting candidate strings and measuring compression
+// ratios.
+//
+// To defeat this, the middleware applies per-request XOR masking: on
+// every response a fresh random mask of equal length is generated, the
+// raw token bytes are XORed with the mask, and the cookie value is set
+// to hex(mask) + hex(masked). Because the mask is random, the cookie
+// value changes on every response even though the underlying token
+// remains the same. On the receiving side, [unmaskToken] splits the
+// value into its two halves, decodes them, XORs them back together,
+// and recovers the original token for comparison. This ensures the
+// CSRF cookie never appears as a static string in compressed
+// responses, rendering BREACH-style compression oracles ineffective.
+//
+// # Cookie-Injection Defense
+//
+// In the double-submit cookie pattern, an attacker who can set cookies
+// on the victim's domain (e.g., via a subdomain they control) could
+// inject a known CSRF token into the cookie jar and then submit that
+// same token in the request header/form. To mitigate this:
+//
+//   - The middleware validates that the cookie value is well-formed hex
+//     of the expected token length before any cryptographic comparison.
+//     Injected values that are not valid hex or have an unexpected
+//     length are rejected with [ErrForbidden].
+//   - Cookie lookup uses exact name matching; prefix-injected cookie
+//     names (e.g., "__Host-_csrf") do not match the configured
+//     [Config].CookieName.
+//   - For stronger protection, use server-side [Config].Storage (signed
+//     double-submit). With storage enabled, the attacker must also plant
+//     a token that exists in the server's store, which they cannot do
+//     without server-side access.
+//
 // # Sentinel Errors
 //
 // The package exports sentinel errors ([ErrForbidden], [ErrMissingToken],
