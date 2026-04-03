@@ -383,8 +383,9 @@ func TestUnsupportedKeyLookupSourcePanics(t *testing.T) {
 }
 
 func TestDefaultConfigKeyLookup(t *testing.T) {
-	if DefaultConfig.KeyLookup != "header:X-API-Key" {
-		t.Fatalf("default KeyLookup: got %q, want %q", DefaultConfig.KeyLookup, "header:X-API-Key")
+	cfg := DefaultConfig()
+	if cfg.KeyLookup != "header:X-API-Key" {
+		t.Fatalf("default KeyLookup: got %q, want %q", cfg.KeyLookup, "header:X-API-Key")
 	}
 }
 
@@ -1057,6 +1058,188 @@ func TestContinueOnIgnoredErrorValidKeyStillWorks(t *testing.T) {
 	testutil.AssertStatus(t, rec, 200)
 	if key != "correct" {
 		t.Fatalf("expected key %q, got %q", "correct", key)
+	}
+}
+
+// --- Issue #6: Realm/Scope/Description escaping ---
+
+func TestWWWAuthenticateEscapesQuotesInScope(t *testing.T) {
+	got := wwwAuthenticateValue(Config{
+		Realm:          "API",
+		AuthScheme:     "Bearer",
+		ChallengeScope: `read "write"`,
+	})
+	expected := `Bearer realm="API", scope="read \"write\""`
+	if got != expected {
+		t.Fatalf("wwwAuthenticateValue:\n  got  %q\n  want %q", got, expected)
+	}
+}
+
+func TestWWWAuthenticateEscapesBackslashInScope(t *testing.T) {
+	got := wwwAuthenticateValue(Config{
+		Realm:          "API",
+		AuthScheme:     "Bearer",
+		ChallengeScope: `read\write`,
+	})
+	expected := `Bearer realm="API", scope="read\\write"`
+	if got != expected {
+		t.Fatalf("wwwAuthenticateValue:\n  got  %q\n  want %q", got, expected)
+	}
+}
+
+func TestWWWAuthenticateEscapesDescription(t *testing.T) {
+	got := wwwAuthenticateValue(Config{
+		Realm:                     "API",
+		ChallengeError:            "invalid_token",
+		ChallengeErrorDescription: `token contains "bad" chars`,
+	})
+	expected := `ApiKey realm="API", error="invalid_token", error_description="token contains \"bad\" chars"`
+	if got != expected {
+		t.Fatalf("wwwAuthenticateValue:\n  got  %q\n  want %q", got, expected)
+	}
+}
+
+// --- Issue #7: AuthScheme validation ---
+
+func TestAuthSchemeWithSpacePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for AuthScheme with space")
+		}
+	}()
+	New(Config{
+		Validator:  validatorFor("x"),
+		AuthScheme: "Bearer Token",
+	})
+}
+
+func TestAuthSchemeWithQuotePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for AuthScheme with quote")
+		}
+	}()
+	New(Config{
+		Validator:  validatorFor("x"),
+		AuthScheme: `Be"arer`,
+	})
+}
+
+func TestAuthSchemeWithControlCharPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for AuthScheme with control char")
+		}
+	}()
+	New(Config{
+		Validator:  validatorFor("x"),
+		AuthScheme: "Bear\x00er",
+	})
+}
+
+// --- Issue #9: WWW-Authenticate not set on ContinueOnIgnoredError ---
+
+func TestContinueOnIgnoredErrorNoWWWAuthenticate(t *testing.T) {
+	mw := New(Config{
+		Validator: validatorFor("correct"),
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
+			return nil
+		},
+		ContinueOnIgnoredError: true,
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "public")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	ctx, _ := celeristest.NewContextT(t, "GET", "/",
+		celeristest.WithHandlers(chain...),
+	)
+	err := ctx.Next()
+	testutil.AssertNoError(t, err)
+
+	for _, h := range ctx.ResponseHeaders() {
+		if h[0] == "www-authenticate" {
+			t.Fatal("expected no www-authenticate header when ContinueOnIgnoredError and ErrorHandler returns nil")
+		}
+	}
+}
+
+func TestErrorHandlerReturnsNonNilSetsWWWAuthenticate(t *testing.T) {
+	mw := New(Config{
+		Validator: validatorFor("correct"),
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
+			return celeris.NewHTTPError(401, "Nope")
+		},
+		ContinueOnIgnoredError: true,
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	ctx, _ := celeristest.NewContextT(t, "GET", "/",
+		celeristest.WithHandlers(chain...),
+	)
+	err := ctx.Next()
+	testutil.AssertHTTPError(t, err, 401)
+
+	found := false
+	for _, h := range ctx.ResponseHeaders() {
+		if h[0] == "www-authenticate" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected www-authenticate header when ErrorHandler returns non-nil error")
+	}
+}
+
+// --- Issue #13: Realm with quote/control-char validation ---
+
+func TestRealmWithQuotePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for Realm with quote")
+		}
+	}()
+	New(Config{
+		Validator: validatorFor("x"),
+		Realm:     `My "Realm"`,
+	})
+}
+
+func TestRealmWithBackslashPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for Realm with backslash")
+		}
+	}()
+	New(Config{
+		Validator: validatorFor("x"),
+		Realm:     `My\Realm`,
+	})
+}
+
+func TestRealmWithControlCharPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for Realm with control char")
+		}
+	}()
+	New(Config{
+		Validator: validatorFor("x"),
+		Realm:     "My\x00Realm",
+	})
+}
+
+// --- Issue #10: DefaultConfig is a function returning a copy ---
+
+func TestDefaultConfigReturnsCopy(t *testing.T) {
+	c1 := DefaultConfig()
+	c2 := DefaultConfig()
+	c1.KeyLookup = "query:token"
+	if c2.KeyLookup != "header:X-API-Key" {
+		t.Fatalf("DefaultConfig() returned shared state: got %q", c2.KeyLookup)
 	}
 }
 
