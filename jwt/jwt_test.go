@@ -1725,3 +1725,62 @@ func TestMinKeyLengthZeroNoEnforcement(t *testing.T) {
 		t.Fatalf("expected warning even with MinKeyLength=0, got: %q", logBuf.String())
 	}
 }
+
+func TestCustomExtractorUsedAfterBuiltIn(t *testing.T) {
+	tokenStr := signToken(jwtparse.MapClaims{"sub": "custom"})
+	mw := New(Config{
+		SigningKey: testSecret,
+		CustomExtractor: func(c *celeris.Context) string {
+			return c.Header("x-custom-token")
+		},
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// Token in custom header only (no Authorization header).
+	_, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("x-custom-token", tokenStr),
+	)
+	assertNoError(t, err)
+}
+
+func TestCustomExtractorNotUsedWhenBuiltInSucceeds(t *testing.T) {
+	tokenStr := signToken(jwtparse.MapClaims{"sub": "builtin"})
+	customCalled := false
+	mw := New(Config{
+		SigningKey: testSecret,
+		CustomExtractor: func(_ *celeris.Context) string {
+			customCalled = true
+			return "should-not-reach"
+		},
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	_, err := runChain(t, chain, "GET", "/",
+		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+	)
+	assertNoError(t, err)
+	if customCalled {
+		t.Fatal("CustomExtractor should not be called when built-in extractor succeeds")
+	}
+}
+
+func TestCustomExtractorMissingTokenReturnsError(t *testing.T) {
+	mw := New(Config{
+		SigningKey: testSecret,
+		CustomExtractor: func(_ *celeris.Context) string {
+			return "" // also empty
+		},
+	})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	_, err := runChain(t, chain, "GET", "/")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrTokenMissing) {
+		t.Fatalf("expected ErrTokenMissing, got: %v", err)
+	}
+}

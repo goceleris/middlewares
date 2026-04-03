@@ -119,4 +119,19 @@
 //	server.Use(otel.New(otel.Config{
 //	    DisableMetrics: true,
 //	}))
+//
+// # Semconv Version
+//
+// This middleware uses OTel semconv v1.32.0, which is the latest version
+// bundled with the go.opentelemetry.io/otel v1.36.0 module. The semconv
+// import will be upgraded when a newer version ships with the SDK.
+//
+// # Protocol Version Limitation
+//
+// The network.protocol.version span attribute defaults to "1.1" because
+// the celeris framework does not yet expose the negotiated HTTP protocol
+// version on the Context. For HTTP/2 extended CONNECT requests (which
+// carry a ":protocol" pseudo-header), the middleware infers "2". For all
+// other HTTP/2 requests the attribute may be inaccurate. This will be
+// corrected when Context.Protocol() is available.
 package otel

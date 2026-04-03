@@ -196,9 +196,16 @@ func New(config ...Config) celeris.HandlerFunc {
 		n++
 		spanBuf[n] = semconv.URLPath(c.Path())
 		n++
-		// TODO: celeris Context does not expose the protocol version;
-		// default to "1.1". Update when Context.Protocol() is available.
-		spanBuf[n] = semconv.NetworkProtocolVersion("1.1")
+		// celeris Context does not yet expose the negotiated protocol
+		// version (e.g., "1.1" vs "2"). Default to "1.1". When serving
+		// HTTP/2 extended CONNECT, the ":protocol" pseudo-header is
+		// present, so use "2" in that case.
+		// TODO: replace with c.Protocol() once the framework exposes it.
+		protoVer := "1.1"
+		if c.Header(":protocol") != "" {
+			protoVer = "2"
+		}
+		spanBuf[n] = semconv.NetworkProtocolVersion(protoVer)
 		n++
 		if collectClientIP {
 			spanBuf[n] = semconv.ClientAddress(c.ClientIP())
