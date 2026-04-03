@@ -828,9 +828,9 @@ func TestSemconvAttributeKeys(t *testing.T) {
 	}
 
 	// Verify attribute keys match semconv constants exactly.
+	// http.route is omitted because FullPath() is empty in test contexts (no router).
 	wantKeys := map[attribute.Key]bool{
 		semconv.HTTPRequestMethodKey:      true,
-		semconv.HTTPRouteKey:              true,
 		semconv.URLSchemeKey:              true,
 		semconv.URLPathKey:                true,
 		semconv.NetworkProtocolVersionKey: true,
@@ -1321,10 +1321,10 @@ func TestMetricAttributeKeys(t *testing.T) {
 		t.Fatalf("expected 1 data point, got %d", len(hist.DataPoints))
 	}
 
+	// http.route is omitted because FullPath() is empty in test contexts (no router).
 	attrs := hist.DataPoints[0].Attributes
 	wantKeys := []attribute.Key{
 		semconv.HTTPRequestMethodKey,
-		semconv.HTTPRouteKey,
 		semconv.URLSchemeKey,
 		semconv.ServerAddressKey,
 		semconv.HTTPResponseStatusCodeKey,

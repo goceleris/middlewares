@@ -59,7 +59,12 @@ type Config struct {
 	CustomMetricAttributes func(c *celeris.Context) []attribute.KeyValue
 
 	// ServerPort, when > 0, adds the "server.port" attribute to spans and metrics.
+	// Negative values are clamped to 0 in validate().
 	ServerPort int
+
+	// NOTE: url.query is intentionally omitted from span attributes because
+	// query parameters frequently contain PII (tokens, emails, session IDs).
+	// Callers who need it can add it via CustomAttributes.
 }
 
 // DefaultConfig is the default OpenTelemetry middleware configuration.
@@ -79,4 +84,8 @@ func applyDefaults(cfg Config) Config {
 	return cfg
 }
 
-func (cfg Config) validate() {}
+func (cfg *Config) validate() {
+	if cfg.ServerPort < 0 {
+		cfg.ServerPort = 0
+	}
+}
