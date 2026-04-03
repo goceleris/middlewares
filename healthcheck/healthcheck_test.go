@@ -133,36 +133,38 @@ func TestCustomPaths(t *testing.T) {
 
 func TestDefaultConfigPaths(t *testing.T) {
 	t.Parallel()
-	if DefaultConfig.LivePath != "/livez" {
-		t.Fatalf("DefaultConfig.LivePath: got %q, want %q", DefaultConfig.LivePath, "/livez")
+	cfg := DefaultConfig()
+	if cfg.LivePath != "/livez" {
+		t.Fatalf("DefaultConfig().LivePath: got %q, want %q", cfg.LivePath, "/livez")
 	}
-	if DefaultConfig.ReadyPath != "/readyz" {
-		t.Fatalf("DefaultConfig.ReadyPath: got %q, want %q", DefaultConfig.ReadyPath, "/readyz")
+	if cfg.ReadyPath != "/readyz" {
+		t.Fatalf("DefaultConfig().ReadyPath: got %q, want %q", cfg.ReadyPath, "/readyz")
 	}
-	if DefaultConfig.StartPath != "/startupz" {
-		t.Fatalf("DefaultConfig.StartPath: got %q, want %q", DefaultConfig.StartPath, "/startupz")
+	if cfg.StartPath != "/startupz" {
+		t.Fatalf("DefaultConfig().StartPath: got %q, want %q", cfg.StartPath, "/startupz")
 	}
 }
 
 func TestDefaultConfigCheckers(t *testing.T) {
 	t.Parallel()
-	if DefaultConfig.LiveChecker == nil {
-		t.Fatal("DefaultConfig.LiveChecker should not be nil")
+	cfg := DefaultConfig()
+	if cfg.LiveChecker == nil {
+		t.Fatal("DefaultConfig().LiveChecker should not be nil")
 	}
-	if DefaultConfig.ReadyChecker == nil {
-		t.Fatal("DefaultConfig.ReadyChecker should not be nil")
+	if cfg.ReadyChecker == nil {
+		t.Fatal("DefaultConfig().ReadyChecker should not be nil")
 	}
-	if DefaultConfig.StartChecker == nil {
-		t.Fatal("DefaultConfig.StartChecker should not be nil")
+	if cfg.StartChecker == nil {
+		t.Fatal("DefaultConfig().StartChecker should not be nil")
 	}
-	if !DefaultConfig.LiveChecker(nil) {
-		t.Fatal("DefaultConfig.LiveChecker should return true")
+	if !cfg.LiveChecker(nil) {
+		t.Fatal("DefaultConfig().LiveChecker should return true")
 	}
-	if !DefaultConfig.ReadyChecker(nil) {
-		t.Fatal("DefaultConfig.ReadyChecker should return true")
+	if !cfg.ReadyChecker(nil) {
+		t.Fatal("DefaultConfig().ReadyChecker should return true")
 	}
-	if !DefaultConfig.StartChecker(nil) {
-		t.Fatal("DefaultConfig.StartChecker should return true")
+	if !cfg.StartChecker(nil) {
+		t.Fatal("DefaultConfig().StartChecker should return true")
 	}
 }
 
@@ -717,6 +719,52 @@ func TestValidateAcceptsDisabledWithEnabled(t *testing.T) {
 	}()
 	cfg := Config{LivePath: "/health", ReadyPath: "/health", StartPath: ""}
 	cfg.validate()
+}
+
+// --- Checker panic recovery tests ---
+
+func TestCheckerPanicReturns503(t *testing.T) {
+	t.Parallel()
+	mw := New(Config{
+		LivePath:       "/livez",
+		ReadyPath:      "/readyz",
+		StartPath:      "/startupz",
+		CheckerTimeout: 1 * time.Second,
+		LiveChecker: func(_ *celeris.Context) bool {
+			panic("boom")
+		},
+	})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/livez")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 503)
+}
+
+func TestCheckerPanicFastPathReturns503(t *testing.T) {
+	t.Parallel()
+	mw := New(Config{
+		LivePath:       "/livez",
+		ReadyPath:      "/readyz",
+		StartPath:      "/startupz",
+		CheckerTimeout: -1,
+		LiveChecker: func(_ *celeris.Context) bool {
+			panic("boom in fast-path")
+		},
+	})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/livez")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 503)
+}
+
+// --- DefaultConfig immutability ---
+
+func TestDefaultConfigImmutable(t *testing.T) {
+	t.Parallel()
+	cfg1 := DefaultConfig()
+	cfg1.LivePath = "/changed"
+	cfg2 := DefaultConfig()
+	if cfg2.LivePath != "/livez" {
+		t.Fatalf("DefaultConfig() mutation leaked: got %q, want /livez", cfg2.LivePath)
+	}
 }
 
 // --- Concurrent access test ---

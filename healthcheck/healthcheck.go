@@ -18,7 +18,7 @@ var (
 
 // New creates a healthcheck middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := DefaultConfig()
 	if len(config) > 0 {
 		cfg = config[0]
 	}
@@ -65,26 +65,52 @@ func New(config ...Config) celeris.HandlerFunc {
 // checker runs in a goroutine with a context deadline. When timeout is
 // zero or negative, the checker is called synchronously without
 // goroutine/channel/context overhead (fast-path for trivial checkers).
+//
+// A panicking checker is treated as a failure (returns false) rather
+// than crashing the server.
 func runChecker(checker Checker, c *celeris.Context, timeout time.Duration) bool {
 	if timeout <= 0 {
-		return checker(c)
+		return safeCheck(checker, c)
 	}
 
-	ctx, cancel := context.WithTimeout(c.Context(), timeout)
-	defer cancel()
+	origCtx := c.Context()
+	ctx, cancel := context.WithTimeout(origCtx, timeout)
 	c.SetContext(ctx)
 
 	done := make(chan bool, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- false
+			}
+		}()
 		done <- checker(c)
 	}()
 
+	var result bool
 	select {
-	case result := <-done:
-		return result
+	case result = <-done:
 	case <-ctx.Done():
-		return false
+		// Timeout fired. Cancel the context, then wait for the
+		// goroutine to finish so it no longer touches *Context
+		// (which may be recycled by the caller).
+		cancel()
+		<-done
+		cancel = func() {} // prevent double-cancel in defer
 	}
+
+	cancel()
+	c.SetContext(origCtx)
+	return result
+}
+
+func safeCheck(checker Checker, c *celeris.Context) (ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			ok = false
+		}
+	}()
+	return checker(c)
 }
 
 func respond(c *celeris.Context, ok bool, head bool) error {

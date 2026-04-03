@@ -237,8 +237,9 @@ func TestUnknownDebugSubpath(t *testing.T) {
 }
 
 func TestDefaultConfigPrefix(t *testing.T) {
-	if DefaultConfig.Prefix != "/debug/celeris" {
-		t.Fatalf("DefaultConfig.Prefix: got %q, want %q", DefaultConfig.Prefix, "/debug/celeris")
+	cfg := DefaultConfig()
+	if cfg.Prefix != "/debug/celeris" {
+		t.Fatalf("DefaultConfig().Prefix: got %q, want %q", cfg.Prefix, "/debug/celeris")
 	}
 }
 
@@ -269,8 +270,9 @@ func FuzzDebugPaths(f *testing.F) {
 }
 
 func TestDefaultConfigAuthFunc(t *testing.T) {
-	if DefaultConfig.AuthFunc == nil {
-		t.Fatal("DefaultConfig.AuthFunc should not be nil")
+	cfg := DefaultConfig()
+	if cfg.AuthFunc == nil {
+		t.Fatal("DefaultConfig().AuthFunc should not be nil")
 	}
 }
 
@@ -621,16 +623,40 @@ func TestValidatePrefixMustStartWithSlash(t *testing.T) {
 	New(Config{Prefix: "no-slash"})
 }
 
-func TestValidateNegativeMemStatsTTL(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for negative MemStatsTTL")
-		}
-		msg, ok := r.(string)
-		if !ok || msg != "debug: MemStatsTTL must not be negative" {
-			t.Fatalf("unexpected panic message: %v", r)
-		}
-	}()
-	New(Config{Prefix: "/debug", MemStatsTTL: -1 * time.Second})
+func TestNegativeMemStatsTTLUsesDefault(t *testing.T) {
+	cfg := applyDefaults(Config{Prefix: "/debug", MemStatsTTL: -1 * time.Second})
+	if cfg.MemStatsTTL != time.Second {
+		t.Fatalf("negative MemStatsTTL should use default: got %v, want 1s", cfg.MemStatsTTL)
+	}
+}
+
+func TestMethodNotAllowed(t *testing.T) {
+	mw := New(Config{AuthFunc: openAuth()})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "POST", "/debug/celeris/status")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 405)
+}
+
+func TestMethodNotAllowedIndex(t *testing.T) {
+	mw := New(Config{AuthFunc: openAuth()})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "DELETE", "/debug/celeris")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 405)
+}
+
+func TestDefaultConfigImmutable(t *testing.T) {
+	cfg1 := DefaultConfig()
+	cfg1.Prefix = "/changed"
+	cfg2 := DefaultConfig()
+	if cfg2.Prefix != "/debug/celeris" {
+		t.Fatalf("DefaultConfig() mutation leaked: got %q, want /debug/celeris", cfg2.Prefix)
+	}
+}
+
+func TestRemoteAddrWithoutPort(t *testing.T) {
+	mw := New()
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/debug/celeris/status",
+		celeristest.WithRemoteAddr("127.0.0.1"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
 }

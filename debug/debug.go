@@ -58,7 +58,7 @@ func isEndpointEnabled(endpoints map[string]bool, name string) bool {
 
 // New creates a debug middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := DefaultConfig()
 	if len(config) > 0 {
 		cfg = config[0]
 	}
@@ -95,9 +95,13 @@ func New(config ...Config) celeris.HandlerFunc {
 
 		path := c.Path()
 
-		if path == prefix || path == prefix+"/" {
+		if path == prefix || path == prefixSlash {
 			if cfg.AuthFunc != nil && !cfg.AuthFunc(c) {
 				return c.NoContent(403)
+			}
+			method := c.Method()
+			if method != "GET" && method != "HEAD" {
+				return c.NoContent(405)
 			}
 			return c.JSON(200, available)
 		}
@@ -108,6 +112,11 @@ func New(config ...Config) celeris.HandlerFunc {
 
 		if cfg.AuthFunc != nil && !cfg.AuthFunc(c) {
 			return c.NoContent(403)
+		}
+
+		method := c.Method()
+		if method != "GET" && method != "HEAD" {
+			return c.NoContent(405)
 		}
 
 		switch path {
@@ -195,13 +204,17 @@ func handleRoutes(c *celeris.Context, server *celeris.Server) error {
 }
 
 func handleMemory(c *celeris.Context, cache *memStatsCache) error {
+	// Check cache under lock (fast path).
 	cache.mu.Lock()
 	if cache.ttl > 0 && time.Since(cache.cachedAt) < cache.ttl {
 		resp := cache.data
 		cache.mu.Unlock()
 		return c.JSON(200, resp)
 	}
+	cache.mu.Unlock()
 
+	// Read memstats outside the lock to avoid holding the mutex across
+	// the STW pause that ReadMemStats triggers.
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	resp := memoryResponse{
@@ -213,9 +226,13 @@ func handleMemory(c *celeris.Context, cache *memStatsCache) error {
 		NumGC:      m.NumGC,
 		GCCPUFrac:  m.GCCPUFraction,
 	}
+
+	// Re-acquire to store the fresh data.
+	cache.mu.Lock()
 	cache.data = resp
 	cache.cachedAt = time.Now()
 	cache.mu.Unlock()
+
 	return c.JSON(200, resp)
 }
 
@@ -227,7 +244,8 @@ func handleRuntime(c *celeris.Context) error {
 	})
 }
 
-func handleBuild(c *celeris.Context) error {
+// cachedBuild is computed once at init time since build info never changes.
+var cachedBuild = func() buildResponse {
 	resp := buildResponse{
 		GoVersion: runtime.Version(),
 	}
@@ -243,5 +261,9 @@ func handleBuild(c *celeris.Context) error {
 			resp.VCS = vcs
 		}
 	}
-	return c.JSON(200, resp)
+	return resp
+}()
+
+func handleBuild(c *celeris.Context) error {
+	return c.JSON(200, cachedBuild)
 }

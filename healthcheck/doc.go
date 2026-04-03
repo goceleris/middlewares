@@ -71,6 +71,17 @@
 //	    StartPath: "", // startup probe disabled
 //	})
 //
+// # Checker Panics
+//
+// If a checker panics, the probe returns 503 unavailable. The panic is
+// recovered and does not crash the server.
+//
+// # Validation
+//
+// [Config].validate() panics at middleware construction time if paths are
+// invalid (missing leading '/') or overlap. This is a programming error
+// contract: validation failures are not recoverable at runtime.
+//
 // # Response Format
 //
 // 200: {"status": "ok"}

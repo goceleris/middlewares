@@ -443,8 +443,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Namespace != "celeris" {
 		t.Fatalf("default namespace: got %q, want celeris", cfg.Namespace)
 	}
-	if len(cfg.Buckets) != len(DefaultBuckets) {
-		t.Fatalf("default buckets: got %d entries, want %d", len(cfg.Buckets), len(DefaultBuckets))
+	if len(cfg.Buckets) != len(DefaultBuckets()) {
+		t.Fatalf("default buckets: got %d entries, want %d", len(cfg.Buckets), len(DefaultBuckets()))
 	}
 }
 
