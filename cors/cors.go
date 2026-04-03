@@ -34,7 +34,7 @@ func New(config ...Config) celeris.HandlerFunc {
 		// cross-origin request, or vice versa.
 		if origin == "" {
 			if !p.allowAllOrigins {
-				c.SetHeader("vary", "Origin")
+				c.AddHeader("vary", "Origin")
 			}
 			return c.Next()
 		}
@@ -86,7 +86,7 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 		if !allowed {
 			if !p.allowAllOrigins {
-				c.SetHeader("vary", "Origin")
+				c.AddHeader("vary", "Origin")
 			}
 			return c.Next()
 		}
@@ -96,7 +96,7 @@ func New(config ...Config) celeris.HandlerFunc {
 			c.SetHeader("access-control-allow-origin", "*")
 		} else {
 			c.SetHeader("access-control-allow-origin", origin)
-			c.SetHeader("vary", "Origin")
+			c.AddHeader("vary", "Origin")
 		}
 
 		if cfg.AllowCredentials {
@@ -120,7 +120,7 @@ func New(config ...Config) celeris.HandlerFunc {
 			if p.maxAge != "" {
 				c.SetHeader("access-control-max-age", p.maxAge)
 			}
-			c.SetHeader("vary", p.preflightVary)
+			c.AddHeader("vary", p.preflightVary)
 			if p.allowPrivateNetwork && c.Header("access-control-request-private-network") == "true" {
 				c.SetHeader("access-control-allow-private-network", "true")
 			}

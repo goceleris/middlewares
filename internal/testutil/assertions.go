@@ -27,21 +27,37 @@ func AssertHeader(t *testing.T, rec *celeristest.ResponseRecorder, key, expected
 	}
 }
 
-// AssertHeaderContains fails the test if the header value does not contain substr.
+// AssertHeaderContains fails the test if no header entry for key contains substr.
+// When multiple entries exist for the same key (e.g., from AddHeader), all
+// entries are checked and the assertion passes if any one contains substr.
 func AssertHeaderContains(t *testing.T, rec *celeristest.ResponseRecorder, key, substr string) {
 	t.Helper()
-	got := rec.Header(key)
-	if !strings.Contains(got, substr) {
-		t.Fatalf("header %q: %q does not contain %q", key, got, substr)
+	for _, h := range rec.Headers {
+		if h[0] == key && strings.Contains(h[1], substr) {
+			return
+		}
 	}
+	t.Fatalf("header %q: no entry contains %q (entries: %v)", key, substr, allHeaderValues(rec, key))
 }
 
-// AssertNoHeader fails the test if the header is present.
+// allHeaderValues returns all values for the given header key.
+func allHeaderValues(rec *celeristest.ResponseRecorder, key string) []string {
+	var vals []string
+	for _, h := range rec.Headers {
+		if h[0] == key {
+			vals = append(vals, h[1])
+		}
+	}
+	return vals
+}
+
+// AssertNoHeader fails the test if any header entry exists for key.
 func AssertNoHeader(t *testing.T, rec *celeristest.ResponseRecorder, key string) {
 	t.Helper()
-	got := rec.Header(key)
-	if got != "" {
-		t.Fatalf("header %q: expected absent, got %q", key, got)
+	for _, h := range rec.Headers {
+		if h[0] == key {
+			t.Fatalf("header %q: expected absent, got %q", key, h[1])
+		}
 	}
 }
 

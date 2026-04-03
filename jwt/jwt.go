@@ -33,6 +33,9 @@ func New(config ...Config) celeris.HandlerFunc {
 	}
 
 	extractors := parseExtractors(cfg.TokenLookup)
+	if cfg.CustomExtractor != nil {
+		extractors = append(extractors, cfg.CustomExtractor)
+	}
 	claimsTemplate := cfg.Claims
 	claimsFactory := cfg.ClaimsFactory
 

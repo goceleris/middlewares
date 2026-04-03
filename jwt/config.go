@@ -129,6 +129,14 @@ type Config struct {
 	// other pre-processing that should occur before authentication.
 	BeforeFunc func(c *celeris.Context)
 
+	// CustomExtractor provides a user-defined token extraction function.
+	// When set, it is tried after the built-in extractors defined by
+	// TokenLookup. If all built-in extractors return empty and
+	// CustomExtractor returns a non-empty string, that value is used as
+	// the raw token. This is useful for non-standard token locations
+	// (e.g., WebSocket subprotocol, gRPC metadata).
+	CustomExtractor func(c *celeris.Context) string
+
 	// MinKeyLength, when > 0, enforces a minimum HMAC signing key length
 	// in bytes at initialization time. If SigningKey is a []byte shorter
 	// than this value, New() panics. Use this for strict security policies.

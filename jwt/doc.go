@@ -124,6 +124,18 @@
 //   - ES256/ES384/ES512: *ecdsa.PublicKey (verify) / *ecdsa.PrivateKey (sign)
 //   - EdDSA: ed25519.PublicKey (verify) / ed25519.PrivateKey (sign)
 //
+// # Custom Parser
+//
+// The internal jwtparse package (jwt/internal/jwtparse) includes a hand-written
+// JSON parser (jsonlite.go) that avoids encoding/json for header and claims
+// decoding. This trades a broader correctness surface area for lower allocation
+// overhead on the hot path (zero heap allocations for header parsing, minimal
+// allocations for claims). The parser handles the JSON subset needed by JWT
+// (strings, numbers, booleans, null, arrays, nested objects) and rejects bare
+// control characters per RFC 8259. Fuzz tests (fuzz_test.go) continuously
+// validate equivalence with encoding/json. If you encounter a parsing edge
+// case, report it so the fuzz corpus can be extended.
+//
 // # Skipping
 //
 // Set [Config].Skip to bypass the middleware dynamically, or

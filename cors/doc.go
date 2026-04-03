@@ -63,6 +63,15 @@
 // Set [Config].AllowPrivateNetwork to true to enable the Private Network
 // Access spec (Access-Control-Allow-Private-Network header on preflight).
 //
+// # Null Origin Warning
+//
+// The literal "null" origin is sent by sandboxed iframes, data: URLs,
+// file:// pages, and redirected requests. Because all of these share the
+// same "null" string, allowing it effectively grants access to any
+// sandboxed context. Treat "null" as an opaque origin and avoid adding
+// it to AllowOrigins unless you fully understand the implications.
+// AllowOriginsFunc is a safer alternative for case-by-case decisions.
+//
 // Using AllowCredentials with a wildcard origin ("*") panics at
 // initialization, as this combination is forbidden by the CORS spec.
 package cors
