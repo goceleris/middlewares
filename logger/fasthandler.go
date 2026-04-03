@@ -168,9 +168,17 @@ func (h *FastHandler) Handle(_ context.Context, r slog.Record) error {
 
 	buf = append(buf, '\n')
 
-	_, err := h.w.Write(buf)
+	// Copy buf before returning to pool: Write may retain the slice
+	// (e.g., bufio.Writer), and the pool would reclaim the backing array.
+	_, err := h.w.Write(append([]byte(nil), buf...))
 
-	*bp = buf
+	// Cap pooled buffer to prevent unbounded growth.
+	if cap(buf) > 4096 {
+		fresh := make([]byte, 0, 512)
+		*bp = fresh
+	} else {
+		*bp = buf
+	}
 	fastBufPool.Put(bp)
 
 	return err
@@ -185,9 +193,13 @@ func (h *FastHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	if len(h.prefix) > 0 {
 		buf = append(buf, h.prefix...)
 	}
+	appendFn := appendAttr
+	if h.color {
+		appendFn = colorAppendAttr
+	}
 	for _, a := range attrs {
 		buf = append(buf, ' ')
-		buf = appendAttr(buf, a)
+		buf = appendFn(buf, a)
 	}
 	return &FastHandler{w: h.w, level: h.level, prefix: buf, color: h.color, timeFormat: h.timeFormat}
 }
@@ -244,18 +256,27 @@ func (g *groupHandler) Handle(_ context.Context, r slog.Record) error {
 		buf = append(buf, g.prefix...)
 	}
 
+	appendFn := appendAttr
+	if g.color {
+		appendFn = colorAppendAttr
+	}
 	r.Attrs(func(a slog.Attr) bool {
 		buf = append(buf, ' ')
 		buf = append(buf, g.group...)
 		buf = append(buf, '.')
-		buf = appendAttr(buf, a)
+		buf = appendFn(buf, a)
 		return true
 	})
 
 	buf = append(buf, '\n')
-	_, err := g.parent.w.Write(buf)
+	_, err := g.parent.w.Write(append([]byte(nil), buf...))
 
-	*bp = buf
+	if cap(buf) > 4096 {
+		fresh := make([]byte, 0, 512)
+		*bp = fresh
+	} else {
+		*bp = buf
+	}
 	fastBufPool.Put(bp)
 	return err
 }
@@ -266,11 +287,15 @@ func (g *groupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 	prefix := make([]byte, len(g.prefix))
 	copy(prefix, g.prefix)
+	appendFn := appendAttr
+	if g.color {
+		appendFn = colorAppendAttr
+	}
 	for _, a := range attrs {
 		prefix = append(prefix, ' ')
 		prefix = append(prefix, g.group...)
 		prefix = append(prefix, '.')
-		prefix = appendAttr(prefix, a)
+		prefix = appendFn(prefix, a)
 	}
 	return &groupHandler{parent: g.parent, group: g.group, prefix: prefix, color: g.color, timeFormat: g.timeFormat}
 }
@@ -381,7 +406,7 @@ func appendTextValue(buf []byte, s string) []byte {
 	needsQuote := false
 	for i := range len(s) {
 		c := s[i]
-		if c <= ' ' || c == '"' || c == '=' || c == '\\' {
+		if c <= ' ' || c == 0x7f || c == '"' || c == '=' || c == '\\' {
 			needsQuote = true
 			break
 		}
@@ -404,9 +429,9 @@ func appendTextValue(buf []byte, s string) []byte {
 		case '\t':
 			buf = append(buf, '\\', 't')
 		default:
-			if c < 0x20 {
-				// Escape other control characters as \xHH to prevent
-				// terminal escape injection and log corruption.
+			if c < 0x20 || c == 0x7f {
+				// Escape control characters (including DEL) as \xHH to
+				// prevent terminal escape injection and log corruption.
 				buf = append(buf, '\\', 'x')
 				buf = append(buf, "0123456789abcdef"[c>>4])
 				buf = append(buf, "0123456789abcdef"[c&0x0f])

@@ -7,14 +7,22 @@ import (
 	"github.com/goceleris/celeris"
 )
 
-// DefaultSensitiveHeaders lists header names redacted by default when
-// SensitiveHeaders is nil (not explicitly set). Set SensitiveHeaders
-// to an empty slice ([]string{}) to disable all redaction.
-var DefaultSensitiveHeaders = []string{
+// defaultSensitiveHeaders is the immutable source list. Callers get a
+// copy via DefaultSensitiveHeaders() to prevent mutation.
+var defaultSensitiveHeadersList = [...]string{
 	"authorization",
 	"cookie",
 	"set-cookie",
 	"x-api-key",
+}
+
+// DefaultSensitiveHeaders returns a copy of the default sensitive header
+// names redacted when [Config].SensitiveHeaders is nil. Set SensitiveHeaders
+// to an empty slice ([]string{}) to disable all redaction.
+func DefaultSensitiveHeaders() []string {
+	out := make([]string, len(defaultSensitiveHeadersList))
+	copy(out, defaultSensitiveHeadersList[:])
+	return out
 }
 
 // Config defines the logger middleware configuration.
@@ -73,7 +81,10 @@ type Config struct {
 	LogUserAgent bool
 	// LogReferer includes the Referer header.
 	LogReferer bool
-	// LogProtocol includes the request protocol (e.g., "HTTP/1.1").
+	// LogProtocol includes the request protocol/scheme from the
+	// x-forwarded-proto header (e.g., "https"). This header is
+	// typically set by reverse proxies. The field is omitted when
+	// the header is absent.
 	LogProtocol bool
 	// LogRoute includes the matched route pattern (FullPath).
 	LogRoute bool
@@ -100,12 +111,17 @@ type Config struct {
 	// SensitiveFormFields lists form field names whose values should be
 	// redacted when LogFormValues is true. Values are replaced with
 	// "[REDACTED]". Field names are matched case-insensitively.
-	// Default nil means no redaction.
+	//
+	// Semantics:
+	//   - nil  → no form field redaction (all values logged as-is).
+	//   - []string{} (empty) → no form field redaction (same as nil).
+	//   - non-empty → matching fields are replaced with "[REDACTED]".
 	SensitiveFormFields []string
 }
 
-// DefaultConfig is the default logger configuration.
-var DefaultConfig = Config{}
+// DefaultConfig returns the default logger configuration.
+// Each call returns a fresh value to prevent mutation.
+func DefaultConfig() Config { return Config{} }
 
 func applyDefaults(cfg Config) Config {
 	if cfg.Output == nil {
@@ -131,4 +147,8 @@ func defaultLevel(status int) slog.Level {
 	}
 }
 
-func (cfg Config) validate() {}
+func (cfg Config) validate() {
+	if cfg.MaxCaptureBytes < 0 && (cfg.CaptureRequestBody || cfg.CaptureResponseBody) {
+		panic("logger: MaxCaptureBytes must not be negative when body capture is enabled")
+	}
+}
