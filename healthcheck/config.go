@@ -52,8 +52,8 @@ type Config struct {
 	// the probe returns 503 unavailable.
 	//
 	// Special values:
-	//   0  — use default (5s)
-	//   -1 — fast-path: run synchronously without goroutine/channel/context
+	//   0                — use default (5s)
+	//   FastPathTimeout  — run synchronously without goroutine/channel/context
 	//
 	// Default: 5s.
 	CheckerTimeout time.Duration
@@ -61,6 +61,11 @@ type Config struct {
 
 // DefaultCheckerTimeout is the default timeout for health checkers.
 const DefaultCheckerTimeout = 5 * time.Second
+
+// FastPathTimeout disables the goroutine/channel/context timeout machinery
+// and runs checkers synchronously inline. Use this for trivial checkers
+// that cannot block.
+const FastPathTimeout = -1 * time.Second
 
 // DefaultConfig returns the default healthcheck middleware configuration.
 // Each call returns a fresh copy.

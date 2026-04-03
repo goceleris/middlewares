@@ -58,6 +58,7 @@ type tokenExtractor func(c *celeris.Context) string
 type Handler struct {
 	storage           Storage
 	expiration        time.Duration
+	tokenLen          int
 	cookieName        string
 	cookiePath        string
 	cookieDomain      string
@@ -77,7 +78,7 @@ func (h *Handler) DeleteToken(c *celeris.Context) error {
 		return ErrTokenNotFound
 	}
 	if h.storage != nil {
-		h.storage.Delete(storageKey(cookieToken))
+		h.storage.Delete(storageKey(unmaskToken(cookieToken, h.tokenLen)))
 	}
 	c.SetCookie(&celeris.Cookie{
 		Name:     h.cookieName,
@@ -157,6 +158,7 @@ func New(config ...Config) celeris.HandlerFunc {
 	handler := &Handler{
 		storage:           storage,
 		expiration:        expiration,
+		tokenLen:          tokenLen,
 		cookieName:        cookieName,
 		cookiePath:        cookiePath,
 		cookieDomain:      cookieDomain,
@@ -204,17 +206,28 @@ func New(config ...Config) celeris.HandlerFunc {
 				newToken = true
 			} else if storage != nil {
 				// In storage mode, verify the cookie token still exists.
-				if _, ok := storage.Get(storageKey(token)); !ok {
+				// Unmask the cookie to recover the raw token for storage lookup.
+				raw := unmaskToken(token, tokenLen)
+				if _, ok := storage.Get(storageKey(raw)); !ok {
 					token = genToken()
 					newToken = true
+				} else {
+					token = raw
 				}
+			} else {
+				// Pure double-submit: unmask the cookie to get the raw token.
+				token = unmaskToken(token, tokenLen)
 			}
 			if storage != nil && newToken {
 				storage.Set(storageKey(token), token, expiration)
 			}
-			setCookie(c, token)
+			// BREACH mitigation: mask the token per-request so the
+			// cookie value changes on every response, defeating
+			// compression side-channel attacks.
+			masked := maskToken(token, tokenLen)
+			setCookie(c, masked)
 			c.AddHeader("vary", "Cookie")
-			c.Set(contextKey, token)
+			c.Set(contextKey, masked)
 			return c.Next()
 		}
 
@@ -256,8 +269,12 @@ func New(config ...Config) celeris.HandlerFunc {
 			return errorHandler(c, ErrMissingToken)
 		}
 
+		// Unmask both tokens to recover the real values before comparison.
+		realCookie := unmaskToken(cookieToken, tokenLen)
+		realRequest := unmaskToken(requestToken, tokenLen)
+
 		if storage != nil {
-			key := storageKey(cookieToken)
+			key := storageKey(realCookie)
 			var storedToken string
 			var ok bool
 			if singleUse {
@@ -273,11 +290,11 @@ func New(config ...Config) celeris.HandlerFunc {
 			if !ok {
 				return errorHandler(c, ErrForbidden)
 			}
-			if subtle.ConstantTimeCompare([]byte(storedToken), []byte(requestToken)) != 1 {
+			if subtle.ConstantTimeCompare([]byte(storedToken), []byte(realRequest)) != 1 {
 				return errorHandler(c, ErrForbidden)
 			}
 		} else {
-			if subtle.ConstantTimeCompare([]byte(cookieToken), []byte(requestToken)) != 1 {
+			if subtle.ConstantTimeCompare([]byte(realCookie), []byte(realRequest)) != 1 {
 				return errorHandler(c, ErrForbidden)
 			}
 		}
@@ -286,6 +303,53 @@ func New(config ...Config) celeris.HandlerFunc {
 		c.Set(contextKey, cookieToken)
 		return c.Next()
 	}
+}
+
+// maskToken generates a random mask of tokenByteLen bytes, XORs the
+// decoded token bytes, and returns hex(mask)+hex(masked). The result
+// changes on every call even for the same token, preventing BREACH
+// compression side-channel attacks. If the token cannot be decoded as
+// hex or has the wrong byte length, it is returned as-is.
+func maskToken(token string, tokenByteLen int) string {
+	raw, err := hex.DecodeString(token)
+	if err != nil || len(raw) != tokenByteLen {
+		return token
+	}
+	mask := make([]byte, tokenByteLen)
+	if _, err := rand.Read(mask); err != nil {
+		panic("csrf: crypto/rand failed: " + err.Error())
+	}
+	masked := make([]byte, tokenByteLen)
+	for i := range raw {
+		masked[i] = raw[i] ^ mask[i]
+	}
+	return hex.EncodeToString(mask) + hex.EncodeToString(masked)
+}
+
+// unmaskToken reverses maskToken. A masked token has exactly
+// 4*tokenByteLen hex chars (two concatenated hex-encoded halves).
+// If the input matches this length, the halves are decoded, XORed,
+// and the original token is returned. Otherwise the input is returned
+// as-is for backward compatibility with unmasked tokens.
+func unmaskToken(token string, tokenByteLen int) string {
+	expected := tokenByteLen * 4
+	if len(token) != expected {
+		return token
+	}
+	half := expected / 2
+	maskBytes, err := hex.DecodeString(token[:half])
+	if err != nil {
+		return token
+	}
+	maskedBytes, err := hex.DecodeString(token[half:])
+	if err != nil {
+		return token
+	}
+	raw := make([]byte, tokenByteLen)
+	for i := range maskBytes {
+		raw[i] = maskBytes[i] ^ maskedBytes[i]
+	}
+	return hex.EncodeToString(raw)
 }
 
 // isOriginAllowed checks if the request origin matches the host, an exact

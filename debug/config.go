@@ -75,10 +75,7 @@ func applyDefaults(cfg Config) Config {
 	if cfg.AuthFunc == nil {
 		cfg.AuthFunc = defaultConfig.AuthFunc
 	}
-	if cfg.MemStatsTTL < 0 {
-		cfg.MemStatsTTL = time.Second
-	}
-	if cfg.MemStatsTTL == 0 {
+	if cfg.MemStatsTTL <= 0 {
 		cfg.MemStatsTTL = time.Second
 	}
 	return cfg
