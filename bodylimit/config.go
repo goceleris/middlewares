@@ -58,36 +58,37 @@ func validate(cfg *Config) {
 	}
 }
 
+type sizeSuffix struct {
+	name string
+	mult float64
+}
+
+// Order matters: longer suffixes must be checked before shorter ones
+// (e.g., "EIB" before "EB", "EB" before "B").
+var sizeSuffixes = [...]sizeSuffix{
+	{"EIB", 1 << 60},
+	{"PIB", 1 << 50},
+	{"TIB", 1 << 40},
+	{"GIB", 1 << 30},
+	{"MIB", 1 << 20},
+	{"KIB", 1 << 10},
+	{"EB", 1 << 60},
+	{"PB", 1 << 50},
+	{"TB", 1 << 40},
+	{"GB", 1 << 30},
+	{"MB", 1 << 20},
+	{"KB", 1 << 10},
+	{"B", 1},
+}
+
 func parseSize(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, errors.New("bodylimit: empty Limit string")
 	}
 
-	type suffix struct {
-		name string
-		mult float64
-	}
-	// Order matters: longer suffixes must be checked before shorter ones
-	// (e.g., "EIB" before "EB", "EB" before "B").
-	suffixes := [...]suffix{
-		{"EIB", 1 << 60},
-		{"PIB", 1 << 50},
-		{"TIB", 1 << 40},
-		{"GIB", 1 << 30},
-		{"MIB", 1 << 20},
-		{"KIB", 1 << 10},
-		{"EB", 1 << 60},
-		{"PB", 1 << 50},
-		{"TB", 1 << 40},
-		{"GB", 1 << 30},
-		{"MB", 1 << 20},
-		{"KB", 1 << 10},
-		{"B", 1},
-	}
-
 	upper := strings.ToUpper(s)
-	for _, sf := range suffixes {
+	for _, sf := range sizeSuffixes {
 		if strings.HasSuffix(upper, sf.name) {
 			numStr := strings.TrimSpace(s[:len(s)-len(sf.name)])
 			val, err := strconv.ParseFloat(numStr, 64)

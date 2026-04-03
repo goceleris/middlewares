@@ -48,25 +48,38 @@
 // approach ensures that the limit is enforced even when the
 // Content-Length header is absent, zero, or deliberately understated.
 //
-// # Streaming Limitation
+// # Limitation: Framework-Level Buffering
 //
-// Celeris buffers the full request body before middleware executes. This
-// means oversized payloads without a Content-Length header will be buffered
-// into memory before this middleware can reject them. The framework's own
-// maxRequestBodySize (100 MB) provides the hard ceiling that prevents
-// unbounded memory growth.
+// IMPORTANT: Celeris buffers the complete request body into memory BEFORE
+// any middleware executes. This is a framework-level architectural
+// constraint that this middleware cannot change. Consequently:
 //
-// For strict enforcement, enable [Config].ContentLengthRequired to reject
-// requests that omit the Content-Length header with 411 Length Required,
-// forcing clients to declare body size up front:
+//   - When Content-Length is present: the Phase 1 pre-check rejects
+//     oversized requests before the handler runs, but the body is
+//     already in memory at that point.
+//   - When Content-Length is absent or dishonest: the full body is
+//     buffered before this middleware sees it. Phase 2 catches it
+//     after the fact.
+//
+// The framework's own maxRequestBodySize (100 MB) acts as the hard
+// ceiling and absolute backstop — no request body can ever exceed
+// 100 MB regardless of this middleware's configuration. This prevents
+// unbounded memory growth even if a client streams data without a
+// Content-Length header.
+//
+// The primary mitigation is [Config].ContentLengthRequired, which
+// rejects requests that omit the Content-Length header with 411 Length
+// Required. This forces well-behaved clients to declare body size up
+// front, making the Phase 1 pre-check effective:
 //
 //	server.Use(bodylimit.New(bodylimit.Config{
 //	    Limit:                 "10MB",
 //	    ContentLengthRequired: true,
 //	}))
 //
-// Bodyless HTTP methods (GET, HEAD, DELETE, OPTIONS) are auto-skipped
-// since they never carry a request body, avoiding unnecessary overhead.
+// Bodyless HTTP methods (GET, HEAD, DELETE, OPTIONS, TRACE, CONNECT) are
+// auto-skipped. TRACE must not include a body (RFC 7231 §4.3.8) and
+// CONNECT transitions to tunnel mode (RFC 7231 §4.3.6).
 //
 // # Custom Error Handling
 //

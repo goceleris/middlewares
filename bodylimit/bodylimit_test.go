@@ -16,7 +16,7 @@ func TestAutoSkipBodylessMethods(t *testing.T) {
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
-	for _, method := range []string{"GET", "HEAD", "DELETE", "OPTIONS"} {
+	for _, method := range []string{"GET", "HEAD", "DELETE", "OPTIONS", "TRACE", "CONNECT"} {
 		t.Run(method, func(t *testing.T) {
 			chain := []celeris.HandlerFunc{mw, handler}
 			rec, err := testutil.RunChain(t, chain, method, "/",
@@ -26,6 +26,32 @@ func TestAutoSkipBodylessMethods(t *testing.T) {
 			testutil.AssertStatus(t, rec, 200)
 		})
 	}
+}
+
+func TestTRACEAutoSkipped(t *testing.T) {
+	mw := New(Config{MaxBytes: 10})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "TRACE", "/",
+		celeristest.WithHeader("content-length", "999999"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestCONNECTAutoSkipped(t *testing.T) {
+	mw := New(Config{MaxBytes: 10})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "CONNECT", "/",
+		celeristest.WithHeader("content-length", "999999"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
 }
 
 func TestPOSTNotAutoSkipped(t *testing.T) {
@@ -577,7 +603,7 @@ func TestContentLengthRequiredSkipsBodylessMethods(t *testing.T) {
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
-	for _, method := range []string{"GET", "HEAD", "DELETE", "OPTIONS"} {
+	for _, method := range []string{"GET", "HEAD", "DELETE", "OPTIONS", "TRACE", "CONNECT"} {
 		t.Run(method, func(t *testing.T) {
 			chain := []celeris.HandlerFunc{mw, handler}
 			rec, err := testutil.RunChain(t, chain, method, "/")
