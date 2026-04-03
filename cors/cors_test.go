@@ -1093,12 +1093,91 @@ func TestPartialConfigGetsDefaultAllowHeaders(t *testing.T) {
 
 // --- Multi-level subdomain wildcard ---
 
-func TestWildcardMatchesMultiLevelSubdomain(t *testing.T) {
+func TestWildcardRejectsMultiLevelSubdomain(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"https://*.example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Default maxSubdomainDepth=1 rejects multi-level subdomains.
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "https://a.b.c.example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+}
+
+// --- Vary: Origin on non-CORS requests ---
+
+func TestVaryOriginOnNonCORSRequestSpecificOrigins(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://a.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// No Origin header, but specific origins configured.
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "vary", "Origin")
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+}
+
+func TestNoVaryOriginOnNonCORSRequestWildcard(t *testing.T) {
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// No Origin header, wildcard configured.
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "vary")
+}
+
+func TestVaryOriginOnNonCORSRequestWithWildcardOrigins(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"https://*.example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// No Origin header, wildcard-subdomain (not wildcard-all) configured.
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "vary", "Origin")
+}
+
+// --- Wildcard dot-count depth validation ---
+
+func TestWildcardSingleLevelMatches(t *testing.T) {
 	mw := New(Config{AllowOrigins: []string{"https://*.example.com"}})
 	chain := []celeris.HandlerFunc{mw, okHandler}
 
 	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("origin", "https://a.b.c.example.com"))
+		celeristest.WithHeader("origin", "https://api.example.com"))
 	testutil.AssertNoError(t, err)
-	testutil.AssertHeader(t, rec, "access-control-allow-origin", "https://a.b.c.example.com")
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "https://api.example.com")
+}
+
+func TestWildcardTwoLevelRejected(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"https://*.example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "https://a.b.example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+}
+
+func TestWildcardDepthUnit(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern wildcardPattern
+		origin  string
+		want    bool
+	}{
+		{"single level match", wildcardPattern{"https://", ".example.com", 1}, "https://api.example.com", true},
+		{"two level rejected", wildcardPattern{"https://", ".example.com", 1}, "https://a.b.example.com", false},
+		{"three level rejected", wildcardPattern{"https://", ".example.com", 1}, "https://a.b.c.example.com", false},
+		{"depth zero unlimited", wildcardPattern{"https://", ".example.com", 0}, "https://a.b.c.example.com", true},
+		{"empty middle rejected", wildcardPattern{"https://", ".example.com", 1}, "https://.example.com", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.pattern.match(tc.origin)
+			if got != tc.want {
+				t.Errorf("match(%q) = %v, want %v", tc.origin, got, tc.want)
+			}
+		})
+	}
 }

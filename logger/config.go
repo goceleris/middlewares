@@ -1,7 +1,10 @@
 package logger
 
 import (
+	"fmt"
 	"log/slog"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/goceleris/celeris"
@@ -102,6 +105,12 @@ type Config struct {
 	LogBytesIn bool
 	// LogScheme includes the request scheme (e.g., "https") as "scheme" attr.
 	LogScheme bool
+	// DisableColors overrides Color in FastHandlerOptions. When true,
+	// the FastHandler ignores its Color flag and emits plain text without
+	// ANSI escape codes. This is simpler than terminal detection and
+	// useful for log files or CI environments.
+	DisableColors bool
+
 	// LogResponseHeaders lists specific response header names whose values
 	// should be included in the log entry. Header names are matched
 	// case-insensitively. Each matched header is logged as
@@ -150,5 +159,60 @@ func defaultLevel(status int) slog.Level {
 func (cfg Config) validate() {
 	if cfg.MaxCaptureBytes < 0 && (cfg.CaptureRequestBody || cfg.CaptureResponseBody) {
 		panic("logger: MaxCaptureBytes must not be negative when body capture is enabled")
+	}
+}
+
+// CLFConfig returns a Config pre-configured for Common Log Format (CLF) style
+// output. It enables LogHost, LogUserAgent, and LogReferer, and uses a Fields
+// callback that emits a single "clf" attribute with the traditional
+// combined log format line: host ident user [time] "method path proto" status bytes "referer" "user-agent".
+func CLFConfig() Config {
+	return Config{
+		LogHost:      true,
+		LogUserAgent: true,
+		LogReferer:   true,
+		Fields: func(c *celeris.Context, latency time.Duration) []slog.Attr {
+			host := c.Host()
+			if host == "" {
+				host = "-"
+			}
+			ref := c.Header("referer")
+			if ref == "" {
+				ref = "-"
+			}
+			ua := c.Header("user-agent")
+			if ua == "" {
+				ua = "-"
+			}
+			proto := c.Header("x-forwarded-proto")
+			if proto == "" {
+				proto = "HTTP/1.1"
+			} else {
+				proto = strings.ToUpper(proto)
+			}
+			line := fmt.Sprintf(`%s - - [%s] "%s %s %s" %d %d "%s" "%s"`,
+				host,
+				time.Now().UTC().Format("02/Jan/2006:15:04:05 -0700"),
+				c.Method(), c.Path(), proto,
+				c.StatusCode(), c.BytesWritten(),
+				ref, ua,
+			)
+			return []slog.Attr{slog.String("clf", line)}
+		},
+	}
+}
+
+// JSONConfig returns a Config pre-configured for structured JSON output
+// using slog.JSONHandler writing to os.Stdout. It enables LogHost,
+// LogUserAgent, LogReferer, LogRoute, and LogQueryParams for
+// comprehensive structured logging.
+func JSONConfig() Config {
+	return Config{
+		Output:         slog.New(slog.NewJSONHandler(os.Stdout, nil)),
+		LogHost:        true,
+		LogUserAgent:   true,
+		LogReferer:     true,
+		LogRoute:       true,
+		LogQueryParams: true,
 	}
 }

@@ -1527,3 +1527,143 @@ func TestSensitiveFormFieldsOnlyWhenLogFormValuesTrue(t *testing.T) {
 		t.Fatalf("form should not be logged when LogFormValues is false, got: %s", buf.String())
 	}
 }
+
+// --- DisableColors ---
+
+func TestDisableColors(t *testing.T) {
+	var buf bytes.Buffer
+	fh := NewFastHandler(&buf, &FastHandlerOptions{Color: true})
+	log := slog.New(fh)
+	mw := New(Config{Output: log, DisableColors: true, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/no-color")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if strings.Contains(out, "\033[") {
+		t.Fatalf("expected no ANSI escape codes with DisableColors, got: %s", out)
+	}
+}
+
+func TestDisableColorsFalsePreservesColor(t *testing.T) {
+	var buf bytes.Buffer
+	fh := NewFastHandler(&buf, &FastHandlerOptions{Color: true})
+	log := slog.New(fh)
+	mw := New(Config{Output: log, DisableColors: false, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/with-color")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, "\033[") {
+		t.Fatalf("expected ANSI escape codes when DisableColors is false, got: %s", out)
+	}
+}
+
+func TestDisableColorsGroupHandler(t *testing.T) {
+	var buf bytes.Buffer
+	fh := NewFastHandler(&buf, &FastHandlerOptions{Color: true})
+	gh := fh.WithGroup("grp")
+	log := slog.New(gh)
+	mw := New(Config{Output: log, DisableColors: true, SensitiveHeaders: []string{}})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/no-color-grp")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if strings.Contains(out, "\033[") {
+		t.Fatalf("expected no ANSI codes with DisableColors on groupHandler, got: %s", out)
+	}
+}
+
+// --- CLFConfig ---
+
+func TestCLFConfig(t *testing.T) {
+	cfg := CLFConfig()
+	if !cfg.LogHost {
+		t.Fatal("CLFConfig should enable LogHost")
+	}
+	if !cfg.LogUserAgent {
+		t.Fatal("CLFConfig should enable LogUserAgent")
+	}
+	if !cfg.LogReferer {
+		t.Fatal("CLFConfig should enable LogReferer")
+	}
+	if cfg.Fields == nil {
+		t.Fatal("CLFConfig should set Fields callback")
+	}
+}
+
+func TestCLFConfigFieldsOutput(t *testing.T) {
+	cfg := CLFConfig()
+	// Override output to capture.
+	var buf bytes.Buffer
+	cfg.Output = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	cfg.SensitiveHeaders = []string{}
+	mw := New(cfg)
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/clf",
+		celeristest.WithHeader("user-agent", "TestBot/1.0"),
+		celeristest.WithHeader("referer", "http://ref.example.com"),
+	)
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, `"clf"`) {
+		t.Fatalf("expected clf field in log, got: %s", out)
+	}
+	if !strings.Contains(out, "GET") {
+		t.Fatalf("CLF line should contain method, got: %s", out)
+	}
+}
+
+// --- JSONConfig ---
+
+func TestJSONConfig(t *testing.T) {
+	cfg := JSONConfig()
+	if cfg.Output == nil {
+		t.Fatal("JSONConfig should set Output")
+	}
+	if !cfg.LogHost {
+		t.Fatal("JSONConfig should enable LogHost")
+	}
+	if !cfg.LogUserAgent {
+		t.Fatal("JSONConfig should enable LogUserAgent")
+	}
+	if !cfg.LogReferer {
+		t.Fatal("JSONConfig should enable LogReferer")
+	}
+	if !cfg.LogRoute {
+		t.Fatal("JSONConfig should enable LogRoute")
+	}
+	if !cfg.LogQueryParams {
+		t.Fatal("JSONConfig should enable LogQueryParams")
+	}
+}
+
+func TestJSONConfigUsable(t *testing.T) {
+	cfg := JSONConfig()
+	// Override output to capture.
+	var buf bytes.Buffer
+	cfg.Output = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	cfg.SensitiveHeaders = []string{}
+	mw := New(cfg)
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/json-config")
+	testutil.AssertNoError(t, err)
+	out := buf.String()
+	if !strings.Contains(out, `"method":"GET"`) {
+		t.Fatalf("expected JSON output with method, got: %s", out)
+	}
+}

@@ -35,9 +35,19 @@
 //
 // Origins may contain a single wildcard for subdomain matching
 // (e.g., "https://*.example.com"). Patterns with more than one wildcard
-// panic at initialization. Note that wildcards match across dots, so
-// "https://*.example.com" matches multi-level subdomains like
-// "https://a.b.example.com" — not just single-level subdomains.
+// panic at initialization. By default, the wildcard matches a single
+// subdomain level only: "https://*.example.com" matches
+// "https://api.example.com" but NOT "https://a.b.example.com". This
+// prevents unintended deep-subdomain matching that could weaken origin
+// restrictions. The depth limit is enforced by counting dots in the
+// wildcard portion (max 0 additional dots for depth 1).
+//
+// # Cache Poisoning Prevention
+//
+// When specific origins (not wildcard "*") are configured, the middleware
+// adds a Vary: Origin header even on non-CORS requests (those without an
+// Origin header). This prevents intermediate caches from serving a
+// response generated for one origin to a different origin.
 //
 // # Header Mirroring
 //

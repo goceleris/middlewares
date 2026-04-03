@@ -28,8 +28,14 @@ func New(config ...Config) celeris.HandlerFunc {
 
 		origin := c.Header("origin")
 
-		// No Origin header — not a CORS request.
+		// No Origin header — not a CORS request. Add Vary: Origin when
+		// specific origins are configured so intermediate caches do not
+		// serve a cached response (without CORS headers) to a later
+		// cross-origin request, or vice versa.
 		if origin == "" {
+			if !p.allowAllOrigins {
+				c.SetHeader("vary", "Origin")
+			}
 			return c.Next()
 		}
 

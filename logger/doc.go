@@ -21,7 +21,9 @@
 // directly into a pooled byte buffer, producing output compatible with
 // slog.TextHandler. When [FastHandlerOptions].Color is true, status codes,
 // HTTP methods, and latency values are colored with ANSI escape codes
-// (e.g., green for 2xx, red for 5xx). Configure its minimum level via
+// (e.g., green for 2xx, red for 5xx). Set [Config].DisableColors to true
+// to suppress ANSI codes regardless of the Color option — useful for log
+// files or CI environments. Configure its minimum level via
 // [FastHandlerOptions].
 //
 // # Body Capture
@@ -57,6 +59,16 @@
 //
 // Set [Config].Skip to bypass the middleware dynamically, or
 // [Config].SkipPaths for exact-match path exclusions.
+//
+// # Predefined Configurations
+//
+// [CLFConfig] returns a Config for Common Log Format (CLF) style output,
+// enabling LogHost, LogUserAgent, and LogReferer with a Fields callback
+// that emits a traditional combined log format line.
+//
+// [JSONConfig] returns a Config for structured JSON output using
+// slog.JSONHandler, enabling LogHost, LogUserAgent, LogReferer,
+// LogRoute, and LogQueryParams.
 //
 // # Performance
 //
