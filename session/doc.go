@@ -202,45 +202,23 @@
 //
 // # Custom Stores
 //
-// Implement the [Store] interface to back sessions with Redis, a database,
-// or any other storage backend. Pass the store via [Config].Store:
+// Implement the [Store] interface to back sessions with any storage backend.
+// Pass the store via [Config].Store:
 //
 //	server.Use(session.New(session.Config{
-//	    Store: myRedisStore,
+//	    Store: myCustomStore,
 //	}))
 //
 // All [Store] methods receive a [context.Context] propagated from the
 // request. Implementations can use it for cancellation, deadlines, or
 // tracing. The built-in [MemoryStore] ignores the context since in-memory
-// operations are instantaneous, but network-backed stores (Redis, SQL)
-// should pass it through to their client calls.
+// operations are instantaneous, but external stores should pass it through
+// to their backend calls.
 //
-// A Redis adapter is straightforward to implement. Pseudocode:
-//
-//	type RedisStore struct{ client *redis.Client }
-//
-//	func (s *RedisStore) Get(ctx context.Context, id string) (map[string]any, error) {
-//	    b, err := s.client.Get(ctx, "sess:"+id).Bytes()
-//	    if err == redis.Nil { return nil, nil }
-//	    if err != nil { return nil, err }
-//	    var m map[string]any
-//	    return m, json.Unmarshal(b, &m)
-//	}
-//	func (s *RedisStore) Save(ctx context.Context, id string, data map[string]any, exp time.Duration) error {
-//	    b, _ := json.Marshal(data)
-//	    return s.client.Set(ctx, "sess:"+id, b, exp).Err()
-//	}
-//	func (s *RedisStore) Delete(ctx context.Context, id string) error {
-//	    return s.client.Del(ctx, "sess:"+id).Err()
-//	}
-//	func (s *RedisStore) Reset(ctx context.Context) error {
-//	    iter := s.client.Scan(ctx, 0, "sess:*", 100).Iterator()
-//	    for iter.Next(ctx) { s.client.Del(ctx, iter.Val()) }
-//	    return iter.Err()
-//	}
-//
-// SQL stores follow the same pattern: Get performs a SELECT, Save does an
-// UPSERT, Delete runs a DELETE, and Reset issues a TRUNCATE or DELETE ALL.
+// External store implementations (e.g., for distributed deployments) will
+// be provided by the celeris core driver ecosystem in a future release.
+// The [Store] interface is designed to be trivially implementable against
+// any key-value backend.
 //
 // # Store-level Reset
 //
