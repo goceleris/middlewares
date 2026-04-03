@@ -180,8 +180,8 @@ func TestRecoveryLogsMethodAndPath(t *testing.T) {
 func TestRecoveryLogsMethodAndPathNoStack(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
-	// Stacks logged by default (DisableLogStack=false), but StackSize=0
-	// means no stack capture — only error/method/path logged.
+	// StackSize=0 disables stack capture (fix #1 allows 0).
+	// Panic value, method, and path are still logged.
 	mw := New(Config{Logger: log, StackSize: 0})
 	handler := func(_ *celeris.Context) error {
 		panic("no stack method path")
@@ -194,6 +194,9 @@ func TestRecoveryLogsMethodAndPathNoStack(t *testing.T) {
 	}
 	if !strings.Contains(output, `"path":"/delete-path"`) {
 		t.Fatalf("expected path in log: %s", output)
+	}
+	if strings.Contains(output, "goroutine") {
+		t.Fatalf("expected no stack trace with StackSize=0, got: %s", output)
 	}
 }
 
@@ -281,6 +284,70 @@ func TestBrokenPipeHandlerReceivesError(t *testing.T) {
 	}
 }
 
+func TestBrokenPipeNilHandlerReturnsSentinel(t *testing.T) {
+	mw := New(Config{DisableLogStack: true})
+	handler := func(_ *celeris.Context) error {
+		panic(&net.OpError{Op: "write", Err: &errBrokenPipe{}})
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/broken-sentinel")
+	if !errors.Is(err, ErrBrokenPipe) {
+		t.Fatalf("expected ErrBrokenPipe sentinel, got %v", err)
+	}
+}
+
+func TestBrokenPipeDirectEPIPE(t *testing.T) {
+	// errBrokenPipe implements Is(syscall.EPIPE) directly, no net.OpError wrapper.
+	mw := New(Config{DisableLogStack: true})
+	handler := func(_ *celeris.Context) error {
+		panic(&errBrokenPipe{})
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/broken-direct")
+	if !errors.Is(err, ErrBrokenPipe) {
+		t.Fatalf("expected ErrBrokenPipe sentinel, got %v", err)
+	}
+}
+
+func TestValidateRejectsNegativeStackSize(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for negative StackSize")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "StackSize") {
+			t.Fatalf("expected StackSize panic message, got: %v", r)
+		}
+	}()
+	New(Config{StackSize: -1})
+}
+
+func TestNestedRecoveryLogs(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, nil))
+	mw := New(Config{
+		Logger: log,
+		ErrorHandler: func(_ *celeris.Context, _ any) error {
+			panic("handler exploded")
+		},
+	})
+	handler := func(_ *celeris.Context) error {
+		panic("original")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/nested-log")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 500)
+	output := buf.String()
+	if !strings.Contains(output, "handler exploded") {
+		t.Fatalf("expected nested panic value in log, got: %s", output)
+	}
+	if !strings.Contains(output, "panic in error handler") {
+		t.Fatalf("expected 'panic in error handler' message, got: %s", output)
+	}
+}
+
 func TestDisableBrokenPipeLogSuppressesLog(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
@@ -330,10 +397,11 @@ func TestBrokenPipeLogEnabledByDefault(t *testing.T) {
 // --- DisableLogStack tests ---
 
 func TestDisableLogStackZeroValueLogsStack(t *testing.T) {
-	// The whole point of the rename: zero-value Config should log stacks.
+	// The whole point of the rename: zero-value DisableLogStack should log stacks.
+	// StackSize must be set explicitly since 0 now means "no stack capture".
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{Logger: log})
+	mw := New(Config{Logger: log, StackSize: 4096})
 	handler := func(_ *celeris.Context) error { panic("zero-value test") }
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, _ = testutil.RunChain(t, chain, "GET", "/zero-value")
@@ -358,7 +426,7 @@ func TestDeprecatedLogStackOverridesDisableLogStack(t *testing.T) {
 	// LogStack: true should force DisableLogStack to false even if both are set.
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{Logger: log, DisableLogStack: true, LogStack: true})
+	mw := New(Config{Logger: log, StackSize: 4096, DisableLogStack: true, LogStack: true})
 	handler := func(_ *celeris.Context) error { panic("compat test") }
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, _ = testutil.RunChain(t, chain, "GET", "/compat")
