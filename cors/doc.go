@@ -51,12 +51,12 @@
 //
 // # Header Mirroring
 //
-// When [Config].AllowHeaders is set to an empty slice, the middleware
-// mirrors the value of the Access-Control-Request-Headers header from the
-// preflight request back in Access-Control-Allow-Headers. This means any
-// header the client requests will be reflected as allowed without
-// validation. When AllowHeaders is nil (not set), the default headers
-// (Origin, Content-Type, Accept, Authorization) are used.
+// When [Config].MirrorRequestHeaders is true, the middleware mirrors the
+// value of the Access-Control-Request-Headers header from the preflight
+// request back in Access-Control-Allow-Headers. This means any header
+// the client requests will be reflected as allowed without validation.
+// When MirrorRequestHeaders is false (the default), the AllowHeaders
+// list is used (defaults to Origin, Content-Type, Accept, Authorization).
 //
 // # Private Network Access
 //

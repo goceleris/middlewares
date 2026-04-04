@@ -13,13 +13,9 @@ import (
 	"github.com/prometheus/common/expfmt"
 )
 
-// DefaultSizeBuckets provides histogram bucket boundaries for request and
-// response body sizes in bytes.
-var DefaultSizeBuckets = []float64{100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000}
-
 // New creates a Prometheus metrics middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := defaultConfig
 	if len(config) > 0 {
 		cfg = config[0]
 	}
@@ -51,56 +47,40 @@ func New(config ...Config) celeris.HandlerFunc {
 	baseLabels := []string{"method", "path", "status"}
 	allLabels := append(baseLabels, customLabelNames...)
 
-	counterOpts := prometheus.CounterOpts{
+	requestsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   cfg.Namespace,
 		Subsystem:   cfg.Subsystem,
 		Name:        "requests_total",
 		Help:        "Total number of HTTP requests.",
 		ConstLabels: constLabels,
-	}
-	if cfg.CounterOpts != nil {
-		cfg.CounterOpts(&counterOpts)
-	}
-	requestsTotal := prometheus.NewCounterVec(counterOpts, allLabels)
+	}, allLabels)
 
-	durationOpts := prometheus.HistogramOpts{
+	requestDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace:   cfg.Namespace,
 		Subsystem:   cfg.Subsystem,
 		Name:        "request_duration_seconds",
 		Help:        "HTTP request duration in seconds.",
 		Buckets:     cfg.Buckets,
 		ConstLabels: constLabels,
-	}
-	if cfg.HistogramOpts != nil {
-		cfg.HistogramOpts(&durationOpts)
-	}
-	requestDuration := prometheus.NewHistogramVec(durationOpts, allLabels)
+	}, allLabels)
 
-	reqSizeOpts := prometheus.HistogramOpts{
+	requestSize := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace:   cfg.Namespace,
 		Subsystem:   cfg.Subsystem,
 		Name:        "request_size_bytes",
 		Help:        "HTTP request body size in bytes.",
-		Buckets:     DefaultSizeBuckets,
+		Buckets:     cfg.SizeBuckets,
 		ConstLabels: constLabels,
-	}
-	if cfg.HistogramOpts != nil {
-		cfg.HistogramOpts(&reqSizeOpts)
-	}
-	requestSize := prometheus.NewHistogramVec(reqSizeOpts, allLabels)
+	}, allLabels)
 
-	respSizeOpts := prometheus.HistogramOpts{
+	responseSize := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace:   cfg.Namespace,
 		Subsystem:   cfg.Subsystem,
 		Name:        "response_size_bytes",
 		Help:        "HTTP response body size in bytes.",
-		Buckets:     DefaultSizeBuckets,
+		Buckets:     cfg.SizeBuckets,
 		ConstLabels: constLabels,
-	}
-	if cfg.HistogramOpts != nil {
-		cfg.HistogramOpts(&respSizeOpts)
-	}
-	responseSize := prometheus.NewHistogramVec(respSizeOpts, allLabels)
+	}, allLabels)
 
 	activeRequests := prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace:   cfg.Namespace,
@@ -159,11 +139,10 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 
 		activeRequests.Inc()
-		start := time.Now()
 
 		err := c.Next()
 
-		duration := time.Since(start).Seconds()
+		duration := time.Since(c.StartTime()).Seconds()
 		activeRequests.Dec()
 
 		status := c.StatusCode()
@@ -176,6 +155,11 @@ func New(config ...Config) celeris.HandlerFunc {
 			statusStr = strconv.Itoa(status)
 		}
 
+		// With celeris v1.2.4+ core, FullPath() returns "<unmatched>" for 404
+		// and "<method-not-allowed>" for 405 when the request passes through
+		// the core router, so the 404 fallback below is redundant in that
+		// case. The fallback is kept for edge cases: middleware running
+		// without the core router (e.g., ToHandler bridge) or pre-v1.2.4.
 		path := c.FullPath()
 		if path == "" {
 			if status == 404 {

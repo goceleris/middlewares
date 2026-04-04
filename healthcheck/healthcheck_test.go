@@ -20,51 +20,24 @@ func okHandler(c *celeris.Context) error {
 	return c.String(200, "ok")
 }
 
-func TestLivenessDefault(t *testing.T) {
+func TestDefaultProbes(t *testing.T) {
 	t.Parallel()
 	mw := New()
-	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/livez")
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
+	for _, path := range []string{"/livez", "/readyz", "/startupz"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", path)
+			testutil.AssertNoError(t, err)
+			testutil.AssertStatus(t, rec, 200)
 
-	var resp probeResponse
-	if err := json.Unmarshal(rec.Body, &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
-	if resp.Status != "ok" {
-		t.Fatalf("status: got %q, want %q", resp.Status, "ok")
-	}
-}
-
-func TestReadinessDefault(t *testing.T) {
-	t.Parallel()
-	mw := New()
-	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/readyz")
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-
-	var resp probeResponse
-	if err := json.Unmarshal(rec.Body, &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
-	if resp.Status != "ok" {
-		t.Fatalf("status: got %q, want %q", resp.Status, "ok")
-	}
-}
-
-func TestStartupDefault(t *testing.T) {
-	t.Parallel()
-	mw := New()
-	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "GET", "/startupz")
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-
-	var resp probeResponse
-	if err := json.Unmarshal(rec.Body, &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
-	if resp.Status != "ok" {
-		t.Fatalf("status: got %q, want %q", resp.Status, "ok")
+			var resp probeResponse
+			if err := json.Unmarshal(rec.Body, &resp); err != nil {
+				t.Fatalf("failed to unmarshal response: %v", err)
+			}
+			if resp.Status != "ok" {
+				t.Fatalf("status: got %q, want %q", resp.Status, "ok")
+			}
+		})
 	}
 }
 
@@ -137,38 +110,38 @@ func TestCustomPaths(t *testing.T) {
 
 func TestDefaultConfigPaths(t *testing.T) {
 	t.Parallel()
-	cfg := DefaultConfig()
+	cfg := defaultConfigCopy()
 	if cfg.LivePath != "/livez" {
-		t.Fatalf("DefaultConfig().LivePath: got %q, want %q", cfg.LivePath, "/livez")
+		t.Fatalf("defaultConfigCopy().LivePath: got %q, want %q", cfg.LivePath, "/livez")
 	}
 	if cfg.ReadyPath != "/readyz" {
-		t.Fatalf("DefaultConfig().ReadyPath: got %q, want %q", cfg.ReadyPath, "/readyz")
+		t.Fatalf("defaultConfigCopy().ReadyPath: got %q, want %q", cfg.ReadyPath, "/readyz")
 	}
 	if cfg.StartPath != "/startupz" {
-		t.Fatalf("DefaultConfig().StartPath: got %q, want %q", cfg.StartPath, "/startupz")
+		t.Fatalf("defaultConfigCopy().StartPath: got %q, want %q", cfg.StartPath, "/startupz")
 	}
 }
 
 func TestDefaultConfigCheckers(t *testing.T) {
 	t.Parallel()
-	cfg := DefaultConfig()
+	cfg := defaultConfigCopy()
 	if cfg.LiveChecker == nil {
-		t.Fatal("DefaultConfig().LiveChecker should not be nil")
+		t.Fatal("defaultConfigCopy().LiveChecker should not be nil")
 	}
 	if cfg.ReadyChecker == nil {
-		t.Fatal("DefaultConfig().ReadyChecker should not be nil")
+		t.Fatal("defaultConfigCopy().ReadyChecker should not be nil")
 	}
 	if cfg.StartChecker == nil {
-		t.Fatal("DefaultConfig().StartChecker should not be nil")
+		t.Fatal("defaultConfigCopy().StartChecker should not be nil")
 	}
 	if !cfg.LiveChecker(nil) {
-		t.Fatal("DefaultConfig().LiveChecker should return true")
+		t.Fatal("defaultConfigCopy().LiveChecker should return true")
 	}
 	if !cfg.ReadyChecker(nil) {
-		t.Fatal("DefaultConfig().ReadyChecker should return true")
+		t.Fatal("defaultConfigCopy().ReadyChecker should return true")
 	}
 	if !cfg.StartChecker(nil) {
-		t.Fatal("DefaultConfig().StartChecker should return true")
+		t.Fatal("defaultConfigCopy().StartChecker should return true")
 	}
 }
 
@@ -599,31 +572,18 @@ func TestValidateAcceptsValidConfig(t *testing.T) {
 
 // --- HEAD body suppression tests ---
 
-func TestHEADNoBodyLive(t *testing.T) {
+func TestHEADNoBody(t *testing.T) {
 	t.Parallel()
 	mw := New()
-	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "HEAD", "/livez")
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-	testutil.AssertBodyEmpty(t, rec)
-}
-
-func TestHEADNoBodyReady(t *testing.T) {
-	t.Parallel()
-	mw := New()
-	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "HEAD", "/readyz")
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-	testutil.AssertBodyEmpty(t, rec)
-}
-
-func TestHEADNoBodyStartup(t *testing.T) {
-	t.Parallel()
-	mw := New()
-	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "HEAD", "/startupz")
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-	testutil.AssertBodyEmpty(t, rec)
+	for _, path := range []string{"/livez", "/readyz", "/startupz"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			rec, err := testutil.RunMiddlewareWithMethod(t, mw, "HEAD", path)
+			testutil.AssertNoError(t, err)
+			testutil.AssertStatus(t, rec, 200)
+			testutil.AssertBodyEmpty(t, rec)
+		})
+	}
 }
 
 func TestHEADUnavailableNoBody(t *testing.T) {
@@ -770,11 +730,11 @@ func TestCheckerPanicFastPathReturns503(t *testing.T) {
 
 func TestDefaultConfigImmutable(t *testing.T) {
 	t.Parallel()
-	cfg1 := DefaultConfig()
+	cfg1 := defaultConfigCopy()
 	cfg1.LivePath = "/changed"
-	cfg2 := DefaultConfig()
+	cfg2 := defaultConfigCopy()
 	if cfg2.LivePath != "/livez" {
-		t.Fatalf("DefaultConfig() mutation leaked: got %q, want /livez", cfg2.LivePath)
+		t.Fatalf("defaultConfigCopy() mutation leaked: got %q, want /livez", cfg2.LivePath)
 	}
 }
 

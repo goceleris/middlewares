@@ -608,27 +608,27 @@ func TestExpiredCookieCreatesNewSession(t *testing.T) {
 	}
 }
 
-func TestDefaultConfig(t *testing.T) {
-	if DefaultConfig.CookieName != "celeris_session" {
-		t.Fatalf("CookieName: got %q, want %q", DefaultConfig.CookieName, "celeris_session")
+func TestDefaultConfigValues(t *testing.T) {
+	if defaultConfig.CookieName != "celeris_session" {
+		t.Fatalf("CookieName: got %q, want %q", defaultConfig.CookieName, "celeris_session")
 	}
-	if DefaultConfig.CookiePath != "/" {
-		t.Fatalf("CookiePath: got %q, want %q", DefaultConfig.CookiePath, "/")
+	if defaultConfig.CookiePath != "/" {
+		t.Fatalf("CookiePath: got %q, want %q", defaultConfig.CookiePath, "/")
 	}
-	if DefaultConfig.CookieMaxAge != 86400 {
-		t.Fatalf("CookieMaxAge: got %d, want %d", DefaultConfig.CookieMaxAge, 86400)
+	if defaultConfig.CookieMaxAge == nil || *defaultConfig.CookieMaxAge != 86400 {
+		t.Fatalf("CookieMaxAge: want 86400")
 	}
-	if !DefaultConfig.CookieHTTPOnly {
+	if defaultConfig.CookieHTTPOnly == nil || !*defaultConfig.CookieHTTPOnly {
 		t.Fatal("expected CookieHTTPOnly=true")
 	}
-	if DefaultConfig.CookieSameSite != celeris.SameSiteLaxMode {
-		t.Fatalf("CookieSameSite: got %v, want SameSiteLaxMode", DefaultConfig.CookieSameSite)
+	if defaultConfig.CookieSameSite != celeris.SameSiteLaxMode {
+		t.Fatalf("CookieSameSite: got %v, want SameSiteLaxMode", defaultConfig.CookieSameSite)
 	}
-	if DefaultConfig.IdleTimeout != 30*time.Minute {
-		t.Fatalf("IdleTimeout: got %v, want 30m", DefaultConfig.IdleTimeout)
+	if defaultConfig.IdleTimeout != 30*time.Minute {
+		t.Fatalf("IdleTimeout: got %v, want 30m", defaultConfig.IdleTimeout)
 	}
-	if DefaultConfig.AbsoluteTimeout != 24*time.Hour {
-		t.Fatalf("AbsoluteTimeout: got %v, want 24h", DefaultConfig.AbsoluteTimeout)
+	if defaultConfig.AbsoluteTimeout != 24*time.Hour {
+		t.Fatalf("AbsoluteTimeout: got %v, want 24h", defaultConfig.AbsoluteTimeout)
 	}
 }
 
@@ -992,12 +992,28 @@ func TestApplyDefaultsFillsZeroValues(t *testing.T) {
 }
 
 func TestApplyDefaultsIndependentFields(t *testing.T) {
-	// Zero-value CookieHTTPOnly (false) is defaulted to true.
-	cfg := applyDefaults(Config{CookieHTTPOnly: false})
-	if !cfg.CookieHTTPOnly {
-		t.Fatal("expected CookieHTTPOnly=true when zero value (use DisableCookieHTTPOnly to opt out)")
+	// nil CookieHTTPOnly is defaulted to true.
+	cfg := applyDefaults(Config{})
+	if cfg.CookieHTTPOnly == nil || !*cfg.CookieHTTPOnly {
+		t.Fatal("expected CookieHTTPOnly=true when nil")
+	}
+	// Explicit false must be preserved.
+	cfg = applyDefaults(Config{CookieHTTPOnly: BoolPtr(false)})
+	if cfg.CookieHTTPOnly == nil || *cfg.CookieHTTPOnly {
+		t.Fatal("expected CookieHTTPOnly=false when explicitly set")
+	}
+	// nil CookieMaxAge is defaulted to 86400.
+	cfg = applyDefaults(Config{})
+	if cfg.CookieMaxAge == nil || *cfg.CookieMaxAge != 86400 {
+		t.Fatal("expected CookieMaxAge=86400 when nil")
+	}
+	// Explicit 0 (session cookie) must be preserved.
+	cfg = applyDefaults(Config{CookieMaxAge: IntPtr(0)})
+	if cfg.CookieMaxAge == nil || *cfg.CookieMaxAge != 0 {
+		t.Fatal("expected CookieMaxAge=0 when explicitly set")
 	}
 	// SameSite should still get its default.
+	cfg = applyDefaults(Config{})
 	if cfg.CookieSameSite != celeris.SameSiteLaxMode {
 		t.Fatalf("CookieSameSite: got %v, want SameSiteLaxMode", cfg.CookieSameSite)
 	}
@@ -1160,16 +1176,9 @@ func TestRegenerateDoesNotDoubleSave(t *testing.T) {
 	}
 }
 
-func TestDisableCookieHTTPOnly(t *testing.T) {
-	cfg := applyDefaults(Config{DisableCookieHTTPOnly: true})
-	if cfg.CookieHTTPOnly {
-		t.Fatal("expected CookieHTTPOnly=false when DisableCookieHTTPOnly is set")
-	}
-}
-
 func TestCookieHTTPOnlyDefaultsToTrue(t *testing.T) {
 	cfg := applyDefaults(Config{})
-	if !cfg.CookieHTTPOnly {
+	if cfg.CookieHTTPOnly == nil || !*cfg.CookieHTTPOnly {
 		t.Fatal("expected CookieHTTPOnly=true by default")
 	}
 }
@@ -1320,33 +1329,6 @@ func TestHeaderExtractorDestroyedSetsEmptyHeader(t *testing.T) {
 	if !found {
 		t.Fatal("expected empty session ID header after Destroy with header extractor")
 	}
-}
-
-// --- CookieSessionOnly tests ---
-
-func TestCookieSessionOnlyOmitsMaxAge(t *testing.T) {
-	mw := New(Config{CookieSessionOnly: true})
-	handler := func(c *celeris.Context) error {
-		s := FromContext(c)
-		s.Set("k", "v")
-		return nil
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	ctx, _ := celeristest.NewContextT(t, "GET", "/",
-		celeristest.WithHandlers(chain...),
-	)
-	err := ctx.Next()
-	testutil.AssertNoError(t, err)
-
-	for _, h := range ctx.ResponseHeaders() {
-		if h[0] == "set-cookie" {
-			if strings.Contains(h[1], "Max-Age") {
-				t.Fatalf("expected no Max-Age in session-only cookie, got %q", h[1])
-			}
-			return
-		}
-	}
-	t.Fatal("expected set-cookie header")
 }
 
 // --- SetIdleTimeout tests ---
@@ -1726,30 +1708,27 @@ func TestConcurrentSessions(t *testing.T) {
 
 func TestValidSessionID(t *testing.T) {
 	tests := []struct {
-		name  string
-		sid   string
-		idLen int
-		want  bool
+		name string
+		sid  string
+		want bool
 	}{
-		{"valid 64-char hex", strings.Repeat("ab", 32), 64, true},
-		{"all zeros", strings.Repeat("0", 64), 64, true},
-		{"all f's", strings.Repeat("f", 64), 64, true},
-		{"too short", strings.Repeat("a", 63), 64, false},
-		{"too long", strings.Repeat("a", 65), 64, false},
-		{"uppercase hex rejected", strings.Repeat("A", 64), 64, false},
-		{"mixed case rejected", strings.Repeat("a", 32) + strings.Repeat("A", 32), 64, false},
-		{"non-hex char g", strings.Repeat("a", 63) + "g", 64, false},
-		{"non-hex char z", strings.Repeat("a", 63) + "z", 64, false},
-		{"spaces rejected", strings.Repeat("a", 63) + " ", 64, false},
-		{"empty string", "", 64, false},
-		{"negative idLen disables validation", "anything-goes", -1, true},
-		{"negative idLen empty string", "", -1, false},
+		{"valid 64-char hex", strings.Repeat("ab", 32), true},
+		{"all zeros", strings.Repeat("0", 64), true},
+		{"all f's", strings.Repeat("f", 64), true},
+		{"too short", strings.Repeat("a", 63), false},
+		{"too long", strings.Repeat("a", 65), false},
+		{"uppercase hex rejected", strings.Repeat("A", 64), false},
+		{"mixed case rejected", strings.Repeat("a", 32) + strings.Repeat("A", 32), false},
+		{"non-hex char g", strings.Repeat("a", 63) + "g", false},
+		{"non-hex char z", strings.Repeat("a", 63) + "z", false},
+		{"spaces rejected", strings.Repeat("a", 63) + " ", false},
+		{"empty string", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := validSessionID(tt.sid, tt.idLen)
+			got := validSessionID(tt.sid)
 			if got != tt.want {
-				t.Fatalf("validSessionID(%q, %d) = %v, want %v", tt.sid, tt.idLen, got, tt.want)
+				t.Fatalf("validSessionID(%q) = %v, want %v", tt.sid, got, tt.want)
 			}
 		})
 	}
@@ -1838,62 +1817,6 @@ func TestValidSessionIDLoadsExisting(t *testing.T) {
 	}
 	if !gotOK || gotUser != "admin" {
 		t.Fatalf("expected user=admin, got %v", gotUser)
-	}
-}
-
-func TestCustomSessionIDLength(t *testing.T) {
-	store := NewMemoryStore()
-	mw := New(Config{
-		Store:           store,
-		SessionIDLength: 32,
-		KeyGenerator:    func() string { return strings.Repeat("ab", 16) },
-	})
-	var sess *Session
-	handler := func(c *celeris.Context) error {
-		sess = FromContext(c)
-		sess.Set("k", "v")
-		return nil
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-
-	validID := strings.Repeat("cd", 16)
-	_ = store.Save(context.Background(), validID, map[string]any{"x": 1, "_abs_exp": time.Now().UnixNano()}, time.Hour)
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithCookie("celeris_session", validID))
-	testutil.AssertNoError(t, err)
-	if sess.IsFresh() {
-		t.Fatal("expected existing session for valid 32-char ID")
-	}
-
-	_, err = testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithCookie("celeris_session", strings.Repeat("ab", 32)))
-	testutil.AssertNoError(t, err)
-	if !sess.IsFresh() {
-		t.Fatal("expected fresh session when ID length mismatches SessionIDLength")
-	}
-}
-
-func TestDisableSessionIDValidation(t *testing.T) {
-	store := NewMemoryStore()
-	customID := "my-custom-session-id-any-format"
-	_ = store.Save(context.Background(), customID, map[string]any{"x": 1, "_abs_exp": time.Now().UnixNano()}, time.Hour)
-
-	mw := New(Config{
-		Store:           store,
-		SessionIDLength: -1,
-		KeyGenerator:    func() string { return "new-id" },
-	})
-	var sess *Session
-	handler := func(c *celeris.Context) error {
-		sess = FromContext(c)
-		return nil
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithCookie("celeris_session", customID))
-	testutil.AssertNoError(t, err)
-	if sess.IsFresh() {
-		t.Fatal("expected existing session when validation is disabled")
 	}
 }
 
@@ -2509,7 +2432,9 @@ func TestGetByIDExpiredSession(t *testing.T) {
 
 // --- Fix verification tests ---
 
-// Issue #1: Use-after-pool-Put — context key cleared before pool return.
+// Issue #1: Use-after-pool-Put — context key cleared on pool return.
+// With OnRelease, cleanup fires when the context is released (not when the
+// middleware returns). Verify the key is cleared after ReleaseContext.
 func TestContextKeyNilAfterPoolReturn(t *testing.T) {
 	store := NewMemoryStore()
 	mw := New(Config{Store: store})
@@ -2526,10 +2451,13 @@ func TestContextKeyNilAfterPoolReturn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// After middleware returns, the context key should be nil.
+	// Key is still set after middleware returns (OnRelease hasn't fired yet).
+	// Release the context to trigger OnRelease callbacks.
+	celeristest.ReleaseContext(ctx)
+	// After release, the context key should be nil.
 	v, ok := ctx.Get(ContextKey)
 	if ok && v != nil {
-		t.Fatal("expected ContextKey to be nil after middleware return (use-after-pool-Put)")
+		t.Fatal("expected ContextKey to be nil after pool return (use-after-pool-Put)")
 	}
 }
 

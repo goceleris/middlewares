@@ -213,17 +213,13 @@ func FromContext(c *celeris.Context) *Session {
 	return s
 }
 
-// validSessionID checks that s has the expected length and contains only
-// lowercase hex characters [0-9a-f]. Uppercase hex (A-F) is intentionally
-// rejected because the default [bufferedKeyGenerator] produces lowercase
-// output; accepting uppercase would double the ID space without security
-// benefit and could mask tampered cookies. When idLen is negative,
-// validation is disabled and any non-empty string passes.
-func validSessionID(s string, idLen int) bool {
-	if idLen < 0 {
-		return s != ""
-	}
-	if len(s) != idLen {
+// validSessionID checks that s is exactly 64 lowercase hex characters
+// [0-9a-f]. Uppercase hex (A-F) is intentionally rejected because the
+// default [bufferedKeyGenerator] produces lowercase output; accepting
+// uppercase would double the ID space without security benefit and could
+// mask tampered cookies.
+func validSessionID(s string) bool {
+	if len(s) != sessionIDHexLen {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
@@ -263,8 +259,8 @@ func (h *Handler) GetByID(ctx context.Context, id string) (*Session, error) {
 		return nil, nil
 	}
 	return &Session{
-		id:   id,
-		data: data,
+		id:    id,
+		data:  data,
 		store: readOnlyStore{},
 	}, nil
 }
@@ -293,7 +289,7 @@ func (readOnlyStore) Reset(_ context.Context) error {
 // NewHandler creates a session [Handler] that exposes both the middleware
 // and out-of-band session access via [Handler.GetByID].
 func NewHandler(config ...Config) *Handler {
-	cfg := DefaultConfig
+	cfg := defaultConfig
 	if len(config) > 0 {
 		cfg = config[0]
 	}
@@ -307,7 +303,7 @@ func NewHandler(config ...Config) *Handler {
 
 // New creates a session middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := defaultConfig
 	if len(config) > 0 {
 		cfg = config[0]
 	}
@@ -328,8 +324,6 @@ func newMiddleware(cfg Config) celeris.HandlerFunc {
 	idleTimeout := cfg.IdleTimeout
 	absTimeout := cfg.AbsoluteTimeout
 	absDisabled := absTimeout < 0
-	sessionOnly := cfg.CookieSessionOnly
-	sessionIDLen := cfg.SessionIDLength
 	errorHandler := cfg.ErrorHandler
 	if errorHandler == nil {
 		errorHandler = func(_ *celeris.Context, err error) error { return err }
@@ -345,9 +339,9 @@ func newMiddleware(cfg Config) celeris.HandlerFunc {
 		Name:     cfg.CookieName,
 		Path:     cfg.CookiePath,
 		Domain:   cfg.CookieDomain,
-		MaxAge:   cfg.CookieMaxAge,
+		MaxAge:   *cfg.CookieMaxAge,
 		Secure:   cfg.CookieSecure,
-		HTTPOnly: cfg.CookieHTTPOnly,
+		HTTPOnly: *cfg.CookieHTTPOnly,
 		SameSite: cfg.CookieSameSite,
 	}
 
@@ -374,24 +368,24 @@ func newMiddleware(cfg Config) celeris.HandlerFunc {
 		sess.fresh = false
 		sess.idleOverride = 0
 
-		// Ensure the session is returned to the pool on all exit paths
-		// (issue #12: pool leak on error paths).
+		// Register cleanup callback to return session to pool on all exit
+		// paths — including panics (issue #12: pool leak on error paths).
 		returnToPool := func() {
 			c.Set(ContextKey, nil) // issue #1: clear context key before pool Put
 			sess.data = nil
 			sess.ctx = nil
 			sessionPool.Put(sess)
 		}
+		c.OnRelease(returnToPool)
 
 		loaded := false
 		sid := extract(c)
-		if sid != "" && !validSessionID(sid, sessionIDLen) {
+		if sid != "" && !validSessionID(sid) {
 			sid = ""
 		}
 		if sid != "" {
 			data, loadErr := store.Get(reqCtx, sid)
 			if loadErr != nil {
-				returnToPool()
 				return errorHandler(c, loadErr)
 			}
 			if data != nil && !absDisabled {
@@ -445,6 +439,9 @@ func newMiddleware(cfg Config) celeris.HandlerFunc {
 				ck := cookie
 				ck.Value = ""
 				ck.MaxAge = -1
+				if c.IsTLS() || c.Scheme() == "https" {
+					ck.Secure = true
+				}
 				c.SetCookie(&ck)
 			} else {
 				c.SetHeader(cookieName, "")
@@ -456,7 +453,6 @@ func newMiddleware(cfg Config) celeris.HandlerFunc {
 			}
 			saveErr := store.Save(reqCtx, sess.id, sess.data, expiry)
 			if saveErr != nil {
-				returnToPool()
 				// Issue #11: wrap chainErr with save error so neither
 				// is swallowed.
 				if chainErr != nil {
@@ -467,16 +463,14 @@ func newMiddleware(cfg Config) celeris.HandlerFunc {
 			if useCookieExtractor {
 				ck := cookie
 				ck.Value = sess.id
-				if sessionOnly {
-					ck.MaxAge = 0
+				if c.IsTLS() || c.Scheme() == "https" {
+					ck.Secure = true
 				}
 				c.SetCookie(&ck)
 			} else {
 				c.SetHeader(cookieName, sess.id)
 			}
 		}
-
-		returnToPool()
 
 		return chainErr
 	}

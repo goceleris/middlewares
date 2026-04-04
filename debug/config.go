@@ -31,6 +31,11 @@ type Config struct {
 	// Nil is safe; the /metrics endpoint returns 501 Not Implemented.
 	Collector *observe.Collector
 
+	// SkipPaths is a list of URL paths for which the debug middleware is
+	// bypassed entirely. Unlike Skip (which is only consulted for debug
+	// prefixed requests), SkipPaths is checked before any other logic.
+	SkipPaths []string
+
 	// Endpoints selectively enables or disables individual debug endpoints.
 	// Keys are endpoint names: "status", "metrics", "config", "routes",
 	// "memory", "build", "runtime". A true value enables the endpoint;
@@ -46,9 +51,9 @@ type Config struct {
 	MemStatsTTL time.Duration
 }
 
-// DefaultConfig returns the default debug middleware configuration.
+// defaultConfigCopy returns the default debug middleware configuration.
 // Each call returns a fresh copy.
-func DefaultConfig() Config {
+func defaultConfigCopy() Config {
 	return defaultConfig
 }
 

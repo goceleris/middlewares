@@ -67,9 +67,7 @@ type Config struct {
 	// Callers who need it can add it via CustomAttributes.
 }
 
-// DefaultConfig is the default OpenTelemetry middleware configuration.
-// All provider fields default to the OTel global providers at request time.
-var DefaultConfig = Config{}
+var defaultConfig = Config{}
 
 func applyDefaults(cfg Config) Config {
 	if cfg.TracerProvider == nil {

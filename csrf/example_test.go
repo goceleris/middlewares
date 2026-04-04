@@ -61,9 +61,9 @@ func ExampleNew_wildcardTrustedOrigins() {
 }
 
 func ExampleNew_sessionCookie() {
-	// Browser-session-scoped cookie (no MaxAge).
+	// Browser-session-scoped cookie (MaxAge 0).
 	_ = csrf.New(csrf.Config{
-		CookieSessionOnly: true,
+		CookieMaxAge: 0,
 	})
 }
 

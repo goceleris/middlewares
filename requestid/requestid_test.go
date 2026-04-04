@@ -267,6 +267,26 @@ func TestSkipPathsBypassesID(t *testing.T) {
 	}
 }
 
+func TestSkipPathsExactMatch(t *testing.T) {
+	mw := New(Config{
+		SkipPaths: []string{"/health"},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Exact match: /health should be skipped.
+	rec, err := testutil.RunChain(t, chain, "GET", "/health")
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "x-request-id")
+
+	// /health/ is a distinct path and should NOT be skipped.
+	rec, err = testutil.RunChain(t, chain, "GET", "/health/")
+	testutil.AssertNoError(t, err)
+	id := rec.Header("x-request-id")
+	if id == "" {
+		t.Fatal("expected x-request-id for /health/ (not in SkipPaths)")
+	}
+}
+
 func TestFromContextReturnsID(t *testing.T) {
 	mw := New()
 	var id string
@@ -365,160 +385,6 @@ func TestRejectsHighBytes(t *testing.T) {
 	if id == "id\x7Fhigh" {
 		t.Fatal("expected ID with DEL char to be replaced")
 	}
-}
-
-// --- TrustProxy (deprecated) backward-compatibility tests ---
-
-func TestTrustProxyDefaultAcceptsInbound(t *testing.T) {
-	// Default: DisableTrustProxy=false, TrustProxy=nil → inbound accepted.
-	mw := New()
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("x-request-id", "from-proxy"))
-	testutil.AssertNoError(t, err)
-	testutil.AssertHeader(t, rec, "x-request-id", "from-proxy")
-}
-
-func TestTrustProxyTrueAcceptsInbound(t *testing.T) {
-	tr := true
-	mw := New(Config{TrustProxy: &tr})
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("x-request-id", "from-proxy"))
-	testutil.AssertNoError(t, err)
-	testutil.AssertHeader(t, rec, "x-request-id", "from-proxy")
-}
-
-func TestTrustProxyFalseIgnoresInbound(t *testing.T) {
-	f := false
-	mw := New(Config{TrustProxy: &f})
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("x-request-id", "should-be-ignored"))
-	testutil.AssertNoError(t, err)
-	id := rec.Header("x-request-id")
-	if id == "should-be-ignored" {
-		t.Fatal("expected inbound header to be ignored when TrustProxy=false")
-	}
-	if id == "" {
-		t.Fatal("expected a fresh ID to be generated")
-	}
-	if !uuidRe.MatchString(id) {
-		t.Fatalf("expected UUID v4 format, got %q", id)
-	}
-}
-
-func TestTrustProxyFalseNoInboundHeader(t *testing.T) {
-	f := false
-	mw := New(Config{TrustProxy: &f})
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	id := rec.Header("x-request-id")
-	if id == "" {
-		t.Fatal("expected a fresh ID to be generated")
-	}
-	if !uuidRe.MatchString(id) {
-		t.Fatalf("expected UUID v4 format, got %q", id)
-	}
-}
-
-func TestTrustProxyFalseWithCustomGenerator(t *testing.T) {
-	f := false
-	mw := New(Config{
-		TrustProxy: &f,
-		Generator:  func() string { return "generated-123" },
-	})
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("x-request-id", "from-proxy"))
-	testutil.AssertNoError(t, err)
-	testutil.AssertHeader(t, rec, "x-request-id", "generated-123")
-}
-
-func TestTrustProxyFalseContextStore(t *testing.T) {
-	f := false
-	mw := New(Config{TrustProxy: &f})
-	var stored string
-	handler := func(c *celeris.Context) error {
-		stored = FromContext(c)
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("x-request-id", "spoofed"))
-	testutil.AssertNoError(t, err)
-	if stored == "spoofed" {
-		t.Fatal("context store should not contain spoofed ID")
-	}
-	if stored == "" {
-		t.Fatal("context store should contain a generated ID")
-	}
-}
-
-// --- AfterGenerate callback tests ---
-
-func TestAfterGenerateCalledWithGeneratedID(t *testing.T) {
-	var callbackID string
-	var callbackCalled bool
-	mw := New(Config{
-		AfterGenerate: func(_ *celeris.Context, id string) {
-			callbackCalled = true
-			callbackID = id
-		},
-	})
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	if !callbackCalled {
-		t.Fatal("AfterGenerate was not called")
-	}
-	if callbackID == "" {
-		t.Fatal("AfterGenerate received empty ID")
-	}
-	headerID := rec.Header("x-request-id")
-	if callbackID != headerID {
-		t.Fatalf("AfterGenerate ID %q != response header ID %q", callbackID, headerID)
-	}
-}
-
-func TestAfterGenerateCalledWithPropagatedID(t *testing.T) {
-	var callbackID string
-	mw := New(Config{
-		AfterGenerate: func(_ *celeris.Context, id string) {
-			callbackID = id
-		},
-	})
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("x-request-id", "propagated-123"))
-	testutil.AssertNoError(t, err)
-	if callbackID != "propagated-123" {
-		t.Fatalf("AfterGenerate got %q, want %q", callbackID, "propagated-123")
-	}
-}
-
-func TestAfterGenerateNotCalledOnSkip(t *testing.T) {
-	var called bool
-	mw := New(Config{
-		Skip: func(_ *celeris.Context) bool { return true },
-		AfterGenerate: func(_ *celeris.Context, _ string) {
-			called = true
-		},
-	})
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	_, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	if called {
-		t.Fatal("AfterGenerate should not be called on skipped requests")
-	}
-}
-
-func TestAfterGenerateNilDoesNotPanic(t *testing.T) {
-	mw := New(Config{AfterGenerate: nil})
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	_, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
 }
 
 // --- Generator retry with fallback tests ---
@@ -734,69 +600,4 @@ func TestFromStdContextPropagated(t *testing.T) {
 	if stdID != "propagated-std" {
 		t.Fatalf("FromStdContext got %q, want %q", stdID, "propagated-std")
 	}
-}
-
-// --- AfterGenerate panic recovery tests ---
-
-func TestAfterGeneratePanicRecovered(t *testing.T) {
-	mw := New(Config{
-		AfterGenerate: func(_ *celeris.Context, _ string) {
-			panic("boom")
-		},
-	})
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-	id := rec.Header("x-request-id")
-	if id == "" {
-		t.Fatal("expected request ID to be set despite AfterGenerate panic")
-	}
-}
-
-func TestAfterGeneratePanicDoesNotAffectID(t *testing.T) {
-	var storedID string
-	mw := New(Config{
-		AfterGenerate: func(_ *celeris.Context, _ string) {
-			panic("crash")
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		storedID = FromContext(c)
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	if storedID == "" {
-		t.Fatal("expected context store to have request ID")
-	}
-}
-
-func TestDeprecatedTrustProxyOverridesDisableTrustProxy(t *testing.T) {
-	// TrustProxy=false should set DisableTrustProxy=true even if
-	// DisableTrustProxy was not explicitly set.
-	f := false
-	mw := New(Config{TrustProxy: &f})
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("x-request-id", "should-be-ignored"))
-	testutil.AssertNoError(t, err)
-	id := rec.Header("x-request-id")
-	if id == "should-be-ignored" {
-		t.Fatal("deprecated TrustProxy=false should still ignore inbound headers")
-	}
-	if !uuidRe.MatchString(id) {
-		t.Fatalf("expected UUID v4 format, got %q", id)
-	}
-
-	// TrustProxy=true should set DisableTrustProxy=false even if
-	// DisableTrustProxy was explicitly set to true.
-	tr := true
-	mw2 := New(Config{TrustProxy: &tr, DisableTrustProxy: true})
-	chain2 := []celeris.HandlerFunc{mw2, okHandler}
-	rec2, err := testutil.RunChain(t, chain2, "GET", "/",
-		celeristest.WithHeader("x-request-id", "from-proxy"))
-	testutil.AssertNoError(t, err)
-	testutil.AssertHeader(t, rec2, "x-request-id", "from-proxy")
 }

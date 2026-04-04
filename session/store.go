@@ -5,6 +5,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/goceleris/middlewares/internal/fnv1a"
 )
 
 // Store defines the interface for session storage backends.
@@ -78,7 +80,7 @@ func NewMemoryStore(config ...MemoryStoreConfig) Store {
 		cfg.CleanupInterval = time.Minute
 	}
 
-	n := nextPow2(cfg.Shards)
+	n := fnv1a.NextPow2(cfg.Shards)
 
 	ctx := cfg.CleanupContext
 	if ctx == nil {
@@ -108,7 +110,7 @@ func (m *memoryStore) Close() {
 }
 
 func (m *memoryStore) shard(id string) *msShard {
-	return &m.shards[fnv1a(id)&m.mask]
+	return &m.shards[fnv1a.Hash(id)&m.mask]
 }
 
 func (m *memoryStore) Get(_ context.Context, id string) (map[string]any, error) {
@@ -203,28 +205,4 @@ func (m *memoryStore) cleanup(ctx context.Context, interval time.Duration) {
 			}
 		}
 	}
-}
-
-func fnv1a(s string) uint64 {
-	const (
-		offset64 = 14695981039346656037
-		prime64  = 1099511628211
-	)
-	h := uint64(offset64)
-	for i := 0; i < len(s); i++ {
-		h ^= uint64(s[i])
-		h *= prime64
-	}
-	return h
-}
-
-func nextPow2(n int) int {
-	if n <= 1 {
-		return 1
-	}
-	p := 1
-	for p < n {
-		p <<= 1
-	}
-	return p
 }

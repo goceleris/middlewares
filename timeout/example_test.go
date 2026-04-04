@@ -3,6 +3,8 @@ package timeout_test
 import (
 	"time"
 
+	"github.com/goceleris/celeris"
+
 	"github.com/goceleris/middlewares/timeout"
 )
 
@@ -17,5 +19,15 @@ func ExampleNew_preemptive() {
 	_ = timeout.New(timeout.Config{
 		Timeout:    3 * time.Second,
 		Preemptive: true,
+	})
+}
+
+func ExampleNew_customErrorHandler() {
+	// Custom error handler that receives the timeout cause.
+	_ = timeout.New(timeout.Config{
+		Timeout: 10 * time.Second,
+		ErrorHandler: func(c *celeris.Context, err error) error {
+			return c.JSON(503, map[string]string{"error": err.Error()})
+		},
 	})
 }

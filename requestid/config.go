@@ -20,20 +20,6 @@ type Config struct {
 	// and always generates a fresh ID. This prevents request ID spoofing
 	// from untrusted clients. Default: false (inbound headers are trusted).
 	DisableTrustProxy bool
-
-	// TrustProxy is deprecated: use DisableTrustProxy instead.
-	// When explicitly set to a non-nil *bool, it overrides DisableTrustProxy
-	// in applyDefaults for backward compatibility:
-	//   *TrustProxy == true  → DisableTrustProxy = false
-	//   *TrustProxy == false → DisableTrustProxy = true
-	//
-	// Deprecated: Use DisableTrustProxy.
-	TrustProxy *bool
-
-	// AfterGenerate is called after a request ID is generated or extracted.
-	// It receives the context and the request ID. Use it for logging, tracing,
-	// or storing the ID in additional locations.
-	AfterGenerate func(c *celeris.Context, id string)
 }
 
 // defaultConfig is the default request ID configuration.
@@ -50,17 +36,7 @@ func applyDefaults(cfg Config) Config {
 	if cfg.Header == "" {
 		cfg.Header = "x-request-id"
 	}
-	// Backward compatibility: TrustProxy (deprecated) overrides DisableTrustProxy.
-	if cfg.TrustProxy != nil {
-		cfg.DisableTrustProxy = !*cfg.TrustProxy
-	}
 	return cfg
-}
-
-func (cfg Config) validate() {
-	if cfg.Header == "" {
-		panic("requestid: Header must not be empty")
-	}
 }
 
 var defaultGenerator = newBufferedGenerator()

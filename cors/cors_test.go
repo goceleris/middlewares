@@ -644,10 +644,10 @@ func TestOriginNormalizationWithPort(t *testing.T) {
 // --- Mirror Access-Control-Request-Headers ---
 
 func TestMirrorRequestHeadersWhenNotConfigured(t *testing.T) {
-	// AllowHeaders set to empty slice — should mirror the request headers.
+	// MirrorRequestHeaders: true — should mirror the request headers.
 	mw := New(Config{
-		AllowOrigins: []string{"http://example.com"},
-		AllowHeaders: []string{},
+		AllowOrigins:         []string{"http://example.com"},
+		MirrorRequestHeaders: true,
 	})
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
 		celeristest.WithHeader("origin", "http://example.com"),
@@ -659,10 +659,10 @@ func TestMirrorRequestHeadersWhenNotConfigured(t *testing.T) {
 }
 
 func TestMirrorRequestHeadersNoACRH(t *testing.T) {
-	// AllowHeaders set to empty slice and no ACRH header — no allow-headers in response.
+	// MirrorRequestHeaders: true and no ACRH header — no allow-headers in response.
 	mw := New(Config{
-		AllowOrigins: []string{"http://example.com"},
-		AllowHeaders: []string{},
+		AllowOrigins:         []string{"http://example.com"},
+		MirrorRequestHeaders: true,
 	})
 	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
 		celeristest.WithHeader("origin", "http://example.com"),
@@ -958,7 +958,7 @@ func TestValueRedactionInPanicDefault(t *testing.T) {
 	})
 }
 
-func TestValueRedactionDisabled(t *testing.T) {
+func TestMultiWildcardPanicRedacted(t *testing.T) {
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -968,51 +968,13 @@ func TestValueRedactionDisabled(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected string panic, got %T", r)
 		}
-		if !strings.Contains(msg, "https://*.*") {
-			t.Fatalf("expected raw origin in panic message when redaction disabled, got: %s", msg)
+		if !strings.Contains(msg, "[redacted]") {
+			t.Fatalf("expected [redacted] in panic message, got: %s", msg)
 		}
 	}()
 	New(Config{
-		AllowOrigins:          []string{"https://*.*"},
-		DisableValueRedaction: true,
+		AllowOrigins: []string{"https://*.*"},
 	})
-}
-
-func TestRedactOriginHelper(t *testing.T) {
-	cfg := Config{}
-	if cfg.redactOrigin("http://example.com") != "[redacted]" {
-		t.Fatal("default should redact")
-	}
-	cfg.DisableValueRedaction = true
-	if cfg.redactOrigin("http://example.com") != "http://example.com" {
-		t.Fatal("disabled redaction should return raw value")
-	}
-}
-
-// --- DefaultConfig copy function ---
-
-func TestDefaultConfigReturnsCopy(t *testing.T) {
-	cfg1 := DefaultConfig()
-	cfg2 := DefaultConfig()
-
-	// Mutating one copy should not affect the other.
-	cfg1.AllowOrigins = []string{"http://changed.com"}
-	if len(cfg2.AllowOrigins) != 1 || cfg2.AllowOrigins[0] != "*" {
-		t.Fatal("DefaultConfig copies should be independent")
-	}
-}
-
-func TestDefaultConfigValues(t *testing.T) {
-	cfg := DefaultConfig()
-	if len(cfg.AllowOrigins) != 1 || cfg.AllowOrigins[0] != "*" {
-		t.Fatal("expected AllowOrigins [*]")
-	}
-	if len(cfg.AllowMethods) == 0 {
-		t.Fatal("expected default AllowMethods")
-	}
-	if len(cfg.AllowHeaders) == 0 {
-		t.Fatal("expected default AllowHeaders")
-	}
 }
 
 // --- normalizeOrigin rejects paths ---

@@ -58,7 +58,7 @@ func TestCustomErrorHandlerResponseNotWritten(t *testing.T) {
 	// ErrorHandler is invoked and its result is returned.
 	mw := New(Config{
 		Timeout: 1 * time.Millisecond,
-		ErrorHandler: func(_ *celeris.Context) error {
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
 			return celeris.NewHTTPError(504, "Gateway Timeout")
 		},
 	})
@@ -77,7 +77,7 @@ func TestCustomErrorHandlerResponseAlreadyWritten(t *testing.T) {
 	// committed, so ErrorHandler cannot write a new one).
 	mw := New(Config{
 		Timeout: 1 * time.Millisecond,
-		ErrorHandler: func(_ *celeris.Context) error {
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
 			return celeris.NewHTTPError(504, "Gateway Timeout")
 		},
 	})
@@ -102,9 +102,8 @@ func TestCustomTimeoutDuration(t *testing.T) {
 }
 
 func TestDefaultConfigValues(t *testing.T) {
-	cfg := DefaultConfig()
-	if cfg.Timeout != 5*time.Second {
-		t.Fatalf("default timeout: got %v, want 5s", cfg.Timeout)
+	if defaultConfig.Timeout != 5*time.Second {
+		t.Fatalf("default timeout: got %v, want 5s", defaultConfig.Timeout)
 	}
 }
 
@@ -185,6 +184,26 @@ func TestCooperativeContextRestored(t *testing.T) {
 	}
 }
 
+func TestPreemptiveContextRestored(t *testing.T) {
+	mw := New(Config{Timeout: 1 * time.Second, Preemptive: true})
+	var ctxErrAfterNext error
+	outer := func(c *celeris.Context) error {
+		err := c.Next()
+		ctxErrAfterNext = c.Context().Err()
+		return err
+	}
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{outer, mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/restore-preemptive")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	if ctxErrAfterNext != nil {
+		t.Fatalf("expected outer middleware to see nil context error after Next(), got: %v", ctxErrAfterNext)
+	}
+}
+
 func TestHandlerErrorPassesThroughWithoutTimeout(t *testing.T) {
 	mw := New(Config{Timeout: 1 * time.Second})
 	handler := func(_ *celeris.Context) error {
@@ -248,7 +267,7 @@ func TestPreemptiveTimeoutCustomHandler(t *testing.T) {
 	mw := New(Config{
 		Timeout:    10 * time.Millisecond,
 		Preemptive: true,
-		ErrorHandler: func(_ *celeris.Context) error {
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
 			return celeris.NewHTTPError(504, "Gateway Timeout")
 		},
 	})
@@ -661,7 +680,7 @@ func TestTimeoutErrorsCustomErrorHandler(t *testing.T) {
 	mw := New(Config{
 		Timeout:       1 * time.Second,
 		TimeoutErrors: []error{errDBTimeout},
-		ErrorHandler: func(_ *celeris.Context) error {
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
 			return celeris.NewHTTPError(504, "Gateway Timeout")
 		},
 	})
@@ -740,7 +759,7 @@ func TestPreemptiveErrorHandlerReturnsError(t *testing.T) {
 	mw := New(Config{
 		Timeout:    10 * time.Millisecond,
 		Preemptive: true,
-		ErrorHandler: func(_ *celeris.Context) error {
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
 			return errCustom
 		},
 	})
@@ -760,13 +779,13 @@ func TestPreemptiveErrorHandlerReturnsError(t *testing.T) {
 	}
 }
 
-// --- ErrorHandlerWithError tests ---
+// --- ErrorHandler receives error tests ---
 
-func TestErrorHandlerWithErrorReceivesDeadlineExceeded(t *testing.T) {
+func TestErrorHandlerReceivesDeadlineExceeded(t *testing.T) {
 	var received error
 	mw := New(Config{
 		Timeout: 1 * time.Millisecond,
-		ErrorHandlerWithError: func(_ *celeris.Context, err error) error {
+		ErrorHandler: func(_ *celeris.Context, err error) error {
 			received = err
 			return celeris.NewHTTPError(504, "custom timeout")
 		},
@@ -783,12 +802,12 @@ func TestErrorHandlerWithErrorReceivesDeadlineExceeded(t *testing.T) {
 	}
 }
 
-func TestErrorHandlerWithErrorReceivesTimeoutError(t *testing.T) {
+func TestErrorHandlerReceivesTimeoutError(t *testing.T) {
 	var received error
 	mw := New(Config{
 		Timeout:       1 * time.Second,
 		TimeoutErrors: []error{errDBTimeout},
-		ErrorHandlerWithError: func(_ *celeris.Context, err error) error {
+		ErrorHandler: func(_ *celeris.Context, err error) error {
 			received = err
 			return celeris.NewHTTPError(504, "db timeout")
 		},
@@ -804,12 +823,12 @@ func TestErrorHandlerWithErrorReceivesTimeoutError(t *testing.T) {
 	}
 }
 
-func TestErrorHandlerWithErrorPreemptiveDeadline(t *testing.T) {
+func TestErrorHandlerPreemptiveDeadline(t *testing.T) {
 	var received error
 	mw := New(Config{
 		Timeout:    10 * time.Millisecond,
 		Preemptive: true,
-		ErrorHandlerWithError: func(_ *celeris.Context, err error) error {
+		ErrorHandler: func(_ *celeris.Context, err error) error {
 			received = err
 			return celeris.NewHTTPError(504, "preemptive timeout")
 		},
@@ -831,13 +850,13 @@ func TestErrorHandlerWithErrorPreemptiveDeadline(t *testing.T) {
 	}
 }
 
-func TestErrorHandlerWithErrorPreemptiveTimeoutError(t *testing.T) {
+func TestErrorHandlerPreemptiveTimeoutError(t *testing.T) {
 	var received error
 	mw := New(Config{
 		Timeout:       1 * time.Second,
 		Preemptive:    true,
 		TimeoutErrors: []error{errDBTimeout},
-		ErrorHandlerWithError: func(_ *celeris.Context, err error) error {
+		ErrorHandler: func(_ *celeris.Context, err error) error {
 			received = err
 			return celeris.NewHTTPError(504, "preemptive db timeout")
 		},
@@ -853,31 +872,12 @@ func TestErrorHandlerWithErrorPreemptiveTimeoutError(t *testing.T) {
 	}
 }
 
-func TestErrorHandlerWithErrorTakesPrecedence(t *testing.T) {
-	mw := New(Config{
-		Timeout: 1 * time.Millisecond,
-		ErrorHandler: func(_ *celeris.Context) error {
-			return celeris.NewHTTPError(504, "old handler")
-		},
-		ErrorHandlerWithError: func(_ *celeris.Context, _ error) error {
-			return celeris.NewHTTPError(502, "new handler")
-		},
-	})
-	handler := func(_ *celeris.Context) error {
-		time.Sleep(50 * time.Millisecond)
-		return nil
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/precedence")
-	testutil.AssertHTTPError(t, err, 502)
-}
-
 // --- ErrorHandler panic recovery tests ---
 
 func TestErrorHandlerPanicReturns503(t *testing.T) {
 	mw := New(Config{
 		Timeout: 1 * time.Millisecond,
-		ErrorHandler: func(_ *celeris.Context) error {
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
 			panic("error handler exploded")
 		},
 	})
@@ -890,27 +890,11 @@ func TestErrorHandlerPanicReturns503(t *testing.T) {
 	testutil.AssertHTTPError(t, err, 503)
 }
 
-func TestErrorHandlerWithErrorPanicReturns503(t *testing.T) {
-	mw := New(Config{
-		Timeout: 1 * time.Millisecond,
-		ErrorHandlerWithError: func(_ *celeris.Context, _ error) error {
-			panic("error handler with error exploded")
-		},
-	})
-	handler := func(_ *celeris.Context) error {
-		time.Sleep(50 * time.Millisecond)
-		return nil
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/panic-handler-err")
-	testutil.AssertHTTPError(t, err, 503)
-}
-
 func TestPreemptiveErrorHandlerPanicReturns503(t *testing.T) {
 	mw := New(Config{
 		Timeout:    10 * time.Millisecond,
 		Preemptive: true,
-		ErrorHandler: func(_ *celeris.Context) error {
+		ErrorHandler: func(_ *celeris.Context, _ error) error {
 			panic("preemptive error handler exploded")
 		},
 	})

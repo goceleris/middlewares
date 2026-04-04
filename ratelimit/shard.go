@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/goceleris/middlewares/internal/fnv1a"
 )
 
 type shardedLimiter struct {
@@ -52,7 +54,7 @@ type swBucket struct {
 }
 
 func newSlidingWindowLimiter(ctx context.Context, shardCount int, rps float64, limit int, cleanupInterval time.Duration) *slidingWindowLimiter {
-	n := nextPow2(shardCount)
+	n := fnv1a.NextPow2(shardCount)
 	windowNano := int64(float64(limit) / rps * float64(time.Second))
 	if windowNano <= 0 {
 		windowNano = int64(time.Second)
@@ -77,7 +79,7 @@ func newSlidingWindowLimiter(ctx context.Context, shardCount int, rps float64, l
 
 // allow checks if a request for the given key is allowed under the sliding window.
 func (l *slidingWindowLimiter) allow(key string, now int64) (bool, int, int64) {
-	idx := fnv1a(key) & l.mask
+	idx := fnv1a.Hash(key) & l.mask
 	s := &l.shards[idx]
 	s.mu.Lock()
 
@@ -128,7 +130,7 @@ func (l *slidingWindowLimiter) allow(key string, now int64) (bool, int, int64) {
 
 // undo removes one count from the current window, clamped at zero.
 func (l *slidingWindowLimiter) undo(key string) {
-	idx := fnv1a(key) & l.mask
+	idx := fnv1a.Hash(key) & l.mask
 	s := &l.shards[idx]
 	s.mu.Lock()
 	if w, ok := s.windows[key]; ok && w.currCount > 0 {
@@ -186,7 +188,7 @@ func (l *slidingWindowLimiter) cleanup(ctx context.Context, interval time.Durati
 }
 
 func newShardedLimiter(ctx context.Context, shardCount int, rps float64, burst int, cleanupInterval time.Duration) *shardedLimiter {
-	n := nextPow2(shardCount)
+	n := fnv1a.NextPow2(shardCount)
 	l := &shardedLimiter{
 		shards: make([]shard, n),
 		mask:   uint64(n - 1),
@@ -208,7 +210,7 @@ func newShardedLimiter(ctx context.Context, shardCount int, rps float64, burst i
 // allow checks if a request for the given key is allowed.
 // Returns (allowed bool, remaining int, resetUnixNano int64).
 func (l *shardedLimiter) allow(key string, now int64) (bool, int, int64) {
-	idx := fnv1a(key) & l.mask
+	idx := fnv1a.Hash(key) & l.mask
 	s := &l.shards[idx]
 	s.mu.Lock()
 
@@ -252,7 +254,7 @@ func (l *shardedLimiter) allow(key string, now int64) (bool, int, int64) {
 
 // undo adds a token back to the bucket for the given key, capped at burst.
 func (l *shardedLimiter) undo(key string) {
-	idx := fnv1a(key) & l.mask
+	idx := fnv1a.Hash(key) & l.mask
 	s := &l.shards[idx]
 	s.mu.Lock()
 	if b, ok := s.buckets[key]; ok {
@@ -300,30 +302,6 @@ func (l *shardedLimiter) cleanup(ctx context.Context, interval time.Duration) {
 	}
 }
 
-func fnv1a(s string) uint64 {
-	const (
-		offset64 = 14695981039346656037
-		prime64  = 1099511628211
-	)
-	h := uint64(offset64)
-	for i := 0; i < len(s); i++ {
-		h ^= uint64(s[i])
-		h *= prime64
-	}
-	return h
-}
-
-func nextPow2(n int) int {
-	if n <= 1 {
-		return 1
-	}
-	p := 1
-	for p < n {
-		p <<= 1
-	}
-	return p
-}
-
 // smallInts caches string representations of integers 0-999.
 // Covers >99% of rate limit remaining/reset values without allocation.
 var smallInts [1000]string
@@ -342,10 +320,8 @@ func formatInt(n int) string {
 }
 
 // formatResetSeconds returns the ceiling-rounded number of whole seconds
-// between nowNano and resetNano, clamped to a minimum of 1. The minimum
-// of 1 is correct per HTTP spec: Retry-After is defined in whole seconds
-// (RFC 7231 §7.1.3), and returning 0 would mislead the client into
-// retrying immediately when the bucket has not yet refilled (issue #11).
+// between nowNano and resetNano, clamped to a minimum of 0. When the
+// reset time is in the past, 0 is returned.
 func formatResetSeconds(resetNano, nowNano int64) string {
 	secs := (resetNano - nowNano + int64(time.Second) - 1) / int64(time.Second)
 	if secs < 0 {

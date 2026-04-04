@@ -29,9 +29,9 @@ func ExampleNew_dynamicOrigin() {
 	})
 }
 
-func ExampleDefaultConfig() {
-	// Get a copy of the default config to customize.
-	cfg := cors.DefaultConfig()
-	cfg.AllowOrigins = []string{"https://example.com"}
-	_ = cors.New(cfg)
+func ExampleNew_customize() {
+	// Start from a zero Config and customize.
+	_ = cors.New(cors.Config{
+		AllowOrigins: []string{"https://example.com"},
+	})
 }

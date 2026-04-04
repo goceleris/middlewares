@@ -36,14 +36,13 @@ type Config struct {
 	ContentLengthRequired bool
 }
 
-// DefaultConfig is the default body limit configuration.
-var DefaultConfig = Config{
+var defaultConfig = Config{
 	MaxBytes: 4 * 1024 * 1024, // 4 MB
 }
 
 func applyDefaults(cfg Config) Config {
 	if cfg.MaxBytes <= 0 {
-		cfg.MaxBytes = DefaultConfig.MaxBytes
+		cfg.MaxBytes = defaultConfig.MaxBytes
 	}
 	return cfg
 }

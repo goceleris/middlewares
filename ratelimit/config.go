@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 	"strconv"
 	"strings"
@@ -104,8 +105,7 @@ type Config struct {
 	MaxDynamicLimiters int
 }
 
-// DefaultConfig is the default rate limit configuration.
-var DefaultConfig = Config{
+var defaultConfig = Config{
 	RPS:             10,
 	Burst:           20,
 	Shards:          runtime.NumCPU(),
@@ -114,7 +114,10 @@ var DefaultConfig = Config{
 
 func applyDefaults(cfg Config) Config {
 	if cfg.Rate != "" {
-		rps, burst := ParseRate(cfg.Rate)
+		rps, burst, err := ParseRate(cfg.Rate)
+		if err != nil {
+			panic(fmt.Sprintf("ratelimit: invalid Rate: %v", err))
+		}
 		cfg.RPS = rps
 		// Only override Burst if the user did not set it explicitly (issue #10).
 		if cfg.Burst <= 0 {
@@ -122,21 +125,24 @@ func applyDefaults(cfg Config) Config {
 		}
 	}
 	if cfg.RPS <= 0 {
-		cfg.RPS = DefaultConfig.RPS
+		cfg.RPS = defaultConfig.RPS
 	}
 	if cfg.Burst <= 0 {
-		cfg.Burst = DefaultConfig.Burst
+		cfg.Burst = defaultConfig.Burst
 	}
 	if cfg.KeyFunc == nil {
 		cfg.KeyFunc = func(c *celeris.Context) string {
-			return c.ClientIP()
+			if ip := c.ClientIP(); ip != "" {
+				return ip
+			}
+			return c.RemoteAddr()
 		}
 	}
 	if cfg.Shards <= 0 {
-		cfg.Shards = DefaultConfig.Shards
+		cfg.Shards = defaultConfig.Shards
 	}
 	if cfg.CleanupInterval <= 0 {
-		cfg.CleanupInterval = DefaultConfig.CleanupInterval
+		cfg.CleanupInterval = defaultConfig.CleanupInterval
 	}
 	if cfg.MaxDynamicLimiters <= 0 {
 		cfg.MaxDynamicLimiters = 1024
@@ -144,28 +150,22 @@ func applyDefaults(cfg Config) Config {
 	return cfg
 }
 
-func (cfg Config) validate() {
-	if cfg.Burst < 1 {
-		panic("ratelimit: Burst must be >= 1")
-	}
-}
-
 // ParseRate parses a human-readable rate string into RPS and burst values.
 // Format: "<count>-<unit>" where unit is S (second), M (minute), H (hour), D (day).
 // Examples: "100-M" (100 per minute), "1000-H" (1000 per hour), "5-S" (5 per second).
 // The burst is set equal to the count.
-func ParseRate(s string) (rps float64, burst int) {
+func ParseRate(s string) (rps float64, burst int, err error) {
 	s = strings.TrimSpace(s)
 	idx := strings.LastIndexByte(s, '-')
 	if idx < 1 || idx >= len(s)-1 {
-		panic("ratelimit: invalid Rate format (use <count>-<unit>, e.g. \"100-M\"): " + s)
+		return 0, 0, fmt.Errorf("ratelimit: invalid Rate format (use <count>-<unit>, e.g. \"100-M\"): %s", s)
 	}
 	countStr := strings.TrimSpace(s[:idx])
 	unit := strings.ToUpper(strings.TrimSpace(s[idx+1:]))
 
-	count, err := strconv.ParseFloat(countStr, 64)
-	if err != nil || count <= 0 {
-		panic("ratelimit: invalid Rate count: " + s)
+	count, parseErr := strconv.ParseFloat(countStr, 64)
+	if parseErr != nil || count <= 0 {
+		return 0, 0, fmt.Errorf("ratelimit: invalid Rate count: %s", s)
 	}
 
 	var seconds float64
@@ -179,8 +179,8 @@ func ParseRate(s string) (rps float64, burst int) {
 	case "D":
 		seconds = 86400
 	default:
-		panic("ratelimit: invalid Rate unit (use S, M, H, or D): " + s)
+		return 0, 0, fmt.Errorf("ratelimit: invalid Rate unit (use S, M, H, or D): %s", s)
 	}
 
-	return count / seconds, int(count)
+	return count / seconds, int(count), nil
 }

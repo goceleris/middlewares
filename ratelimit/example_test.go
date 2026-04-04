@@ -29,7 +29,7 @@ func ExampleNew_apiKey() {
 }
 
 func ExampleParseRate() {
-	rps, burst := ratelimit.ParseRate("100-M")
+	rps, burst, _ := ratelimit.ParseRate("100-M")
 	_ = rps   // 1.6667 (100/60)
 	_ = burst // 100
 }

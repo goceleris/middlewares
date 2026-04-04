@@ -73,12 +73,17 @@ func isEndpointEnabled(endpoints map[string]bool, name string) bool {
 
 // New creates a debug middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig()
+	cfg := defaultConfigCopy()
 	if len(config) > 0 {
 		cfg = config[0]
 	}
 	cfg = applyDefaults(cfg)
 	cfg.validate()
+
+	skipMap := make(map[string]struct{}, len(cfg.SkipPaths))
+	for _, p := range cfg.SkipPaths {
+		skipMap[p] = struct{}{}
+	}
 
 	prefix := strings.TrimRight(cfg.Prefix, "/")
 	prefixSlash := prefix + "/"
@@ -105,6 +110,10 @@ func New(config ...Config) celeris.HandlerFunc {
 
 	return func(c *celeris.Context) error {
 		path := c.Path()
+
+		if _, ok := skipMap[path]; ok {
+			return c.Next()
+		}
 
 		// Check prefix before Skip so the Skip function is only consulted
 		// for requests that actually target a debug endpoint.

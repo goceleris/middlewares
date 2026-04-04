@@ -23,75 +23,25 @@
 //	    KeyLookup: "query:api_key",
 //	}))
 //
-// # Key Lookup Sources
-//
-// The KeyLookup string supports these sources:
-//
-//   - "header:Name" or "header:Name:Prefix" -- read from request header, optionally strip prefix.
-//   - "query:name" -- read from query parameter.
-//   - "cookie:name" -- read from cookie.
-//   - "form:name" -- read from form field (URL-encoded or multipart).
-//   - "param:name" -- read from URL path parameter (e.g. :token).
-//
 // Multiple sources can be comma-separated for fallback:
 //
-//	KeyLookup: "header:Authorization:Bearer ,query:api_key,form:api_key"
+//	KeyLookup: "header:Authorization:Bearer ,query:api_key"
 //
-// # Retrieving the Key
+// Use [KeyFromContext] to retrieve the authenticated key downstream.
 //
-// Use [KeyFromContext] to retrieve the authenticated key from downstream
-// handlers:
+// [Config].ChallengeParams controls RFC 6750 parameters in the
+// WWW-Authenticate header (error, error_description, error_uri, scope).
 //
-//	key := keyauth.KeyFromContext(c) // reads ContextKey from context store
+// [StaticKeys] uses constant-time comparison via [crypto/subtle] to
+// prevent timing side-channels.
 //
-// # Success Handler
-//
-// [Config].SuccessHandler is called after a key passes validation, before
-// c.Next(). Use it to enrich the request context:
-//
-//	server.Use(keyauth.New(keyauth.Config{
-//	    Validator: keyauth.StaticKeys("admin-key"),
-//	    SuccessHandler: func(c *celeris.Context) {
-//	        c.Set("role", "admin")
-//	    },
-//	}))
-//
-// # WWW-Authenticate Header
-//
-// On 401 responses, the middleware sets a WWW-Authenticate header using
-// [Config].AuthScheme and [Config].Realm:
-//
-//   - AuthScheme defaults to "" (uses "ApiKey" in the header).
-//   - Realm defaults to "Restricted".
-//   - Example: WWW-Authenticate: ApiKey realm="Restricted"
-//   - With AuthScheme "Bearer": WWW-Authenticate: Bearer realm="Restricted"
-//
-// # Constant-Time Comparison
-//
-// [StaticKeys] uses length-padded constant-time comparison via
-// [crypto/subtle] to prevent timing side-channels. All candidate keys
-// are right-padded to the maximum key length at initialization. At
-// validation time the input key is padded into a stack-allocated buffer
-// for keys up to 256 bytes (zero heap allocation), then compared against
-// every padded candidate. A separate constant-time length check ensures
-// that padding collisions do not produce false positives.
-//
-// [ErrUnauthorized] and [ErrMissingKey] are the exported sentinel errors
-// (both 401) returned on authentication failure, usable with errors.Is for
-// error handling in upstream middleware.
-//
-// # Skipping
+// [ErrUnauthorized] and [ErrMissingKey] are exported sentinel errors
+// (both 401) usable with errors.Is for upstream error handling.
 //
 // Set [Config].Skip to bypass the middleware dynamically, or
-// [Config].SkipPaths for exact-match path exclusions. SkipPaths uses
-// literal string equality against [celeris.Context.Path] -- no glob,
-// regex, or prefix matching is performed.
+// [Config].SkipPaths for exact-match path exclusions.
 //
-// # Input Key Size
-//
-// This middleware does not enforce an upper bound on the extracted key
-// length. In practice, upstream HTTP header parsing (typically 8 KB
-// per header line) limits the key size for header-based extraction.
-// Callers using query, form, or param extraction should apply their
-// own size limits if needed.
+// Security: API keys in query strings (`query:api_key`) are logged in
+// access logs, browser history, and Referer headers. Prefer header-based
+// key lookup for sensitive environments.
 package keyauth

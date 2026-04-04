@@ -139,18 +139,10 @@ func (f *jwksFetcher) fetch() error {
 		}
 	}
 
-	// Merge: start from existing keys, overlay with new ones.
-	// This preserves keys that were removed from a partial/degraded JWKS
-	// response while still picking up rotated keys.
+	// Successful fetch replaces all keys to ensure revoked keys are purged.
+	// Failed fetch preserves stale keys for availability.
 	f.mu.Lock()
-	merged := make(map[string]any, len(f.keys)+len(newKeys))
-	for k, v := range f.keys {
-		merged[k] = v
-	}
-	for k, v := range newKeys {
-		merged[k] = v
-	}
-	f.keys = merged
+	f.keys = newKeys
 	f.lastFetch = time.Now()
 	f.mu.Unlock()
 

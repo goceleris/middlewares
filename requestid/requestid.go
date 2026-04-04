@@ -2,9 +2,6 @@ package requestid
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"strings"
 
 	"github.com/goceleris/celeris"
 )
@@ -63,19 +60,17 @@ func New(config ...Config) celeris.HandlerFunc {
 	}
 	isCustomGen := cfg.Generator != nil
 	cfg = applyDefaults(cfg)
-	cfg.validate()
 
 	header := cfg.Header
 	gen := cfg.Generator
 	trustProxy := !cfg.DisableTrustProxy
-	afterGenerate := cfg.AfterGenerate
 	skip := cfg.Skip
 
 	fallbackGen := defaultGenerator.UUID
 
 	skipMap := make(map[string]struct{}, len(cfg.SkipPaths))
 	for _, p := range cfg.SkipPaths {
-		skipMap[strings.TrimRight(p, "/")] = struct{}{}
+		skipMap[p] = struct{}{}
 	}
 
 	return func(c *celeris.Context) error {
@@ -83,7 +78,7 @@ func New(config ...Config) celeris.HandlerFunc {
 			return c.Next()
 		}
 
-		if _, ok := skipMap[strings.TrimRight(c.Path(), "/")]; ok {
+		if _, ok := skipMap[c.Path()]; ok {
 			return c.Next()
 		}
 
@@ -113,17 +108,6 @@ func New(config ...Config) celeris.HandlerFunc {
 		c.SetHeader(header, id)
 		c.Set(ContextKey, id)
 		c.SetContext(context.WithValue(c.Context(), stdContextKey{}, id))
-
-		if afterGenerate != nil {
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						fmt.Fprintf(os.Stderr, "requestid: AfterGenerate panic: %v\n", r)
-					}
-				}()
-				afterGenerate(c, id)
-			}()
-		}
 
 		return c.Next()
 	}

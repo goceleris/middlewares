@@ -3,6 +3,7 @@ package debug
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"testing"
@@ -237,9 +238,9 @@ func TestUnknownDebugSubpath(t *testing.T) {
 }
 
 func TestDefaultConfigPrefix(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := defaultConfigCopy()
 	if cfg.Prefix != "/debug/celeris" {
-		t.Fatalf("DefaultConfig().Prefix: got %q, want %q", cfg.Prefix, "/debug/celeris")
+		t.Fatalf("defaultConfigCopy().Prefix: got %q, want %q", cfg.Prefix, "/debug/celeris")
 	}
 }
 
@@ -270,9 +271,9 @@ func FuzzDebugPaths(f *testing.F) {
 }
 
 func TestDefaultConfigAuthFunc(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := defaultConfigCopy()
 	if cfg.AuthFunc == nil {
-		t.Fatal("DefaultConfig().AuthFunc should not be nil")
+		t.Fatal("defaultConfigCopy().AuthFunc should not be nil")
 	}
 }
 
@@ -597,7 +598,7 @@ func TestMemStatsCacheConcurrent(t *testing.T) {
 				return
 			}
 			if rec.StatusCode != 200 {
-				errs <- errors.New("expected status 200, got " + string(rune(rec.StatusCode+'0')))
+				errs <- fmt.Errorf("expected status 200, got %d", rec.StatusCode)
 				return
 			}
 			var resp memoryResponse
@@ -681,11 +682,11 @@ func TestMethodNotAllowedIndex(t *testing.T) {
 }
 
 func TestDefaultConfigImmutable(t *testing.T) {
-	cfg1 := DefaultConfig()
+	cfg1 := defaultConfigCopy()
 	cfg1.Prefix = "/changed"
-	cfg2 := DefaultConfig()
+	cfg2 := defaultConfigCopy()
 	if cfg2.Prefix != "/debug/celeris" {
-		t.Fatalf("DefaultConfig() mutation leaked: got %q, want /debug/celeris", cfg2.Prefix)
+		t.Fatalf("defaultConfigCopy() mutation leaked: got %q, want /debug/celeris", cfg2.Prefix)
 	}
 }
 

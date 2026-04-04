@@ -27,7 +27,7 @@ func New(config ...Config) celeris.HandlerFunc {
 
 	dur := cfg.Timeout
 	timeoutFunc := cfg.TimeoutFunc
-	errHandler := resolveErrHandler(cfg)
+	errHandler := cfg.ErrorHandler
 	preemptive := cfg.Preemptive
 	timeoutErrors := cfg.TimeoutErrors
 
@@ -75,18 +75,6 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 
 		return err
-	}
-}
-
-// resolveErrHandler builds the unified error handler closure from Config.
-// ErrorHandlerWithError takes precedence over ErrorHandler when set.
-func resolveErrHandler(cfg Config) func(*celeris.Context, error) error {
-	if cfg.ErrorHandlerWithError != nil {
-		return cfg.ErrorHandlerWithError
-	}
-	h := cfg.ErrorHandler
-	return func(c *celeris.Context, _ error) error {
-		return h(c)
 	}
 }
 
@@ -165,7 +153,10 @@ func preemptiveHandler(
 		childCtx, cancel := context.WithTimeout(c.Context(), d)
 		defer cancel()
 
+		origCtx := c.Context()
 		c.SetContext(childCtx)
+		defer c.SetContext(origCtx)
+
 		c.BufferResponse()
 
 		done := chanPool.Get().(chan error)

@@ -1,6 +1,7 @@
 package jwt
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -13,14 +14,14 @@ import (
 var ErrUnauthorized = celeris.NewHTTPError(401, "Unauthorized")
 
 // ErrTokenMissing is returned when no token is found in the request.
-var ErrTokenMissing = celeris.NewHTTPError(401, "Missing or malformed JWT")
+var ErrTokenMissing = &celeris.HTTPError{Code: 401, Message: "Unauthorized", Err: errors.New("jwt: missing or malformed token")}
 
 // ErrTokenInvalid is returned when the token is invalid or expired.
-var ErrTokenInvalid = celeris.NewHTTPError(401, "Invalid or expired JWT")
+var ErrTokenInvalid = &celeris.HTTPError{Code: 401, Message: "Unauthorized", Err: errors.New("jwt: invalid or expired token")}
 
 // New creates a JWT authentication middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := defaultConfig
 	if len(config) > 0 {
 		cfg = config[0]
 	}
@@ -32,10 +33,7 @@ func New(config ...Config) celeris.HandlerFunc {
 		skipMap[p] = struct{}{}
 	}
 
-	extractors := parseExtractors(cfg.TokenLookup)
-	if cfg.CustomExtractor != nil {
-		extractors = append(extractors, cfg.CustomExtractor)
-	}
+	extractor := parseTokenLookup(cfg.TokenLookup)
 	claimsTemplate := cfg.Claims
 	claimsFactory := cfg.ClaimsFactory
 
@@ -57,14 +55,15 @@ func New(config ...Config) celeris.HandlerFunc {
 
 	errorHandler := cfg.ErrorHandler
 	if errorHandler == nil {
-		errorHandler = func(_ *celeris.Context, err error) error {
+		errorHandler = func(c *celeris.Context, err error) error {
+			c.SetHeader("www-authenticate", "Bearer")
+			c.SetHeader("cache-control", "no-store")
 			return err
 		}
 	}
 	successHandler := cfg.SuccessHandler
 	tokenProcessor := cfg.TokenProcessorFunc
 	continueOnIgnored := cfg.ContinueOnIgnoredError
-	beforeFunc := cfg.BeforeFunc
 
 	handleError := func(c *celeris.Context, err error) error {
 		result := errorHandler(c, err)
@@ -83,17 +82,7 @@ func New(config ...Config) celeris.HandlerFunc {
 			return c.Next()
 		}
 
-		if beforeFunc != nil {
-			beforeFunc(c)
-		}
-
-		var tokenStr string
-		for _, ex := range extractors {
-			if t := ex(c); t != "" {
-				tokenStr = t
-				break
-			}
-		}
+		tokenStr := extractor(c)
 		if tokenStr == "" {
 			return handleError(c, ErrTokenMissing)
 		}
@@ -199,6 +188,6 @@ func cloneClaims(template jwtparse.Claims) jwtparse.Claims {
 		if t.Kind() != reflect.Struct && t.Kind() != reflect.Map {
 			panic(fmt.Sprintf("jwt: unsupported custom claims type %T; use ClaimsFactory for non-struct types", template))
 		}
-		return reflect.New(t).Elem().Interface().(jwtparse.Claims)
+		return reflect.New(t).Interface().(jwtparse.Claims)
 	}
 }

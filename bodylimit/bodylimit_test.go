@@ -2,6 +2,7 @@ package bodylimit
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -26,32 +27,6 @@ func TestAutoSkipBodylessMethods(t *testing.T) {
 			testutil.AssertStatus(t, rec, 200)
 		})
 	}
-}
-
-func TestTRACEAutoSkipped(t *testing.T) {
-	mw := New(Config{MaxBytes: 10})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "TRACE", "/",
-		celeristest.WithHeader("content-length", "999999"),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-}
-
-func TestCONNECTAutoSkipped(t *testing.T) {
-	mw := New(Config{MaxBytes: 10})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "CONNECT", "/",
-		celeristest.WithHeader("content-length", "999999"),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
 }
 
 func TestPOSTNotAutoSkipped(t *testing.T) {
@@ -234,22 +209,17 @@ func TestSkipBypassesCheck(t *testing.T) {
 }
 
 func TestDefaultConfig4MB(t *testing.T) {
-	if DefaultConfig.MaxBytes != 4*1024*1024 {
-		t.Fatalf("default MaxBytes: got %d, want %d", DefaultConfig.MaxBytes, 4*1024*1024)
+	if defaultConfig.MaxBytes != 4*1024*1024 {
+		t.Fatalf("default MaxBytes: got %d, want %d", defaultConfig.MaxBytes, 4*1024*1024)
 	}
 }
 
-func TestApplyDefaultsFixesZero(t *testing.T) {
-	cfg := applyDefaults(Config{MaxBytes: 0})
-	if cfg.MaxBytes != 4*1024*1024 {
-		t.Fatalf("expected 4MB, got %d", cfg.MaxBytes)
-	}
-}
-
-func TestApplyDefaultsFixesNegative(t *testing.T) {
-	cfg := applyDefaults(Config{MaxBytes: -1})
-	if cfg.MaxBytes != 4*1024*1024 {
-		t.Fatalf("expected 4MB, got %d", cfg.MaxBytes)
+func TestApplyDefaultsFixesInvalid(t *testing.T) {
+	for _, input := range []int64{0, -1, -999} {
+		cfg := applyDefaults(Config{MaxBytes: input})
+		if cfg.MaxBytes != 4*1024*1024 {
+			t.Fatalf("applyDefaults(MaxBytes=%d): got %d, want 4MB", input, cfg.MaxBytes)
+		}
 	}
 }
 
@@ -691,27 +661,34 @@ func TestContentLengthRequiredRespectSkipFunc(t *testing.T) {
 	testutil.AssertStatus(t, rec, 200)
 }
 
-// --- parseSize PB/EB tests ---
+// --- parseSize unit tests ---
 
-func TestPBParsing(t *testing.T) {
-	n, err := parseSize("1PB")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestParseSizeUnits(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int64
+	}{
+		{"1PB", 1 << 50},
+		{"1EB", 1 << 60},
+		{"1KiB", 1024},
+		{"1MiB", 1 << 20},
+		{"1GiB", 1 << 30},
+		{"1TiB", 1 << 40},
+		{"1PiB", 1 << 50},
+		{"1EiB", 1 << 60},
+		{"10mib", 10 << 20},
+		{"1.5GiB", int64(1.5 * float64(int64(1)<<30))},
 	}
-	want := int64(1) << 50
-	if n != want {
-		t.Fatalf("1PB: got %d, want %d", n, want)
-	}
-}
-
-func TestEBParsing(t *testing.T) {
-	n, err := parseSize("1EB")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := int64(1) << 60
-	if n != want {
-		t.Fatalf("1EB: got %d, want %d", n, want)
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			n, err := parseSize(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if n != tt.want {
+				t.Fatalf("%s: got %d, want %d", tt.input, n, tt.want)
+			}
+		})
 	}
 }
 
@@ -726,95 +703,6 @@ func TestPBLimitMiddleware(t *testing.T) {
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
-}
-
-// --- parseSize IEC unit tests ---
-
-func TestKiBParsing(t *testing.T) {
-	n, err := parseSize("1KiB")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if n != 1024 {
-		t.Fatalf("1KiB: got %d, want 1024", n)
-	}
-}
-
-func TestMiBParsing(t *testing.T) {
-	n, err := parseSize("1MiB")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := int64(1) << 20
-	if n != want {
-		t.Fatalf("1MiB: got %d, want %d", n, want)
-	}
-}
-
-func TestGiBParsing(t *testing.T) {
-	n, err := parseSize("1GiB")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := int64(1) << 30
-	if n != want {
-		t.Fatalf("1GiB: got %d, want %d", n, want)
-	}
-}
-
-func TestTiBParsing(t *testing.T) {
-	n, err := parseSize("1TiB")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := int64(1) << 40
-	if n != want {
-		t.Fatalf("1TiB: got %d, want %d", n, want)
-	}
-}
-
-func TestPiBParsing(t *testing.T) {
-	n, err := parseSize("1PiB")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := int64(1) << 50
-	if n != want {
-		t.Fatalf("1PiB: got %d, want %d", n, want)
-	}
-}
-
-func TestEiBParsing(t *testing.T) {
-	n, err := parseSize("1EiB")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := int64(1) << 60
-	if n != want {
-		t.Fatalf("1EiB: got %d, want %d", n, want)
-	}
-}
-
-func TestIECCaseInsensitive(t *testing.T) {
-	n, err := parseSize("10mib")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := int64(10) << 20
-	if n != want {
-		t.Fatalf("10mib: got %d, want %d", n, want)
-	}
-}
-
-func TestIECFractional(t *testing.T) {
-	n, err := parseSize("1.5GiB")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := int64(1.5 * float64(int64(1)<<30))
-	if n != want {
-		t.Fatalf("1.5GiB: got %d, want %d", n, want)
-	}
 }
 
 func TestIECLimitMiddleware(t *testing.T) {
@@ -870,29 +758,27 @@ func TestParseSizeRejectsNegativeFractionalGB(t *testing.T) {
 	New(Config{Limit: "-0.5GB"})
 }
 
-// --- parseSize returns error tests ---
+// --- parseSize error tests ---
 
-func TestParseSizeReturnsErrorInvalidFormat(t *testing.T) {
-	_, err := parseSize("notasize")
-	if err == nil {
-		t.Fatal("expected error for invalid format")
+func TestParseSizeErrors(t *testing.T) {
+	tests := []struct {
+		input   string
+		wantErr string
+	}{
+		{"notasize", "bodylimit: invalid Limit format"},
+		{"", "bodylimit: empty Limit string"},
+		{"-1MB", "bodylimit: Limit must not be negative"},
 	}
-}
-
-func TestParseSizeReturnsErrorEmpty(t *testing.T) {
-	_, err := parseSize("")
-	if err == nil {
-		t.Fatal("expected error for empty string")
-	}
-}
-
-func TestParseSizeReturnsErrorNegative(t *testing.T) {
-	_, err := parseSize("-1MB")
-	if err == nil {
-		t.Fatal("expected error for negative value")
-	}
-	if err.Error() != "bodylimit: Limit must not be negative" {
-		t.Fatalf("unexpected error message: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			_, err := parseSize(tt.input)
+			if err == nil {
+				t.Fatalf("expected error for %q", tt.input)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q should contain %q", err.Error(), tt.wantErr)
+			}
+		})
 	}
 }
 

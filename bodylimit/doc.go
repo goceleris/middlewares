@@ -1,10 +1,10 @@
 // Package bodylimit provides request body size limiting middleware for
 // celeris.
 //
-// The middleware enforces a maximum request body size. Requests whose
-// Content-Length header exceeds the limit are rejected immediately with
-// 413 Request Entity Too Large. Requests without Content-Length are
-// rejected once the actual body bytes read exceed the limit.
+// The middleware enforces a maximum request body size using a two-phase
+// approach: first checking Content-Length (fast path), then verifying
+// actual body bytes (catches lying or absent Content-Length). Requests
+// exceeding the limit are rejected with 413 Request Entity Too Large.
 //
 // Basic usage with the default 4 MB limit:
 //
@@ -16,91 +16,20 @@
 //	    Limit: "10MB",
 //	}))
 //
-// Numeric byte limit:
-//
-//	server.Use(bodylimit.New(bodylimit.Config{
-//	    MaxBytes: 10 * 1024 * 1024, // 10 MB
-//	}))
-//
-// [Config].Limit accepts human-readable size strings with decimal (SI-style)
-// and binary (IEC) units: B, KB, MB, GB, TB, PB, EB, KiB, MiB, GiB, TiB,
-// PiB, EiB (e.g., "1.5GB", "256MiB"). Fractional values are supported.
+// [Config].Limit accepts SI and IEC units: B, KB, MB, GB, TB, PB, EB,
+// KiB, MiB, GiB, TiB, PiB, EiB. Fractional values are supported.
 // When set, Limit takes precedence over MaxBytes.
 //
-// # Dual-Check Enforcement
+// IMPORTANT: Celeris buffers the full request body before middleware
+// runs. The framework's maxRequestBodySize (100 MB) is the hard ceiling.
+// This middleware adds an application-level check on already-buffered
+// data. Enable [Config].ContentLengthRequired to reject requests
+// without Content-Length (411 Length Required).
 //
-// The middleware uses a two-phase approach to enforce body size limits:
+// Bodyless methods (GET, HEAD, DELETE, OPTIONS, TRACE, CONNECT) are
+// auto-skipped. Use [Config].Skip or [Config].SkipPaths for additional
+// exclusions. Set [Config].ErrorHandler to customize error responses.
 //
-//  1. Content-Length pre-check: If the request includes a Content-Length
-//     header and its value exceeds the configured limit, the request is
-//     rejected immediately without reading any body bytes. This provides
-//     an efficient fast path for well-behaved clients that advertise
-//     their payload size up front.
-//
-//  2. Actual body byte count fallback: Regardless of the Content-Length
-//     header, the middleware also checks the actual number of body bytes
-//     received. This catches clients that send a small or missing
-//     Content-Length but transmit a larger payload (a "lying"
-//     Content-Length) as well as chunked-transfer requests that omit the
-//     header entirely.
-//
-// Both checks must pass for the request to proceed. This defense-in-depth
-// approach ensures that the limit is enforced even when the
-// Content-Length header is absent, zero, or deliberately understated.
-//
-// # Limitation: Framework-Level Buffering
-//
-// IMPORTANT: Celeris buffers the complete request body into memory BEFORE
-// any middleware executes. This is a framework-level architectural
-// constraint that this middleware cannot change. Consequently:
-//
-//   - When Content-Length is present: the Phase 1 pre-check rejects
-//     oversized requests before the handler runs, but the body is
-//     already in memory at that point.
-//   - When Content-Length is absent or dishonest: the full body is
-//     buffered before this middleware sees it. Phase 2 catches it
-//     after the fact.
-//
-// The framework's own maxRequestBodySize (100 MB) acts as the hard
-// ceiling and absolute backstop — no request body can ever exceed
-// 100 MB regardless of this middleware's configuration. This prevents
-// unbounded memory growth even if a client streams data without a
-// Content-Length header.
-//
-// The primary mitigation is [Config].ContentLengthRequired, which
-// rejects requests that omit the Content-Length header with 411 Length
-// Required. This forces well-behaved clients to declare body size up
-// front, making the Phase 1 pre-check effective:
-//
-//	server.Use(bodylimit.New(bodylimit.Config{
-//	    Limit:                 "10MB",
-//	    ContentLengthRequired: true,
-//	}))
-//
-// Bodyless HTTP methods (GET, HEAD, DELETE, OPTIONS, TRACE, CONNECT) are
-// auto-skipped. TRACE must not include a body (RFC 7231 §4.3.8) and
-// CONNECT transitions to tunnel mode (RFC 7231 §4.3.6).
-//
-// # Custom Error Handling
-//
-// Set [Config].ErrorHandler to customize the response when the body limit
-// is exceeded:
-//
-//	server.Use(bodylimit.New(bodylimit.Config{
-//	    Limit: "10MB",
-//	    ErrorHandler: func(c *celeris.Context, err error) error {
-//	        return c.JSON(413, map[string]string{"error": "body too large"})
-//	    },
-//	}))
-//
-// # Skipping
-//
-// Use [Config].Skip for dynamic skip logic or [Config].SkipPaths for
-// exact-match path exclusions (e.g., health check endpoints).
-//
-// [ErrBodyTooLarge] is the exported sentinel error (413) returned when the
-// limit is exceeded, usable with errors.Is for error handling in upstream
-// middleware. [ErrLengthRequired] is the sentinel error (411) returned when
-// [Config].ContentLengthRequired is enabled and the request omits a
-// Content-Length header.
+// [ErrBodyTooLarge] and [ErrLengthRequired] are exported sentinel errors
+// usable with errors.Is for upstream error handling.
 package bodylimit

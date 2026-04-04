@@ -595,14 +595,14 @@ func TestSkipDoesNotStoreToken(t *testing.T) {
 }
 
 func TestDefaultConfigValues(t *testing.T) {
-	if DefaultConfig.SigningMethod.Alg() != "HS256" {
-		t.Fatalf("default SigningMethod: got %q, want HS256", DefaultConfig.SigningMethod.Alg())
+	if defaultConfig.SigningMethod.Alg() != "HS256" {
+		t.Fatalf("default SigningMethod: got %q, want HS256", defaultConfig.SigningMethod.Alg())
 	}
-	if DefaultConfig.TokenLookup != "header:Authorization:Bearer " {
-		t.Fatalf("default TokenLookup: got %q, want %q", DefaultConfig.TokenLookup, "header:Authorization:Bearer ")
+	if defaultConfig.TokenLookup != "header:Authorization:Bearer " {
+		t.Fatalf("default TokenLookup: got %q, want %q", defaultConfig.TokenLookup, "header:Authorization:Bearer ")
 	}
-	if DefaultConfig.JWKSRefresh != time.Hour {
-		t.Fatalf("default JWKSRefresh: got %v, want 1h", DefaultConfig.JWKSRefresh)
+	if defaultConfig.JWKSRefresh != time.Hour {
+		t.Fatalf("default JWKSRefresh: got %v, want 1h", defaultConfig.JWKSRefresh)
 	}
 }
 
@@ -1416,225 +1416,51 @@ func TestContinueOnIgnoredErrorNonNilErrorStops(t *testing.T) {
 	}
 }
 
-// --- BeforeFunc tests ---
-
-func TestBeforeFuncCalled(t *testing.T) {
-	tokenStr := signToken(jwtparse.MapClaims{"sub": "1234"})
-	var beforeCalled bool
-	mw := New(Config{
-		SigningKey: testSecret,
-		BeforeFunc: func(_ *celeris.Context) {
-			beforeCalled = true
-		},
-	})
-	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := runChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
-	)
-	assertNoError(t, err)
-	assertStatus(t, rec, 200)
-	if !beforeCalled {
-		t.Fatal("BeforeFunc was not called")
-	}
-}
-
-func TestBeforeFuncCalledBeforeExtraction(t *testing.T) {
-	tokenStr := signToken(jwtparse.MapClaims{"sub": "1234"})
-	var order []string
-	mw := New(Config{
-		SigningKey: testSecret,
-		BeforeFunc: func(_ *celeris.Context) {
-			order = append(order, "before")
-		},
-		SuccessHandler: func(_ *celeris.Context) {
-			order = append(order, "success")
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		order = append(order, "handler")
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := runChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
-	)
-	assertNoError(t, err)
-	if len(order) != 3 || order[0] != "before" || order[1] != "success" || order[2] != "handler" {
-		t.Fatalf("unexpected call order: %v", order)
-	}
-}
-
-func TestBeforeFuncCalledEvenOnMissingToken(t *testing.T) {
-	var beforeCalled bool
-	mw := New(Config{
-		SigningKey: testSecret,
-		BeforeFunc: func(_ *celeris.Context) {
-			beforeCalled = true
-		},
-	})
-	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, _ = runChain(t, chain, "GET", "/")
-	if !beforeCalled {
-		t.Fatal("BeforeFunc should be called even when token is missing")
-	}
-}
-
-func TestBeforeFuncNotCalledOnSkip(t *testing.T) {
-	var beforeCalled bool
-	mw := New(Config{
-		SigningKey: testSecret,
-		Skip:       func(_ *celeris.Context) bool { return true },
-		BeforeFunc: func(_ *celeris.Context) {
-			beforeCalled = true
-		},
-	})
-	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := runChain(t, chain, "GET", "/")
-	assertNoError(t, err)
-	if beforeCalled {
-		t.Fatal("BeforeFunc should NOT be called when Skip returns true")
-	}
-}
-
-func TestBeforeFuncNotCalledOnSkipPaths(t *testing.T) {
-	var beforeCalled bool
-	mw := New(Config{
-		SigningKey: testSecret,
-		SkipPaths:  []string{"/health"},
-		BeforeFunc: func(_ *celeris.Context) {
-			beforeCalled = true
-		},
-	})
-	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := runChain(t, chain, "GET", "/health")
-	assertNoError(t, err)
-	if beforeCalled {
-		t.Fatal("BeforeFunc should NOT be called when path is skipped")
-	}
-}
-
-func TestBeforeFuncNilIsHarmless(t *testing.T) {
-	tokenStr := signToken(jwtparse.MapClaims{"sub": "1234"})
-	mw := New(Config{
-		SigningKey: testSecret,
-		BeforeFunc: nil,
-	})
-	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := runChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
-	)
-	assertNoError(t, err)
-	assertStatus(t, rec, 200)
-}
-
-func TestBeforeFuncEnrichesContext(t *testing.T) {
-	tokenStr := signToken(jwtparse.MapClaims{"sub": "1234"})
-	mw := New(Config{
-		SigningKey: testSecret,
-		BeforeFunc: func(c *celeris.Context) {
-			c.Set("request_id", "req-abc")
-		},
-	})
-	var reqID string
-	handler := func(c *celeris.Context) error {
-		v, _ := c.Get("request_id")
-		reqID, _ = v.(string)
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := runChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
-	)
-	assertNoError(t, err)
-	if reqID != "req-abc" {
-		t.Fatalf("request_id: got %q, want %q", reqID, "req-abc")
-	}
-}
-
 // --- HMAC minimum key length tests ---
 
-func TestHMACKeyLengthWarningHS256(t *testing.T) {
-	shortKey := []byte("short") // 5 bytes, below 32
-	var logBuf strings.Builder
-	log.SetOutput(&logBuf)
-	log.SetFlags(0)
-	defer log.SetOutput(nil)
-	defer log.SetFlags(log.LstdFlags)
-
-	tokenStr := signTokenWithMethod(jwtparse.SigningMethodHS256, jwtparse.MapClaims{"sub": "1"}, shortKey)
-	mw := New(Config{SigningKey: shortKey})
-	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := runChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
-	)
-	assertNoError(t, err)
-	if !strings.Contains(logBuf.String(), "HS256 signing key is 5 bytes") {
-		t.Fatalf("expected HS256 key length warning, got: %q", logBuf.String())
+func TestHMACKeyLengthWarning(t *testing.T) {
+	tests := []struct {
+		name    string
+		method  jwtparse.SigningMethod
+		keyLen  int
+		wantMsg string
+	}{
+		{"HS256/short", jwtparse.SigningMethodHS256, 5, "HS256 signing key is 5 bytes"},
+		{"HS384/short", jwtparse.SigningMethodHS384, 32, "HS384 signing key is 32 bytes"},
+		{"HS512/short", jwtparse.SigningMethodHS512, 48, "HS512 signing key is 48 bytes"},
 	}
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			key := make([]byte, tc.keyLen)
+			for i := range key {
+				key[i] = byte(i + 1)
+			}
+			var logBuf strings.Builder
+			log.SetOutput(&logBuf)
+			log.SetFlags(0)
+			defer log.SetOutput(nil)
+			defer log.SetFlags(log.LstdFlags)
 
-func TestHMACKeyLengthWarningHS384(t *testing.T) {
-	shortKey := make([]byte, 32) // 32 bytes, below 48
-	for i := range shortKey {
-		shortKey[i] = byte(i)
-	}
-	var logBuf strings.Builder
-	log.SetOutput(&logBuf)
-	log.SetFlags(0)
-	defer log.SetOutput(nil)
-	defer log.SetFlags(log.LstdFlags)
-
-	tokenStr := signTokenWithMethod(jwtparse.SigningMethodHS384, jwtparse.MapClaims{"sub": "1"}, shortKey)
-	mw := New(Config{
-		SigningKey:    shortKey,
-		SigningMethod: jwtparse.SigningMethodHS384,
-	})
-	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := runChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
-	)
-	assertNoError(t, err)
-	if !strings.Contains(logBuf.String(), "HS384 signing key is 32 bytes") {
-		t.Fatalf("expected HS384 key length warning, got: %q", logBuf.String())
-	}
-}
-
-func TestHMACKeyLengthWarningHS512(t *testing.T) {
-	shortKey := make([]byte, 48) // 48 bytes, below 64
-	for i := range shortKey {
-		shortKey[i] = byte(i)
-	}
-	var logBuf strings.Builder
-	log.SetOutput(&logBuf)
-	log.SetFlags(0)
-	defer log.SetOutput(nil)
-	defer log.SetFlags(log.LstdFlags)
-
-	tokenStr := signTokenWithMethod(jwtparse.SigningMethodHS512, jwtparse.MapClaims{"sub": "1"}, shortKey)
-	mw := New(Config{
-		SigningKey:    shortKey,
-		SigningMethod: jwtparse.SigningMethodHS512,
-	})
-	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := runChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
-	)
-	assertNoError(t, err)
-	if !strings.Contains(logBuf.String(), "HS512 signing key is 48 bytes") {
-		t.Fatalf("expected HS512 key length warning, got: %q", logBuf.String())
+			tokenStr := signTokenWithMethod(tc.method, jwtparse.MapClaims{"sub": "1"}, key)
+			mw := New(Config{
+				SigningKey:    key,
+				SigningMethod: tc.method,
+			})
+			handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+			chain := []celeris.HandlerFunc{mw, handler}
+			_, err := runChain(t, chain, "GET", "/",
+				celeristest.WithHeader("authorization", "Bearer "+tokenStr),
+			)
+			assertNoError(t, err)
+			if !strings.Contains(logBuf.String(), tc.wantMsg) {
+				t.Fatalf("expected %q in log, got: %q", tc.wantMsg, logBuf.String())
+			}
+		})
 	}
 }
 
 func TestHMACKeyLengthNoWarningWhenSufficient(t *testing.T) {
-	goodKey := make([]byte, 32) // exactly 32 bytes for HS256
+	goodKey := make([]byte, 32)
 	for i := range goodKey {
 		goodKey[i] = byte(i + 1)
 	}
@@ -1654,133 +1480,5 @@ func TestHMACKeyLengthNoWarningWhenSufficient(t *testing.T) {
 	assertNoError(t, err)
 	if logBuf.Len() > 0 {
 		t.Fatalf("expected no warning for adequate key length, got: %q", logBuf.String())
-	}
-}
-
-func TestMinKeyLengthPanicsWhenTooShort(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for short key with MinKeyLength set")
-		}
-		msg, ok := r.(string)
-		if !ok {
-			t.Fatalf("expected string panic, got %T: %v", r, r)
-		}
-		if !strings.Contains(msg, "below MinKeyLength") {
-			t.Fatalf("unexpected panic message: %q", msg)
-		}
-	}()
-	New(Config{
-		SigningKey:   []byte("short"),
-		MinKeyLength: 32,
-	})
-}
-
-func TestMinKeyLengthAcceptsAdequateKey(t *testing.T) {
-	key := make([]byte, 64)
-	for i := range key {
-		key[i] = byte(i + 1)
-	}
-	var logBuf strings.Builder
-	log.SetOutput(&logBuf)
-	log.SetFlags(0)
-	defer log.SetOutput(nil)
-	defer log.SetFlags(log.LstdFlags)
-
-	tokenStr := signTokenWithMethod(jwtparse.SigningMethodHS256, jwtparse.MapClaims{"sub": "1"}, key)
-	mw := New(Config{
-		SigningKey:   key,
-		MinKeyLength: 32,
-	})
-	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := runChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
-	)
-	assertNoError(t, err)
-}
-
-func TestMinKeyLengthZeroNoEnforcement(t *testing.T) {
-	var logBuf strings.Builder
-	log.SetOutput(&logBuf)
-	log.SetFlags(0)
-	defer log.SetOutput(nil)
-	defer log.SetFlags(log.LstdFlags)
-
-	shortKey := []byte("tiny")
-	tokenStr := signTokenWithMethod(jwtparse.SigningMethodHS256, jwtparse.MapClaims{"sub": "1"}, shortKey)
-	mw := New(Config{
-		SigningKey:   shortKey,
-		MinKeyLength: 0, // no enforcement
-	})
-	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := runChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
-	)
-	assertNoError(t, err)
-	// Should still warn, just not panic.
-	if !strings.Contains(logBuf.String(), "WARNING") {
-		t.Fatalf("expected warning even with MinKeyLength=0, got: %q", logBuf.String())
-	}
-}
-
-func TestCustomExtractorUsedAfterBuiltIn(t *testing.T) {
-	tokenStr := signToken(jwtparse.MapClaims{"sub": "custom"})
-	mw := New(Config{
-		SigningKey: testSecret,
-		CustomExtractor: func(c *celeris.Context) string {
-			return c.Header("x-custom-token")
-		},
-	})
-	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
-	chain := []celeris.HandlerFunc{mw, handler}
-
-	// Token in custom header only (no Authorization header).
-	_, err := runChain(t, chain, "GET", "/",
-		celeristest.WithHeader("x-custom-token", tokenStr),
-	)
-	assertNoError(t, err)
-}
-
-func TestCustomExtractorNotUsedWhenBuiltInSucceeds(t *testing.T) {
-	tokenStr := signToken(jwtparse.MapClaims{"sub": "builtin"})
-	customCalled := false
-	mw := New(Config{
-		SigningKey: testSecret,
-		CustomExtractor: func(_ *celeris.Context) string {
-			customCalled = true
-			return "should-not-reach"
-		},
-	})
-	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
-	chain := []celeris.HandlerFunc{mw, handler}
-
-	_, err := runChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Bearer "+tokenStr),
-	)
-	assertNoError(t, err)
-	if customCalled {
-		t.Fatal("CustomExtractor should not be called when built-in extractor succeeds")
-	}
-}
-
-func TestCustomExtractorMissingTokenReturnsError(t *testing.T) {
-	mw := New(Config{
-		SigningKey: testSecret,
-		CustomExtractor: func(_ *celeris.Context) string {
-			return "" // also empty
-		},
-	})
-	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
-	chain := []celeris.HandlerFunc{mw, handler}
-
-	_, err := runChain(t, chain, "GET", "/")
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !errors.Is(err, ErrTokenMissing) {
-		t.Fatalf("expected ErrTokenMissing, got: %v", err)
 	}
 }

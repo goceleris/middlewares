@@ -26,19 +26,19 @@ type limiter interface {
 // stoppableLimiter wraps a limiter with a cancel function so its cleanup
 // goroutine can be stopped when the entry is evicted from the dynamic map.
 type stoppableLimiter struct {
-	lim    limiter
-	burst  int
-	cancel context.CancelFunc
+	lim      limiter
+	burst    int
+	cancel   context.CancelFunc
+	lastUsed int64 // UnixNano; updated on access, used for eviction
 }
 
 // New creates a rate limit middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := defaultConfig
 	if len(config) > 0 {
 		cfg = config[0]
 	}
 	cfg = applyDefaults(cfg)
-	cfg.validate()
 
 	skipMap := make(map[string]struct{}, len(cfg.SkipPaths))
 	for _, p := range cfg.SkipPaths {
@@ -53,7 +53,7 @@ func New(config ...Config) celeris.HandlerFunc {
 	rateFunc := cfg.RateFunc
 
 	if cfg.Store != nil {
-		return newStoreMiddleware(cfg.Store, cfg.Skip, keyFunc, skipMap, disableHeaders, limitReached, skipFailed, skipSuccess)
+		return newStoreMiddleware(cfg.Store, cfg.Burst, cfg.Skip, keyFunc, skipMap, disableHeaders, limitReached, skipFailed, skipSuccess)
 	}
 
 	var lim limiter
@@ -76,32 +76,72 @@ func New(config ...Config) celeris.HandlerFunc {
 	}
 
 	var (
-		dynamicMu       sync.Mutex
+		dynamicMu       sync.RWMutex
 		dynamicLimiters = make(map[string]stoppableLimiter)
 	)
 
+	// Eviction threshold: entries unused for 10x the cleanup interval.
+	evictAfter := int64(10 * cleanupInterval)
+
+	// Background goroutine to evict stale dynamic limiters.
+	go func() {
+		ticker := time.NewTicker(cleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-parentCtx.Done():
+				return
+			case now := <-ticker.C:
+				cutoff := now.UnixNano() - evictAfter
+				dynamicMu.Lock()
+				for k, e := range dynamicLimiters {
+					if e.lastUsed < cutoff {
+						e.cancel()
+						delete(dynamicLimiters, k)
+					}
+				}
+				dynamicMu.Unlock()
+			}
+		}
+	}()
+
 	getDynamicLimiter := func(rateStr string) (limiter, int, error) {
+		now := time.Now().UnixNano()
+
+		// Fast path: read lock for cache hits.
+		dynamicMu.RLock()
+		if _, ok := dynamicLimiters[rateStr]; ok {
+			dynamicMu.RUnlock()
+			// Update lastUsed under write lock (atomic store is not
+			// sufficient because stoppableLimiter is a value type in the map).
+			dynamicMu.Lock()
+			if e2, ok2 := dynamicLimiters[rateStr]; ok2 {
+				e2.lastUsed = now
+				dynamicLimiters[rateStr] = e2
+				dynamicMu.Unlock()
+				return e2.lim, e2.burst, nil
+			}
+			dynamicMu.Unlock()
+			// Entry was evicted between RUnlock and Lock; fall through to slow path.
+		} else {
+			dynamicMu.RUnlock()
+		}
+
+		// Slow path: write lock for cache misses.
 		dynamicMu.Lock()
 		defer dynamicMu.Unlock()
+
+		// Double-check after acquiring write lock.
 		if e, ok := dynamicLimiters[rateStr]; ok {
+			e.lastUsed = now
+			dynamicLimiters[rateStr] = e
 			return e.lim, e.burst, nil
 		}
 		// Reject new entries when map is at capacity (issue #1).
 		if len(dynamicLimiters) >= maxDynamic {
 			return nil, 0, ErrDynamicLimitersExhausted
 		}
-		// Recover from ParseRate panics caused by invalid RateFunc output (issue #9).
-		var rps float64
-		var burst int
-		var parseErr error
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					parseErr = fmt.Errorf("%v", r)
-				}
-			}()
-			rps, burst = ParseRate(rateStr)
-		}()
+		rps, burst, parseErr := ParseRate(rateStr)
 		if parseErr != nil {
 			return nil, 0, fmt.Errorf("invalid rate string from RateFunc: %w", parseErr)
 		}
@@ -114,7 +154,7 @@ func New(config ...Config) celeris.HandlerFunc {
 		} else {
 			dl = newShardedLimiter(childCtx, shards, rps, burst, cleanupInterval)
 		}
-		dynamicLimiters[rateStr] = stoppableLimiter{lim: dl, burst: burst, cancel: cancel}
+		dynamicLimiters[rateStr] = stoppableLimiter{lim: dl, burst: burst, cancel: cancel, lastUsed: now}
 		return dl, burst, nil
 	}
 
@@ -185,6 +225,7 @@ func New(config ...Config) celeris.HandlerFunc {
 
 func newStoreMiddleware(
 	store Store,
+	burst int,
 	skipFunc func(c *celeris.Context) bool,
 	keyFunc func(c *celeris.Context) string,
 	skipMap map[string]struct{},
@@ -193,6 +234,7 @@ func newStoreMiddleware(
 	skipFailed, skipSuccess bool,
 ) celeris.HandlerFunc {
 	undoer, _ := store.(StoreUndo)
+	limitStr := formatInt(burst)
 
 	return func(c *celeris.Context) error {
 		if skipFunc != nil && skipFunc(c) {
@@ -210,6 +252,7 @@ func newStoreMiddleware(
 		}
 
 		if !disableHeaders {
+			c.SetHeader("x-ratelimit-limit", limitStr)
 			c.SetHeader("x-ratelimit-remaining", formatInt(remaining))
 			resetSec := int(time.Until(resetAt).Seconds() + 0.999)
 			if resetSec < 0 {
