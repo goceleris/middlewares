@@ -5,6 +5,7 @@ import (
 
 	"github.com/goceleris/celeris/celeristest"
 
+	"github.com/goceleris/middlewares/internal/extract"
 	"github.com/goceleris/middlewares/jwt/internal/jwtparse"
 )
 
@@ -37,7 +38,7 @@ func FuzzExtractorParse(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, header string) {
 		// Ensure header extractor never panics on arbitrary input.
-		ex := headerExtractor("authorization", "Bearer ")
+		ex := extract.Parse("header:authorization:Bearer ")
 		ctx, _ := celeristest.NewContextT(t, "GET", "/",
 			celeristest.WithHeader("authorization", header),
 		)

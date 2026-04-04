@@ -144,9 +144,6 @@ func TestSpanAttributes(t *testing.T) {
 	if got := attrMap["url.path"].AsString(); got != "/attrs" {
 		t.Fatalf("expected url.path=/attrs, got %q", got)
 	}
-	if got := attrMap["network.protocol.version"].AsString(); got != "1.1" {
-		t.Fatalf("expected network.protocol.version=1.1, got %q", got)
-	}
 	if got := attrMap["http.response.body.size"].AsInt64(); got != 2 {
 		t.Fatalf("expected http.response.body.size=2, got %d", got)
 	}
@@ -610,12 +607,18 @@ func TestNetworkProtocolVersion(t *testing.T) {
 		t.Fatalf("expected 1 span, got %d", len(spans))
 	}
 
-	attrMap := make(map[string]attribute.Value, len(spans[0].Attributes))
+	var found bool
 	for _, a := range spans[0].Attributes {
-		attrMap[string(a.Key)] = a.Value
+		if a.Key == semconv.NetworkProtocolVersionKey {
+			found = true
+			if v := a.Value.AsString(); v == "" {
+				t.Fatalf("network.protocol.version is empty")
+			}
+			break
+		}
 	}
-	if got := attrMap["network.protocol.version"].AsString(); got != "1.1" {
-		t.Fatalf("expected network.protocol.version=1.1, got %q", got)
+	if !found {
+		t.Fatal("network.protocol.version attribute not found")
 	}
 }
 
@@ -830,15 +833,15 @@ func TestSemconvAttributeKeys(t *testing.T) {
 	// Verify attribute keys match semconv constants exactly.
 	// http.route is omitted because FullPath() is empty in test contexts (no router).
 	wantKeys := map[attribute.Key]bool{
-		semconv.HTTPRequestMethodKey:      true,
-		semconv.URLSchemeKey:              true,
-		semconv.URLPathKey:                true,
-		semconv.NetworkProtocolVersionKey: true,
-		semconv.ClientAddressKey:          true,
-		semconv.ServerAddressKey:          true,
-		semconv.UserAgentOriginalKey:      true,
-		semconv.HTTPResponseStatusCodeKey: true,
-		semconv.HTTPResponseBodySizeKey:   true,
+		semconv.HTTPRequestMethodKey:        true,
+		semconv.URLSchemeKey:                true,
+		semconv.URLPathKey:                  true,
+		semconv.NetworkProtocolVersionKey:   true,
+		semconv.ClientAddressKey:            true,
+		semconv.ServerAddressKey:            true,
+		semconv.UserAgentOriginalKey:        true,
+		semconv.HTTPResponseStatusCodeKey:   true,
+		semconv.HTTPResponseBodySizeKey:     true,
 	}
 	for _, a := range spans[0].Attributes {
 		delete(wantKeys, a.Key)
@@ -1526,5 +1529,63 @@ func TestTruncateStringEmpty(t *testing.T) {
 	got := truncateString("", 10)
 	if got != "" {
 		t.Fatalf("expected empty, got %q", got)
+	}
+}
+
+// --- v1.2.4 celeristest option tests ---
+
+func TestProtocolAttributeH1(t *testing.T) {
+	tp, exp := newTestTP()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	mw := New(Config{TracerProvider: tp})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	err := runChain(t, []celeris.HandlerFunc{mw, handler}, "GET", "/proto-h1",
+		celeristest.WithProtocol("1.1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+
+	attrMap := make(map[string]attribute.Value, len(spans[0].Attributes))
+	for _, a := range spans[0].Attributes {
+		attrMap[string(a.Key)] = a.Value
+	}
+	if got := attrMap[string(semconv.NetworkProtocolVersionKey)].AsString(); got != "1.1" {
+		t.Fatalf("expected network.protocol.version=1.1, got %q", got)
+	}
+}
+
+func TestFullPathInSpanName(t *testing.T) {
+	tp, exp := newTestTP()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	mw := New(Config{TracerProvider: tp})
+	handler := func(c *celeris.Context) error { return c.String(200, "ok") }
+	err := runChain(t, []celeris.HandlerFunc{mw, handler}, "GET", "/users/42",
+		celeristest.WithFullPath("/users/:id"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	wantName := "GET /users/:id"
+	if got := spans[0].Name; got != wantName {
+		t.Fatalf("expected span name %q, got %q", wantName, got)
+	}
+
+	attrMap := make(map[string]attribute.Value, len(spans[0].Attributes))
+	for _, a := range spans[0].Attributes {
+		attrMap[string(a.Key)] = a.Value
+	}
+	if got := attrMap[string(semconv.HTTPRouteKey)].AsString(); got != "/users/:id" {
+		t.Fatalf("expected http.route=/users/:id, got %q", got)
 	}
 }

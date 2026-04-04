@@ -23,6 +23,10 @@ type Config struct {
 	// Skip defines a function to skip this middleware for certain requests.
 	Skip func(c *celeris.Context) bool
 
+	// SkipPaths is a list of request paths to exclude from healthcheck
+	// interception. Matching is exact (no glob or prefix support).
+	SkipPaths []string
+
 	// LivePath is the URL path for the liveness probe.
 	// Default: "/livez".
 	LivePath string
@@ -70,9 +74,9 @@ const DefaultCheckerTimeout = 5 * time.Second
 // that cannot block.
 const FastPathTimeout = -1 * time.Second
 
-// DefaultConfig returns the default healthcheck middleware configuration.
+// defaultConfigCopy returns the default healthcheck middleware configuration.
 // Each call returns a fresh copy.
-func DefaultConfig() Config {
+func defaultConfigCopy() Config {
 	return defaultConfig
 }
 

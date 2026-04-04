@@ -3,6 +3,7 @@ package csrf
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,8 +12,15 @@ import (
 	"github.com/goceleris/celeris"
 	"github.com/goceleris/celeris/celeristest"
 
+	"github.com/goceleris/middlewares/internal/extract"
+	"github.com/goceleris/middlewares/internal/randutil"
 	"github.com/goceleris/middlewares/internal/testutil"
 )
+
+// validToken is a 64-char hex string representing a 32-byte raw token.
+const validToken = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+
+// --- Safe method tests ---
 
 func TestSafeMethodGeneratesToken(t *testing.T) {
 	mw := New()
@@ -28,8 +36,8 @@ func TestSafeMethodGeneratesToken(t *testing.T) {
 	if token == "" {
 		t.Fatal("expected non-empty CSRF token in context")
 	}
-	if len(token) != 128 { // 32 bytes masked: hex(mask) + hex(masked) = 128 chars
-		t.Fatalf("token length: got %d, want 128", len(token))
+	if len(token) != 64 { // 32 bytes = 64 hex chars
+		t.Fatalf("token length: got %d, want 64", len(token))
 	}
 }
 
@@ -58,7 +66,6 @@ func TestSafeMethodSetsCookie(t *testing.T) {
 }
 
 func TestSafeMethodReusesExistingCookie(t *testing.T) {
-	existing := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	mw := New()
 	var token string
 	handler := func(c *celeris.Context) error {
@@ -67,19 +74,16 @@ func TestSafeMethodReusesExistingCookie(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithCookie("_csrf", existing),
+		celeristest.WithCookie("_csrf", validToken),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
-	// Token in context is masked, so it differs from the raw cookie.
-	// Unmasking should recover the original token.
-	if unmaskToken(token, 32) != existing {
-		t.Fatalf("unmasked token %q does not match original %q", unmaskToken(token, 32), existing)
+	if token != validToken {
+		t.Fatalf("token %q does not match original %q", token, validToken)
 	}
-	// Cookie should be re-set with a masked (different from raw) value.
 	found := false
 	for _, h := range rec.Headers {
-		if h[0] == "set-cookie" && containsSubstring(h[1], "_csrf=") {
+		if h[0] == "set-cookie" && strings.Contains(h[1], "_csrf=") {
 			found = true
 			break
 		}
@@ -114,38 +118,35 @@ func TestSafeMethodGeneratesNewTokenWhenNoCookie(t *testing.T) {
 	}
 }
 
-func TestHEADMethodIsSafe(t *testing.T) {
-	mw := New()
-	var token string
-	handler := func(c *celeris.Context) error {
-		token = TokenFromContext(c)
-		return nil
+func TestSafeMethodVariants(t *testing.T) {
+	tests := []struct {
+		method string
+	}{
+		{"HEAD"},
+		{"OPTIONS"},
+		{"TRACE"},
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "HEAD", "/")
-	testutil.AssertNoError(t, err)
-	if token == "" {
-		t.Fatal("expected token for HEAD request")
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			mw := New()
+			var token string
+			handler := func(c *celeris.Context) error {
+				token = TokenFromContext(c)
+				return nil
+			}
+			chain := []celeris.HandlerFunc{mw, handler}
+			_, err := testutil.RunChain(t, chain, tt.method, "/")
+			testutil.AssertNoError(t, err)
+			if token == "" {
+				t.Fatalf("expected token for %s request", tt.method)
+			}
+		})
 	}
 }
 
-func TestOPTIONSMethodIsSafe(t *testing.T) {
-	mw := New()
-	var token string
-	handler := func(c *celeris.Context) error {
-		token = TokenFromContext(c)
-		return nil
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "OPTIONS", "/")
-	testutil.AssertNoError(t, err)
-	if token == "" {
-		t.Fatal("expected token for OPTIONS request")
-	}
-}
+// --- Unsafe method tests ---
 
 func TestUnsafeMethodValidatesToken(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	mw := New()
 	var stored string
 	handler := func(c *celeris.Context) error {
@@ -154,93 +155,90 @@ func TestUnsafeMethodValidatesToken(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
-	if stored != token {
-		t.Fatalf("context token: got %q, want %q", stored, token)
+	if stored != validToken {
+		t.Fatalf("context token: got %q, want %q", stored, validToken)
 	}
 }
 
-func TestUnsafeMethodMissingCookie(t *testing.T) {
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
+func TestUnsafeMethodRejections(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		opts   []celeristest.Option
+	}{
+		{"missing cookie", "POST", []celeristest.Option{
+			celeristest.WithHeader("x-csrf-token", "sometoken"),
+		}},
+		{"missing header", "POST", []celeristest.Option{
+			celeristest.WithCookie("_csrf", "sometoken"),
+		}},
+		{"token mismatch", "POST", []celeristest.Option{
+			celeristest.WithHeader("x-csrf-token", "aaaa"),
+			celeristest.WithCookie("_csrf", "bbbb"),
+		}},
+		{"PUT without token", "PUT", []celeristest.Option{
+			celeristest.WithCookie("_csrf", "tok"),
+		}},
+		{"DELETE without token", "DELETE", nil},
+		{"PATCH without token", "PATCH", nil},
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", "sometoken"),
-	)
-	testutil.AssertHTTPError(t, err, 403)
-}
-
-func TestUnsafeMethodMissingHeader(t *testing.T) {
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithCookie("_csrf", "sometoken"),
-	)
-	testutil.AssertHTTPError(t, err, 403)
-}
-
-func TestUnsafeMethodTokenMismatch(t *testing.T) {
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", "aaaa"),
-		celeristest.WithCookie("_csrf", "bbbb"),
-	)
-	testutil.AssertHTTPError(t, err, 403)
-}
-
-func TestPUTMethodIsUnsafe(t *testing.T) {
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "PUT", "/resource",
-		celeristest.WithCookie("_csrf", "tok"),
-	)
-	testutil.AssertHTTPError(t, err, 403)
-}
-
-func TestDELETEMethodIsUnsafe(t *testing.T) {
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "DELETE", "/resource")
-	testutil.AssertHTTPError(t, err, 403)
-}
-
-func TestPATCHMethodIsUnsafe(t *testing.T) {
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "PATCH", "/resource")
-	testutil.AssertHTTPError(t, err, 403)
-}
-
-func TestTokenFromContextNoToken(t *testing.T) {
-	ctx, _ := celeristest.NewContextT(t, "GET", "/")
-	if got := TokenFromContext(ctx); got != "" {
-		t.Fatalf("expected empty, got %q", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mw := New()
+			handler := func(c *celeris.Context) error {
+				return c.String(200, "ok")
+			}
+			chain := []celeris.HandlerFunc{mw, handler}
+			opts := append([]celeristest.Option{}, tt.opts...)
+			_, err := testutil.RunChain(t, chain, tt.method, "/resource", opts...)
+			testutil.AssertHTTPError(t, err, 403)
+		})
 	}
 }
 
-func TestTokenFromContextWithToken(t *testing.T) {
+// --- TokenFromContext tests ---
+
+func TestTokenFromContext(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func() (*celeris.Context, func())
+		wantEmpty bool
+	}{
+		{
+			"no token",
+			func() (*celeris.Context, func()) {
+				ctx, _ := celeristest.NewContextT(t, "GET", "/")
+				return ctx, func() {}
+			},
+			true,
+		},
+		{
+			"no handler in context",
+			func() (*celeris.Context, func()) {
+				ctx, _ := celeristest.NewContextT(t, "GET", "/")
+				return ctx, func() {}
+			},
+			true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cleanup := tt.setup()
+			defer cleanup()
+			got := TokenFromContext(ctx)
+			if tt.wantEmpty && got != "" {
+				t.Fatalf("expected empty, got %q", got)
+			}
+		})
+	}
+}
+
+func TestTokenFromContextWithMiddleware(t *testing.T) {
 	mw := New()
 	var token string
 	handler := func(c *celeris.Context) error {
@@ -254,32 +252,32 @@ func TestTokenFromContextWithToken(t *testing.T) {
 	}
 }
 
+// --- Token lookup tests ---
+
 func TestFormTokenLookup(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	mw := New(Config{TokenLookup: "form:_csrf"})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithCookie("_csrf", validToken),
 		celeristest.WithContentType("application/x-www-form-urlencoded"),
-		celeristest.WithBody([]byte("_csrf="+token)),
+		celeristest.WithBody([]byte("_csrf="+validToken)),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
 }
 
 func TestQueryTokenLookup(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	mw := New(Config{TokenLookup: "query:csrf_token"})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithQuery("csrf_token", token),
+		celeristest.WithCookie("_csrf", validToken),
+		celeristest.WithQuery("csrf_token", validToken),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
@@ -296,6 +294,8 @@ func TestQueryTokenLookupMissing(t *testing.T) {
 	)
 	testutil.AssertHTTPError(t, err, 403)
 }
+
+// --- Skip tests ---
 
 func TestSkipFunction(t *testing.T) {
 	mw := New(Config{
@@ -329,6 +329,8 @@ func TestSkipPaths(t *testing.T) {
 	_, err = testutil.RunChain(t, chain, "POST", "/other")
 	testutil.AssertHTTPError(t, err, 403)
 }
+
+// --- Error handler tests ---
 
 func TestCustomErrorHandler(t *testing.T) {
 	var receivedErr error
@@ -371,6 +373,8 @@ func TestCustomErrorHandlerOnMismatch(t *testing.T) {
 	}
 }
 
+// --- Cookie option tests ---
+
 func TestCookieOptionsAreSet(t *testing.T) {
 	mw := New(Config{
 		CookieName:     "my_csrf",
@@ -394,25 +398,25 @@ func TestCookieOptionsAreSet(t *testing.T) {
 		if h[0] == "set-cookie" {
 			found = true
 			v := h[1]
-			if !containsSubstring(v, "my_csrf=") {
+			if !strings.Contains(v, "my_csrf=") {
 				t.Fatalf("cookie name not found in set-cookie: %s", v)
 			}
-			if !containsSubstring(v, "Path=/app") {
+			if !strings.Contains(v, "Path=/app") {
 				t.Fatalf("cookie path not found in set-cookie: %s", v)
 			}
-			if !containsSubstring(v, "Domain=example.com") {
+			if !strings.Contains(v, "Domain=example.com") {
 				t.Fatalf("cookie domain not found in set-cookie: %s", v)
 			}
-			if !containsSubstring(v, "Max-Age=3600") {
+			if !strings.Contains(v, "Max-Age=3600") {
 				t.Fatalf("cookie max-age not found in set-cookie: %s", v)
 			}
-			if !containsSubstring(v, "Secure") {
+			if !strings.Contains(v, "Secure") {
 				t.Fatalf("cookie Secure not found in set-cookie: %s", v)
 			}
-			if !containsSubstring(v, "HttpOnly") {
+			if !strings.Contains(v, "HttpOnly") {
 				t.Fatalf("cookie HttpOnly not found in set-cookie: %s", v)
 			}
-			if !containsSubstring(v, "SameSite=Strict") {
+			if !strings.Contains(v, "SameSite=Strict") {
 				t.Fatalf("cookie SameSite=Strict not found in set-cookie: %s", v)
 			}
 			break
@@ -423,33 +427,51 @@ func TestCookieOptionsAreSet(t *testing.T) {
 	}
 }
 
+func TestSessionCookieMaxAgeZero(t *testing.T) {
+	mw := New(Config{CookieMaxAge: 0})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+
+	for _, h := range rec.Headers {
+		if h[0] == "set-cookie" {
+			if strings.Contains(h[1], "Max-Age") {
+				t.Fatalf("expected no Max-Age in session cookie, got: %s", h[1])
+			}
+			return
+		}
+	}
+	t.Fatal("expected set-cookie header")
+}
+
+// --- defaultConfig tests ---
+
 func TestDefaultConfigValues(t *testing.T) {
-	if DefaultConfig.TokenLength != 32 {
-		t.Fatalf("TokenLength: got %d, want 32", DefaultConfig.TokenLength)
+	tests := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"TokenLength", defaultConfig.TokenLength, 32},
+		{"TokenLookup", defaultConfig.TokenLookup, "header:X-CSRF-Token"},
+		{"CookieName", defaultConfig.CookieName, "_csrf"},
+		{"CookiePath", defaultConfig.CookiePath, "/"},
+		{"CookieMaxAge", defaultConfig.CookieMaxAge, 86400},
+		{"CookieHTTPOnly", defaultConfig.CookieHTTPOnly, true},
+		{"CookieSameSite", defaultConfig.CookieSameSite, celeris.SameSiteLaxMode},
+		{"Expiration", defaultConfig.Expiration, time.Hour},
+		{"ContextKey", defaultConfig.ContextKey, "csrf_token"},
 	}
-	if DefaultConfig.TokenLookup != "header:X-CSRF-Token" {
-		t.Fatalf("TokenLookup: got %q, want %q", DefaultConfig.TokenLookup, "header:X-CSRF-Token")
-	}
-	if DefaultConfig.CookieName != "_csrf" {
-		t.Fatalf("CookieName: got %q, want %q", DefaultConfig.CookieName, "_csrf")
-	}
-	if DefaultConfig.CookiePath != "/" {
-		t.Fatalf("CookiePath: got %q, want %q", DefaultConfig.CookiePath, "/")
-	}
-	if DefaultConfig.CookieMaxAge != 86400 {
-		t.Fatalf("CookieMaxAge: got %d, want 86400", DefaultConfig.CookieMaxAge)
-	}
-	if !DefaultConfig.CookieHTTPOnly {
-		t.Fatal("CookieHTTPOnly: expected true")
-	}
-	if DefaultConfig.CookieSameSite != celeris.SameSiteLaxMode {
-		t.Fatalf("CookieSameSite: got %v, want SameSiteLaxMode", DefaultConfig.CookieSameSite)
-	}
-	if DefaultConfig.Expiration != time.Hour {
-		t.Fatalf("Expiration: got %v, want 1h", DefaultConfig.Expiration)
-	}
-	if DefaultConfig.ContextKey != "csrf_token" {
-		t.Fatalf("ContextKey: got %q, want %q", DefaultConfig.ContextKey, "csrf_token")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("got %v, want %v", tt.got, tt.want)
+			}
+		})
 	}
 }
 
@@ -459,99 +481,167 @@ func TestContextKeyConstant(t *testing.T) {
 	}
 }
 
-func TestInvalidTokenLookupFormatPanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for invalid TokenLookup format")
-		}
-	}()
-	New(Config{TokenLookup: "invalid"})
-}
+// --- validate() / panic tests ---
 
-func TestInvalidTokenLookupSourcePanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for unsupported TokenLookup source")
-		}
-	}()
-	New(Config{TokenLookup: "cookie:token"})
-}
-
-func TestQueryTokenLookupIsValid(t *testing.T) {
-	// query: should not panic (it's now supported).
-	_ = New(Config{TokenLookup: "query:token"})
-}
-
-func TestApplyDefaultsFixesZeroTokenLength(t *testing.T) {
-	cfg := applyDefaults(Config{TokenLength: 0})
-	if cfg.TokenLength != 32 {
-		t.Fatalf("expected 32, got %d", cfg.TokenLength)
+func TestValidationPanics(t *testing.T) {
+	tests := []struct {
+		name   string
+		action func()
+	}{
+		{"invalid TokenLookup format", func() { New(Config{TokenLookup: "invalid"}) }},
+		{"unsupported TokenLookup source", func() { New(Config{TokenLookup: "socket:token"}) }},
+		{"TokenLength exceeds 32", func() { New(Config{TokenLength: 33}) }},
+		{"SameSite=None without Secure", func() {
+			New(Config{CookieSameSite: celeris.SameSiteNoneMode, CookieSecure: false})
+		}},
+		{"SingleUseToken without Storage", func() { New(Config{SingleUseToken: true}) }},
+		{"wildcard HTTP origin", func() {
+			New(Config{TrustedOrigins: []string{"http://*.example.com"}})
+		}},
+		{"wildcard no-scheme origin", func() {
+			New(Config{TrustedOrigins: []string{"*.example.com"}})
+		}},
+		{"mixed origins HTTP wildcard", func() {
+			New(Config{TrustedOrigins: []string{"https://trusted.example.com", "http://*.evil.com"}})
+		}},
+		{"invalid segment in multi-extractor", func() {
+			New(Config{TokenLookup: "header:X-CSRF-Token,bad"})
+		}},
+		{"invalid source in comma lookup", func() {
+			New(Config{TokenLookup: "header:X-CSRF-Token,socket:val"})
+		}},
+		{"extract parse no colon", func() { extract.Parse("headeronly") }},
+		{"extract parse unsupported source", func() { extract.Parse("socket:val") }},
 	}
-}
-
-func TestApplyDefaultsFixesNegativeTokenLength(t *testing.T) {
-	cfg := applyDefaults(Config{TokenLength: -5})
-	if cfg.TokenLength != 32 {
-		t.Fatalf("expected 32, got %d", cfg.TokenLength)
-	}
-}
-
-func TestApplyDefaultsPreservesCustomValues(t *testing.T) {
-	cfg := applyDefaults(Config{
-		TokenLength:  16,
-		TokenLookup:  "form:csrf_tok",
-		CookieName:   "my_tok",
-		CookiePath:   "/api",
-		CookieMaxAge: 7200,
-	})
-	if cfg.TokenLength != 16 {
-		t.Fatalf("TokenLength: got %d, want 16", cfg.TokenLength)
-	}
-	if cfg.TokenLookup != "form:csrf_tok" {
-		t.Fatalf("TokenLookup: got %q", cfg.TokenLookup)
-	}
-	if cfg.CookieName != "my_tok" {
-		t.Fatalf("CookieName: got %q", cfg.CookieName)
-	}
-	if cfg.CookiePath != "/api" {
-		t.Fatalf("CookiePath: got %q", cfg.CookiePath)
-	}
-	if cfg.CookieMaxAge != 7200 {
-		t.Fatalf("CookieMaxAge: got %d", cfg.CookieMaxAge)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatalf("expected panic for %s", tt.name)
+				}
+			}()
+			tt.action()
+		})
 	}
 }
 
-func TestApplyDefaultsIndependentFields(t *testing.T) {
-	// Setting CookieSameSite alone should not prevent SafeMethods from getting defaults.
-	cfg := applyDefaults(Config{
-		CookieSameSite: celeris.SameSiteStrictMode,
-	})
-	if len(cfg.SafeMethods) == 0 {
-		t.Fatal("SafeMethods should be defaulted independently")
+func TestValidationNoPanic(t *testing.T) {
+	tests := []struct {
+		name   string
+		action func()
+	}{
+		{"query TokenLookup", func() { New(Config{TokenLookup: "query:token"}) }},
+		{"SameSite=None with Secure", func() {
+			New(Config{CookieSameSite: celeris.SameSiteNoneMode, CookieSecure: true})
+		}},
+		{"wildcard HTTPS origin", func() {
+			New(Config{TrustedOrigins: []string{"https://*.example.com"}})
+		}},
+		{"exact HTTP origin", func() {
+			New(Config{TrustedOrigins: []string{"http://trusted.example.com"}})
+		}},
+		{"exact HTTPS origin", func() {
+			New(Config{TrustedOrigins: []string{"https://trusted.example.com"}})
+		}},
+		{"mixed valid origins", func() {
+			New(Config{TrustedOrigins: []string{"http://trusted.example.com", "https://*.example.com"}})
+		}},
+		{"comma-separated lookup", func() {
+			New(Config{TokenLookup: "header:X-CSRF-Token,form:_csrf"})
+		}},
 	}
-	if cfg.CookieSameSite != celeris.SameSiteStrictMode {
-		t.Fatalf("CookieSameSite: got %v, want SameSiteStrictMode", cfg.CookieSameSite)
-	}
-	if !cfg.CookieHTTPOnly {
-		t.Fatal("CookieHTTPOnly should default to true")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("unexpected panic: %v", r)
+				}
+			}()
+			tt.action()
+		})
 	}
 }
 
-func TestApplyDefaultsDisableCookieHTTPOnly(t *testing.T) {
-	cfg := applyDefaults(Config{
-		DisableCookieHTTPOnly: true,
-	})
-	if cfg.CookieHTTPOnly {
-		t.Fatal("CookieHTTPOnly should be false when DisableCookieHTTPOnly is set")
+// --- applyDefaults tests ---
+
+func TestApplyDefaults(t *testing.T) {
+	tests := []struct {
+		name  string
+		input Config
+		check func(t *testing.T, cfg Config)
+	}{
+		{"zero TokenLength", Config{TokenLength: 0}, func(t *testing.T, cfg Config) {
+			if cfg.TokenLength != 32 {
+				t.Fatalf("expected 32, got %d", cfg.TokenLength)
+			}
+		}},
+		{"negative TokenLength", Config{TokenLength: -5}, func(t *testing.T, cfg Config) {
+			if cfg.TokenLength != 32 {
+				t.Fatalf("expected 32, got %d", cfg.TokenLength)
+			}
+		}},
+		{"custom values preserved", Config{
+			TokenLength: 16, TokenLookup: "form:csrf_tok",
+			CookieName: "my_tok", CookiePath: "/api",
+		}, func(t *testing.T, cfg Config) {
+			if cfg.TokenLength != 16 {
+				t.Fatalf("TokenLength: got %d", cfg.TokenLength)
+			}
+			if cfg.TokenLookup != "form:csrf_tok" {
+				t.Fatalf("TokenLookup: got %q", cfg.TokenLookup)
+			}
+			if cfg.CookieName != "my_tok" {
+				t.Fatalf("CookieName: got %q", cfg.CookieName)
+			}
+			if cfg.CookiePath != "/api" {
+				t.Fatalf("CookiePath: got %q", cfg.CookiePath)
+			}
+		}},
+		{"independent fields", Config{CookieSameSite: celeris.SameSiteStrictMode}, func(t *testing.T, cfg Config) {
+			if len(cfg.SafeMethods) == 0 {
+				t.Fatal("SafeMethods should be defaulted independently")
+			}
+			if cfg.CookieSameSite != celeris.SameSiteStrictMode {
+				t.Fatalf("CookieSameSite: got %v", cfg.CookieSameSite)
+			}
+		}},
+		{"default Expiration", Config{}, func(t *testing.T, cfg Config) {
+			if cfg.Expiration != time.Hour {
+				t.Fatalf("expected 1h, got %v", cfg.Expiration)
+			}
+		}},
+		{"custom Expiration", Config{Expiration: 2 * time.Hour}, func(t *testing.T, cfg Config) {
+			if cfg.Expiration != 2*time.Hour {
+				t.Fatalf("expected 2h, got %v", cfg.Expiration)
+			}
+		}},
+		{"default ContextKey", Config{}, func(t *testing.T, cfg Config) {
+			if cfg.ContextKey != "csrf_token" {
+				t.Fatalf("expected csrf_token, got %q", cfg.ContextKey)
+			}
+		}},
+		{"custom ContextKey", Config{ContextKey: "custom"}, func(t *testing.T, cfg Config) {
+			if cfg.ContextKey != "custom" {
+				t.Fatalf("expected custom, got %q", cfg.ContextKey)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := applyDefaults(tt.input)
+			tt.check(t, cfg)
+		})
 	}
 }
+
+// --- token generation tests ---
 
 func TestGenerateTokenLength(t *testing.T) {
-	tok := generateToken(16)
+	tok := randutil.HexToken(16)
 	if len(tok) != 32 {
 		t.Fatalf("expected 32 hex chars for 16 bytes, got %d", len(tok))
 	}
-	tok = generateToken(32)
+	tok = randutil.HexToken(32)
 	if len(tok) != 64 {
 		t.Fatalf("expected 64 hex chars for 32 bytes, got %d", len(tok))
 	}
@@ -560,7 +650,7 @@ func TestGenerateTokenLength(t *testing.T) {
 func TestGenerateTokenUniqueness(t *testing.T) {
 	seen := make(map[string]struct{}, 100)
 	for range 100 {
-		tok := generateToken(32)
+		tok := randutil.HexToken(32)
 		if _, ok := seen[tok]; ok {
 			t.Fatal("generated duplicate token")
 		}
@@ -568,20 +658,7 @@ func TestGenerateTokenUniqueness(t *testing.T) {
 	}
 }
 
-func TestTRACEMethodIsSafe(t *testing.T) {
-	mw := New()
-	var token string
-	handler := func(c *celeris.Context) error {
-		token = TokenFromContext(c)
-		return nil
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "TRACE", "/")
-	testutil.AssertNoError(t, err)
-	if token == "" {
-		t.Fatal("expected token for TRACE request")
-	}
-}
+// --- Custom SafeMethods ---
 
 func TestCustomSafeMethods(t *testing.T) {
 	mw := New(Config{SafeMethods: []string{"GET"}})
@@ -590,7 +667,6 @@ func TestCustomSafeMethods(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 
-	// GET is still safe.
 	rec, err := testutil.RunChain(t, chain, "GET", "/")
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
@@ -599,6 +675,8 @@ func TestCustomSafeMethods(t *testing.T) {
 	_, err = testutil.RunChain(t, chain, "HEAD", "/")
 	testutil.AssertHTTPError(t, err, 403)
 }
+
+// --- Vary header tests ---
 
 func TestVaryCookieHeaderOnSafeMethod(t *testing.T) {
 	mw := New()
@@ -612,101 +690,124 @@ func TestVaryCookieHeaderOnSafeMethod(t *testing.T) {
 }
 
 func TestVaryCookieHeaderOnUnsafeMethod(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	mw := New()
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertHeader(t, rec, "vary", "Cookie")
 }
 
-func TestSecFetchSiteCrossSiteRejected(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+func TestVaryHeaderDoesNotClobber(t *testing.T) {
 	mw := New()
+	preMiddleware := func(c *celeris.Context) error {
+		c.AddHeader("vary", "Accept-Encoding")
+		return c.Next()
+	}
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("sec-fetch-site", "cross-site"),
-	)
-	testutil.AssertHTTPError(t, err, 403)
-}
-
-func TestSecFetchSiteSameOriginAllowed(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("sec-fetch-site", "same-origin"),
-	)
+	chain := []celeris.HandlerFunc{preMiddleware, mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
+
+	foundEncoding := false
+	foundCookie := false
+	for _, h := range rec.Headers {
+		if h[0] == "vary" && h[1] == "Accept-Encoding" {
+			foundEncoding = true
+		}
+		if h[0] == "vary" && h[1] == "Cookie" {
+			foundCookie = true
+		}
+	}
+	if !foundEncoding {
+		t.Fatal("expected Vary: Accept-Encoding to be preserved")
+	}
+	if !foundCookie {
+		t.Fatal("expected Vary: Cookie to be added")
+	}
 }
 
-func TestOriginMismatchRejected(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
+// --- Sec-Fetch-Site tests ---
+
+func TestSecFetchSite(t *testing.T) {
+	tests := []struct {
+		name       string
+		value      string
+		wantStatus int
+	}{
+		{"cross-site rejected", "cross-site", 403},
+		{"same-origin allowed", "same-origin", 200},
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// Default :authority is "localhost", origin is different.
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("origin", "https://evil.com"),
-	)
-	testutil.AssertHTTPError(t, err, 403)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mw := New()
+			handler := func(c *celeris.Context) error {
+				return c.String(200, "ok")
+			}
+			chain := []celeris.HandlerFunc{mw, handler}
+			rec, err := testutil.RunChain(t, chain, "POST", "/submit",
+				celeristest.WithHeader("x-csrf-token", validToken),
+				celeristest.WithCookie("_csrf", validToken),
+				celeristest.WithHeader("sec-fetch-site", tt.value),
+			)
+			if tt.wantStatus == 403 {
+				testutil.AssertHTTPError(t, err, 403)
+			} else {
+				testutil.AssertNoError(t, err)
+				testutil.AssertStatus(t, rec, 200)
+			}
+		})
+	}
 }
 
-func TestOriginMatchAllowed(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
+// --- Origin validation tests ---
+
+func TestOriginValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		origin     string
+		wantStatus int
+	}{
+		{"mismatch rejected", "https://evil.com", 403},
+		{"match allowed", "https://localhost", 200},
+		{"no header allowed", "", 200},
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// :authority defaults to "localhost" in celeristest.
-	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("origin", "https://localhost"),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mw := New()
+			handler := func(c *celeris.Context) error {
+				return c.String(200, "ok")
+			}
+			chain := []celeris.HandlerFunc{mw, handler}
+			opts := []celeristest.Option{
+				celeristest.WithHeader("x-csrf-token", validToken),
+				celeristest.WithCookie("_csrf", validToken),
+			}
+			if tt.origin != "" {
+				opts = append(opts, celeristest.WithHeader("origin", tt.origin))
+			}
+			rec, err := testutil.RunChain(t, chain, "POST", "/submit", opts...)
+			if tt.wantStatus == 403 {
+				testutil.AssertHTTPError(t, err, 403)
+			} else {
+				testutil.AssertNoError(t, err)
+				testutil.AssertStatus(t, rec, 200)
+			}
+		})
+	}
 }
 
-func TestOriginNoHeaderAllowed(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-}
+// --- Trusted origins tests ---
 
 func TestTrustedOriginsAllowed(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	mw := New(Config{
 		TrustedOrigins: []string{"https://trusted.example.com"},
 	})
@@ -715,8 +816,8 @@ func TestTrustedOriginsAllowed(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
 		celeristest.WithHeader("origin", "https://trusted.example.com"),
 	)
 	testutil.AssertNoError(t, err)
@@ -724,7 +825,6 @@ func TestTrustedOriginsAllowed(t *testing.T) {
 }
 
 func TestTrustedOriginsUnlistedRejected(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	mw := New(Config{
 		TrustedOrigins: []string{"https://trusted.example.com"},
 	})
@@ -733,52 +833,113 @@ func TestTrustedOriginsUnlistedRejected(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
 		celeristest.WithHeader("origin", "https://untrusted.example.com"),
 	)
 	testutil.AssertHTTPError(t, err, 403)
 }
 
-func TestSecFetchSiteWithErrorHandler(t *testing.T) {
-	var receivedErr error
-	mw := New(Config{
-		ErrorHandler: func(_ *celeris.Context, err error) error {
-			receivedErr = err
-			return celeris.NewHTTPError(418, "custom")
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
+// --- Error handler + sentinel tests ---
+
+func TestErrorHandlerReceivesSentinels(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    []celeristest.Option
+		wantErr error
+	}{
+		{"ErrSecFetchSite", []celeristest.Option{
+			celeristest.WithHeader("sec-fetch-site", "cross-site"),
+		}, ErrSecFetchSite},
+		{"ErrOriginMismatch", []celeristest.Option{
+			celeristest.WithHeader("origin", "https://evil.com"),
+		}, ErrOriginMismatch},
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("sec-fetch-site", "cross-site"),
-	)
-	testutil.AssertHTTPError(t, err, 418)
-	if !errors.Is(receivedErr, ErrSecFetchSite) {
-		t.Fatalf("expected ErrSecFetchSite, got %v", receivedErr)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var receivedErr error
+			mw := New(Config{
+				ErrorHandler: func(_ *celeris.Context, err error) error {
+					receivedErr = err
+					return celeris.NewHTTPError(418, "custom")
+				},
+			})
+			handler := func(c *celeris.Context) error {
+				return c.String(200, "ok")
+			}
+			chain := []celeris.HandlerFunc{mw, handler}
+			_, err := testutil.RunChain(t, chain, "POST", "/submit", tt.opts...)
+			testutil.AssertHTTPError(t, err, 418)
+			if !errors.Is(receivedErr, tt.wantErr) {
+				t.Fatalf("expected %v, got %v", tt.wantErr, receivedErr)
+			}
+		})
 	}
 }
 
-func TestOriginMismatchWithErrorHandler(t *testing.T) {
-	var receivedErr error
-	mw := New(Config{
-		ErrorHandler: func(_ *celeris.Context, err error) error {
-			receivedErr = err
-			return celeris.NewHTTPError(418, "custom")
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
+// --- Granular sentinel error tests ---
+
+func TestGranularErrorSentinels(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    []celeristest.Option
+		wantErr error
+	}{
+		{"ErrSecFetchSite on cross-site", []celeristest.Option{
+			celeristest.WithHeader("x-csrf-token", validToken),
+			celeristest.WithCookie("_csrf", validToken),
+			celeristest.WithHeader("sec-fetch-site", "cross-site"),
+		}, ErrSecFetchSite},
+		{"ErrOriginMismatch on bad origin", []celeristest.Option{
+			celeristest.WithHeader("x-csrf-token", validToken),
+			celeristest.WithCookie("_csrf", validToken),
+			celeristest.WithHeader("origin", "https://evil.com"),
+		}, ErrOriginMismatch},
+		{"ErrRefererMissing on HTTPS no referer", []celeristest.Option{
+			celeristest.WithHeader("x-csrf-token", validToken),
+			celeristest.WithCookie("_csrf", validToken),
+			celeristest.WithHeader("x-forwarded-proto", "https"),
+		}, ErrRefererMissing},
+		{"ErrRefererMismatch on HTTPS bad referer", []celeristest.Option{
+			celeristest.WithHeader("x-csrf-token", validToken),
+			celeristest.WithCookie("_csrf", validToken),
+			celeristest.WithHeader("x-forwarded-proto", "https"),
+			celeristest.WithHeader("referer", "https://evil.com/page"),
+		}, ErrRefererMismatch},
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("origin", "https://evil.com"),
-	)
-	testutil.AssertHTTPError(t, err, 418)
-	if !errors.Is(receivedErr, ErrOriginMismatch) {
-		t.Fatalf("expected ErrOriginMismatch, got %v", receivedErr)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mw := New()
+			handler := func(c *celeris.Context) error {
+				return c.String(200, "ok")
+			}
+			chain := []celeris.HandlerFunc{mw, handler}
+			_, err := testutil.RunChain(t, chain, "POST", "/submit", tt.opts...)
+			testutil.AssertHTTPError(t, err, 403)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected %v, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestGranularErrorSentinelsAreDistinct(t *testing.T) {
+	sentinels := []error{
+		ErrForbidden,
+		ErrMissingToken,
+		ErrTokenNotFound,
+		ErrOriginMismatch,
+		ErrRefererMissing,
+		ErrRefererMismatch,
+		ErrSecFetchSite,
+	}
+	seen := make(map[string]bool, len(sentinels))
+	for _, e := range sentinels {
+		msg := e.Error()
+		if seen[msg] {
+			t.Fatalf("duplicate sentinel message: %q", msg)
+		}
+		seen[msg] = true
 	}
 }
 
@@ -809,71 +970,9 @@ func TestIsOriginAllowed(t *testing.T) {
 	}
 }
 
-func TestTokenLengthExceeds32Panics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for TokenLength > 32")
-		}
-	}()
-	New(Config{TokenLength: 33})
-}
-
-func TestSameSiteNoneWithoutSecurePanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for SameSite=None without Secure")
-		}
-	}()
-	New(Config{
-		CookieSameSite: celeris.SameSiteNoneMode,
-		CookieSecure:   false,
-	})
-}
-
-func TestSameSiteNoneWithSecureOk(t *testing.T) {
-	// Should not panic.
-	_ = New(Config{
-		CookieSameSite: celeris.SameSiteNoneMode,
-		CookieSecure:   true,
-	})
-}
-
-func TestVaryHeaderDoesNotClobber(t *testing.T) {
-	mw := New()
-	// Set a Vary header before the CSRF middleware runs.
-	preMiddleware := func(c *celeris.Context) error {
-		c.AddHeader("vary", "Accept-Encoding")
-		return c.Next()
-	}
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{preMiddleware, mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-
-	// Both Vary values must be present as separate header entries.
-	foundEncoding := false
-	foundCookie := false
-	for _, h := range rec.Headers {
-		if h[0] == "vary" && h[1] == "Accept-Encoding" {
-			foundEncoding = true
-		}
-		if h[0] == "vary" && h[1] == "Cookie" {
-			foundCookie = true
-		}
-	}
-	if !foundEncoding {
-		t.Fatal("expected Vary: Accept-Encoding to be preserved")
-	}
-	if !foundCookie {
-		t.Fatal("expected Vary: Cookie to be added")
-	}
-}
+// --- Referer tests ---
 
 func TestRefererFallbackHTTPS(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	mw := New()
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
@@ -882,8 +981,8 @@ func TestRefererFallbackHTTPS(t *testing.T) {
 
 	// HTTPS request with mismatched Referer and no Origin should be rejected.
 	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
 		celeristest.WithHeader("x-forwarded-proto", "https"),
 		celeristest.WithHeader("referer", "https://evil.com/page"),
 	)
@@ -891,17 +990,15 @@ func TestRefererFallbackHTTPS(t *testing.T) {
 }
 
 func TestRefererFallbackHTTPSMatchingHost(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	mw := New()
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 
-	// HTTPS request with matching Referer and no Origin should pass.
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
 		celeristest.WithHeader("x-forwarded-proto", "https"),
 		celeristest.WithHeader("referer", "https://localhost/page"),
 	)
@@ -910,18 +1007,71 @@ func TestRefererFallbackHTTPSMatchingHost(t *testing.T) {
 }
 
 func TestRefererFallbackSkippedOnHTTP(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	mw := New()
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 
-	// HTTP request (default) with mismatched Referer: referer check skipped.
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
 		celeristest.WithHeader("referer", "https://evil.com/page"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestRefererFullURLExtractsOriginForComparison(t *testing.T) {
+	mw := New(Config{
+		TrustedOrigins: []string{"https://trusted.example.com"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
+		celeristest.WithHeader("x-forwarded-proto", "https"),
+		celeristest.WithHeader("referer", "https://trusted.example.com/some/path?q=1"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestRefererWithPathMatchesHost(t *testing.T) {
+	mw := New()
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
+		celeristest.WithHeader("x-forwarded-proto", "https"),
+		celeristest.WithHeader("referer", "https://localhost/deep/path?key=value"),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+}
+
+func TestRefererWildcardMatchesOriginOnly(t *testing.T) {
+	mw := New(Config{
+		TrustedOrigins: []string{"https://*.example.com"},
+	})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
+		celeristest.WithHeader("x-forwarded-proto", "https"),
+		celeristest.WithHeader("referer", "https://app.example.com/api/v1/action"),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
@@ -946,14 +1096,12 @@ func TestStorageSafeMethodStoresToken(t *testing.T) {
 	if token == "" {
 		t.Fatal("expected token")
 	}
-	// Context token is masked; unmask to recover the raw token for storage lookup.
-	raw := unmaskToken(token, 32)
-	stored, ok := store.Get(storageKey(raw))
+	stored, ok := store.Get(storageKey(token))
 	if !ok {
 		t.Fatal("token not found in storage")
 	}
-	if stored != raw {
-		t.Fatalf("stored token %q != raw token %q", stored, raw)
+	if stored != token {
+		t.Fatalf("stored token %q != context token %q", stored, token)
 	}
 }
 
@@ -961,17 +1109,15 @@ func TestStorageUnsafeMethodValidates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(storageKey(raw), raw, time.Hour)
-	masked := maskToken(raw, 32)
+	store.Set(storageKey(validToken), validToken, time.Hour)
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", masked),
-		celeristest.WithCookie("_csrf", masked),
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
@@ -981,19 +1127,16 @@ func TestStorageUnsafeMethodRejectsExpiredToken(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	// Store with a past expiry.
-	store.Set(storageKey(raw), raw, time.Nanosecond)
+	store.Set(storageKey(validToken), validToken, time.Nanosecond)
 	time.Sleep(time.Millisecond)
-	masked := maskToken(raw, 32)
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", masked),
-		celeristest.WithCookie("_csrf", masked),
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
 	)
 	testutil.AssertHTTPError(t, err, 403)
 }
@@ -1002,8 +1145,6 @@ func TestStorageUnsafeMethodRejectsMissingStorageToken(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	masked := maskToken(raw, 32)
 	// Token in cookie but NOT in storage.
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
@@ -1011,8 +1152,8 @@ func TestStorageUnsafeMethodRejectsMissingStorageToken(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", masked),
-		celeristest.WithCookie("_csrf", masked),
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
 	)
 	testutil.AssertHTTPError(t, err, 403)
 }
@@ -1021,9 +1162,7 @@ func TestStorageUnsafeMethodRejectsMismatchedRequestToken(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(storageKey(raw), raw, time.Hour)
-	masked := maskToken(raw, 32)
+	store.Set(storageKey(validToken), validToken, time.Hour)
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
@@ -1031,7 +1170,7 @@ func TestStorageUnsafeMethodRejectsMismatchedRequestToken(t *testing.T) {
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, err := testutil.RunChain(t, chain, "POST", "/submit",
 		celeristest.WithHeader("x-csrf-token", "wrong"),
-		celeristest.WithCookie("_csrf", masked),
+		celeristest.WithCookie("_csrf", validToken),
 	)
 	testutil.AssertHTTPError(t, err, 403)
 }
@@ -1052,7 +1191,6 @@ func TestStorageSafeMethodRegeneratesWhenNotInStorage(t *testing.T) {
 		celeristest.WithCookie("_csrf", oldCookie),
 	)
 	testutil.AssertNoError(t, err)
-	// Token should NOT be the stale cookie since it's not in storage.
 	if token == oldCookie {
 		t.Fatal("expected new token, got stale cookie value")
 	}
@@ -1067,9 +1205,7 @@ func TestSingleUseTokenDeletesAfterValidation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(storageKey(raw), raw, time.Hour)
-	masked := maskToken(raw, 32)
+	store.Set(storageKey(validToken), validToken, time.Hour)
 	mw := New(Config{Storage: store, SingleUseToken: true})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
@@ -1078,92 +1214,89 @@ func TestSingleUseTokenDeletesAfterValidation(t *testing.T) {
 
 	// First request: succeeds.
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", masked),
-		celeristest.WithCookie("_csrf", masked),
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
 
 	// Token should be deleted from storage.
-	_, ok := store.Get(storageKey(raw))
+	_, ok := store.Get(storageKey(validToken))
 	if ok {
 		t.Fatal("expected token to be deleted from storage after single use")
 	}
 
 	// Second request with same token: fails.
 	_, err = testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", masked),
-		celeristest.WithCookie("_csrf", masked),
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
 	)
 	testutil.AssertHTTPError(t, err, 403)
 }
 
-func TestSingleUseTokenWithoutStoragePanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for SingleUseToken without Storage")
-		}
-	}()
-	New(Config{SingleUseToken: true})
+func TestSingleUseTokenAtomicGetAndDelete(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
+	store.Set(storageKey(validToken), validToken, time.Hour)
+	mw := New(Config{Storage: store, SingleUseToken: true})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
+	)
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+
+	_, ok := store.Get(storageKey(validToken))
+	if ok {
+		t.Fatal("expected token deleted after single use")
+	}
 }
 
 // --- Wildcard TrustedOrigins tests ---
 
-func TestWildcardTrustedOriginAllowed(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New(Config{
-		TrustedOrigins: []string{"https://*.example.com"},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
+func TestWildcardTrustedOrigins(t *testing.T) {
+	tests := []struct {
+		name       string
+		origin     string
+		wantStatus int
+	}{
+		{"subdomain allowed", "https://app.example.com", 200},
+		{"deep subdomain rejected", "https://deep.sub.example.com", 403},
+		{"no match rejected", "https://evil.com", 403},
+		{"leading dot rejected", "https://.evil.example.com", 403},
+		{"double dot rejected", "https://sub..evil.example.com", 403},
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("origin", "https://app.example.com"),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-}
-
-func TestWildcardTrustedOriginDeepSubdomain(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New(Config{
-		TrustedOrigins: []string{"https://*.example.com"},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mw := New(Config{
+				TrustedOrigins: []string{"https://*.example.com"},
+			})
+			handler := func(c *celeris.Context) error {
+				return c.String(200, "ok")
+			}
+			chain := []celeris.HandlerFunc{mw, handler}
+			rec, err := testutil.RunChain(t, chain, "POST", "/submit",
+				celeristest.WithHeader("x-csrf-token", validToken),
+				celeristest.WithCookie("_csrf", validToken),
+				celeristest.WithHeader("origin", tt.origin),
+			)
+			if tt.wantStatus == 403 {
+				testutil.AssertHTTPError(t, err, 403)
+			} else {
+				testutil.AssertNoError(t, err)
+				testutil.AssertStatus(t, rec, 200)
+			}
+		})
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("origin", "https://deep.sub.example.com"),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-}
-
-func TestWildcardTrustedOriginNoMatchRejected(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New(Config{
-		TrustedOrigins: []string{"https://*.example.com"},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("origin", "https://evil.com"),
-	)
-	testutil.AssertHTTPError(t, err, 403)
 }
 
 func TestWildcardTrustedOriginMixedWithExact(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	mw := New(Config{
 		TrustedOrigins: []string{
 			"https://exact.example.com",
@@ -1177,8 +1310,8 @@ func TestWildcardTrustedOriginMixedWithExact(t *testing.T) {
 
 	// Exact match.
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
 		celeristest.WithHeader("origin", "https://exact.example.com"),
 	)
 	testutil.AssertNoError(t, err)
@@ -1186,8 +1319,8 @@ func TestWildcardTrustedOriginMixedWithExact(t *testing.T) {
 
 	// Wildcard match.
 	rec, err = testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
 		celeristest.WithHeader("origin", "https://sub.wildcard.com"),
 	)
 	testutil.AssertNoError(t, err)
@@ -1201,10 +1334,11 @@ func TestWildcardOriginMatch(t *testing.T) {
 		origin  string
 		want    bool
 	}{
-		{"match", wildcardOrigin{"https://", ".example.com"}, "https://app.example.com", true},
-		{"no match", wildcardOrigin{"https://", ".example.com"}, "https://evil.com", false},
-		{"too short", wildcardOrigin{"https://", ".example.com"}, "https://.example.com", false},
-		{"deep sub", wildcardOrigin{"https://", ".example.com"}, "https://a.b.example.com", true},
+		{"match", wildcardOrigin{"https://", ".example.com", 1}, "https://app.example.com", true},
+		{"no match", wildcardOrigin{"https://", ".example.com", 1}, "https://evil.com", false},
+		{"too short", wildcardOrigin{"https://", ".example.com", 1}, "https://.example.com", false},
+		{"deep sub rejected", wildcardOrigin{"https://", ".example.com", 1}, "https://a.b.example.com", false},
+		{"deep sub unlimited", wildcardOrigin{"https://", ".example.com", 0}, "https://a.b.example.com", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1216,34 +1350,32 @@ func TestWildcardOriginMatch(t *testing.T) {
 	}
 }
 
-// --- Multiple extractors (comma-separated TokenLookup) tests ---
+// --- Multiple extractors tests ---
 
 func TestMultipleExtractorsHeaderFirst(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	mw := New(Config{TokenLookup: "header:X-CSRF-Token,form:_csrf"})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithHeader("x-csrf-token", validToken),
+		celeristest.WithCookie("_csrf", validToken),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
 }
 
 func TestMultipleExtractorsFormFallback(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	mw := New(Config{TokenLookup: "header:X-CSRF-Token,form:_csrf"})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithCookie("_csrf", validToken),
 		celeristest.WithContentType("application/x-www-form-urlencoded"),
-		celeristest.WithBody([]byte("_csrf="+token)),
+		celeristest.WithBody([]byte("_csrf="+validToken)),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
@@ -1262,27 +1394,17 @@ func TestMultipleExtractorsAllMissing(t *testing.T) {
 }
 
 func TestMultipleExtractorsThreeSourcesQueryLast(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	mw := New(Config{TokenLookup: "header:X-CSRF-Token,form:_csrf,query:token"})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithQuery("token", token),
+		celeristest.WithCookie("_csrf", validToken),
+		celeristest.WithQuery("token", validToken),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
-}
-
-func TestMultipleExtractorsInvalidSegmentPanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for invalid segment in multi-extractor")
-		}
-	}()
-	New(Config{TokenLookup: "header:X-CSRF-Token,bad"})
 }
 
 // --- Custom KeyGenerator tests ---
@@ -1333,49 +1455,6 @@ func TestCustomKeyGeneratorNotCalledWhenCookieExists(t *testing.T) {
 	}
 }
 
-// --- CookieSessionOnly tests ---
-
-func TestCookieSessionOnlyOmitsMaxAge(t *testing.T) {
-	mw := New(Config{CookieSessionOnly: true})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-
-	for _, h := range rec.Headers {
-		if h[0] == "set-cookie" {
-			if containsSubstring(h[1], "Max-Age") {
-				t.Fatalf("expected no Max-Age in session-only cookie, got: %s", h[1])
-			}
-			return
-		}
-	}
-	t.Fatal("expected set-cookie header")
-}
-
-func TestCookieSessionOnlyFalseIncludesMaxAge(t *testing.T) {
-	mw := New(Config{CookieSessionOnly: false})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-
-	for _, h := range rec.Headers {
-		if h[0] == "set-cookie" {
-			if !containsSubstring(h[1], "Max-Age=") {
-				t.Fatalf("expected Max-Age in cookie, got: %s", h[1])
-			}
-			return
-		}
-	}
-	t.Fatal("expected set-cookie header")
-}
-
 // --- Configurable ContextKey tests ---
 
 func TestCustomContextKey(t *testing.T) {
@@ -1415,15 +1494,64 @@ func TestDefaultContextKey(t *testing.T) {
 	}
 }
 
+func TestTokenFromContextCustomKey(t *testing.T) {
+	mw := New(Config{ContextKey: "my_csrf_token"})
+	var token string
+	handler := func(c *celeris.Context) error {
+		token = TokenFromContext(c)
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	if token == "" {
+		t.Fatal("expected non-empty CSRF token from custom context key")
+	}
+}
+
+func TestTokenFromContextDefaultKeyStillWorks(t *testing.T) {
+	mw := New()
+	var token string
+	handler := func(c *celeris.Context) error {
+		token = TokenFromContext(c)
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	if token == "" {
+		t.Fatal("expected non-empty CSRF token from default context key")
+	}
+}
+
+func TestHandlerStoresContextKey(t *testing.T) {
+	customKey := "custom_key"
+	mw := New(Config{ContextKey: customKey})
+	var handlerKey string
+	handler := func(c *celeris.Context) error {
+		h := HandlerFromContext(c)
+		if h != nil {
+			handlerKey = h.contextKey
+		}
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	if handlerKey != customKey {
+		t.Fatalf("handler contextKey: got %q, want %q", handlerKey, customKey)
+	}
+}
+
 // --- DeleteToken tests ---
 
 func TestDeleteTokenWithStorage(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(storageKey(raw), raw, time.Hour)
-	masked := maskToken(raw, 32)
+	store.Set(storageKey(validToken), validToken, time.Hour)
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
 		err := DeleteToken(c)
@@ -1434,20 +1562,18 @@ func TestDeleteTokenWithStorage(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithCookie("_csrf", masked),
+		celeristest.WithCookie("_csrf", validToken),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
 
-	// Token should be removed from storage.
-	_, ok := store.Get(storageKey(raw))
+	_, ok := store.Get(storageKey(validToken))
 	if ok {
 		t.Fatal("expected token to be deleted from storage")
 	}
 
-	// Cookie should be expired (empty value, Max-Age=0).
 	for _, h := range rec.Headers {
-		if h[0] == "set-cookie" && containsSubstring(h[1], "_csrf=;") {
+		if h[0] == "set-cookie" && strings.Contains(h[1], "_csrf=;") {
 			return
 		}
 	}
@@ -1456,7 +1582,6 @@ func TestDeleteTokenWithStorage(t *testing.T) {
 
 func TestDeleteTokenWithoutStorage(t *testing.T) {
 	mw := New()
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	handler := func(c *celeris.Context) error {
 		err := DeleteToken(c)
 		if err != nil {
@@ -1466,14 +1591,13 @@ func TestDeleteTokenWithoutStorage(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithCookie("_csrf", token),
+		celeristest.WithCookie("_csrf", validToken),
 	)
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
 
-	// Cookie should be expired (empty value, Max-Age=0).
 	for _, h := range rec.Headers {
-		if h[0] == "set-cookie" && containsSubstring(h[1], "_csrf=;") {
+		if h[0] == "set-cookie" && strings.Contains(h[1], "_csrf=;") {
 			return
 		}
 	}
@@ -1533,9 +1657,7 @@ func TestHandlerDeleteToken(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(storageKey(raw), raw, time.Hour)
-	masked := maskToken(raw, 32)
+	store.Set(storageKey(validToken), validToken, time.Hour)
 	mw := New(Config{Storage: store})
 	handler := func(c *celeris.Context) error {
 		h := HandlerFromContext(c)
@@ -1546,11 +1668,11 @@ func TestHandlerDeleteToken(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithCookie("_csrf", masked),
+		celeristest.WithCookie("_csrf", validToken),
 	)
 	testutil.AssertNoError(t, err)
 
-	_, ok := store.Get(storageKey(raw))
+	_, ok := store.Get(storageKey(validToken))
 	if ok {
 		t.Fatal("expected token deleted")
 	}
@@ -1563,20 +1685,17 @@ func TestMemoryStorageGetSetDelete(t *testing.T) {
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 2, CleanupContext: ctx})
 
-	// Get non-existent.
 	_, ok := store.Get("key1")
 	if ok {
 		t.Fatal("expected not found")
 	}
 
-	// Set and Get.
 	store.Set("key1", "token1", time.Hour)
 	val, ok := store.Get("key1")
 	if !ok || val != "token1" {
 		t.Fatalf("expected token1, got %q (ok=%v)", val, ok)
 	}
 
-	// Delete and Get.
 	store.Delete("key1")
 	_, ok = store.Get("key1")
 	if ok {
@@ -1625,348 +1744,11 @@ func TestMemoryStorageDefaultShards(t *testing.T) {
 	}
 }
 
-// --- validate() tests ---
-
-func TestValidateTokenLookupComma(t *testing.T) {
-	// Valid comma-separated lookup should not panic.
-	_ = New(Config{TokenLookup: "header:X-CSRF-Token,form:_csrf"})
-}
-
-func TestValidateTokenLookupInvalidSegment(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for invalid segment in comma-separated lookup")
-		}
-	}()
-	New(Config{TokenLookup: "header:X-CSRF-Token,invalid"})
-}
-
-func TestValidateTokenLookupInvalidSourceInComma(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for invalid source in comma-separated lookup")
-		}
-	}()
-	New(Config{TokenLookup: "header:X-CSRF-Token,cookie:val"})
-}
-
-// --- applyDefaults for new fields ---
-
-func TestApplyDefaultsExpiration(t *testing.T) {
-	cfg := applyDefaults(Config{})
-	if cfg.Expiration != time.Hour {
-		t.Fatalf("expected 1h, got %v", cfg.Expiration)
-	}
-	cfg = applyDefaults(Config{Expiration: 2 * time.Hour})
-	if cfg.Expiration != 2*time.Hour {
-		t.Fatalf("expected 2h, got %v", cfg.Expiration)
-	}
-}
-
-func TestApplyDefaultsContextKey(t *testing.T) {
-	cfg := applyDefaults(Config{})
-	if cfg.ContextKey != "csrf_token" {
-		t.Fatalf("expected csrf_token, got %q", cfg.ContextKey)
-	}
-	cfg = applyDefaults(Config{ContextKey: "custom"})
-	if cfg.ContextKey != "custom" {
-		t.Fatalf("expected custom, got %q", cfg.ContextKey)
-	}
-}
-
-// --- Helpers ---
-
-func containsSubstring(s, substr string) bool {
-	return len(s) >= len(substr) && searchSubstring(s, substr)
-}
-
-func searchSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
-func TestTokenFromContextCustomKey(t *testing.T) {
-	customKey := "my_csrf_token"
-	mw := New(Config{ContextKey: customKey})
-	var token string
-	handler := func(c *celeris.Context) error {
-		token = TokenFromContext(c)
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-	if token == "" {
-		t.Fatal("expected non-empty CSRF token from custom context key")
-	}
-}
-
-func TestTokenFromContextDefaultKeyStillWorks(t *testing.T) {
-	mw := New()
-	var token string
-	handler := func(c *celeris.Context) error {
-		token = TokenFromContext(c)
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-	if token == "" {
-		t.Fatal("expected non-empty CSRF token from default context key")
-	}
-}
-
-func TestTokenFromContextNoHandler(t *testing.T) {
-	ctx, _ := celeristest.NewContextT(t, "GET", "/")
-	token := TokenFromContext(ctx)
-	if token != "" {
-		t.Fatalf("expected empty token without handler, got %q", token)
-	}
-}
-
-func TestHandlerStoresContextKey(t *testing.T) {
-	customKey := "custom_key"
-	mw := New(Config{ContextKey: customKey})
-	var handlerKey string
-	handler := func(c *celeris.Context) error {
-		h := HandlerFromContext(c)
-		if h != nil {
-			handlerKey = h.contextKey
-		}
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	if handlerKey != customKey {
-		t.Fatalf("handler contextKey: got %q, want %q", handlerKey, customKey)
-	}
-}
-
-// --- Granular error sentinel tests ---
-
-func TestErrSecFetchSiteOnCrossSite(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("sec-fetch-site", "cross-site"),
-	)
-	testutil.AssertHTTPError(t, err, 403)
-	if !errors.Is(err, ErrSecFetchSite) {
-		t.Fatalf("expected ErrSecFetchSite, got %v", err)
-	}
-}
-
-func TestErrOriginMismatchOnBadOrigin(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("origin", "https://evil.com"),
-	)
-	testutil.AssertHTTPError(t, err, 403)
-	if !errors.Is(err, ErrOriginMismatch) {
-		t.Fatalf("expected ErrOriginMismatch, got %v", err)
-	}
-}
-
-func TestErrRefererMissingOnHTTPSNoReferer(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("x-forwarded-proto", "https"),
-	)
-	testutil.AssertHTTPError(t, err, 403)
-	if !errors.Is(err, ErrRefererMissing) {
-		t.Fatalf("expected ErrRefererMissing, got %v", err)
-	}
-}
-
-func TestErrRefererMismatchOnHTTPSBadReferer(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("x-forwarded-proto", "https"),
-		celeristest.WithHeader("referer", "https://evil.com/page"),
-	)
-	testutil.AssertHTTPError(t, err, 403)
-	if !errors.Is(err, ErrRefererMismatch) {
-		t.Fatalf("expected ErrRefererMismatch, got %v", err)
-	}
-}
-
-func TestErrSecFetchSitePassedToErrorHandler(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	var receivedErr error
-	mw := New(Config{
-		ErrorHandler: func(_ *celeris.Context, err error) error {
-			receivedErr = err
-			return err
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, _ = testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("sec-fetch-site", "cross-site"),
-	)
-	if !errors.Is(receivedErr, ErrSecFetchSite) {
-		t.Fatalf("ErrorHandler received %v, want ErrSecFetchSite", receivedErr)
-	}
-}
-
-func TestErrOriginMismatchPassedToErrorHandler(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	var receivedErr error
-	mw := New(Config{
-		ErrorHandler: func(_ *celeris.Context, err error) error {
-			receivedErr = err
-			return err
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, _ = testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("origin", "https://evil.com"),
-	)
-	if !errors.Is(receivedErr, ErrOriginMismatch) {
-		t.Fatalf("ErrorHandler received %v, want ErrOriginMismatch", receivedErr)
-	}
-}
-
-func TestGranularErrorSentinelsAreDistinct(t *testing.T) {
-	sentinels := []error{
-		ErrForbidden,
-		ErrMissingToken,
-		ErrTokenNotFound,
-		ErrOriginMismatch,
-		ErrRefererMissing,
-		ErrRefererMismatch,
-		ErrSecFetchSite,
-	}
-	seen := make(map[string]bool, len(sentinels))
-	for _, e := range sentinels {
-		msg := e.Error()
-		if seen[msg] {
-			t.Fatalf("duplicate sentinel message: %q", msg)
-		}
-		seen[msg] = true
-	}
-}
-
-// --- Wildcard origin scheme enforcement tests ---
-
-func TestValidateWildcardHTTPPanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for wildcard origin with http:// scheme")
-		}
-	}()
-	New(Config{
-		TrustedOrigins: []string{"http://*.example.com"},
-	})
-}
-
-func TestValidateWildcardHTTPSAllowed(t *testing.T) {
-	// Should not panic: HTTPS wildcard is fine.
-	_ = New(Config{
-		TrustedOrigins: []string{"https://*.example.com"},
-	})
-}
-
-func TestValidateExactMatchHTTPAllowed(t *testing.T) {
-	// Exact match origins can use any scheme.
-	_ = New(Config{
-		TrustedOrigins: []string{"http://trusted.example.com"},
-	})
-}
-
-func TestValidateExactMatchHTTPSAllowed(t *testing.T) {
-	// Exact match origins with HTTPS.
-	_ = New(Config{
-		TrustedOrigins: []string{"https://trusted.example.com"},
-	})
-}
-
-func TestValidateWildcardNoSchemePanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for wildcard origin without https:// prefix")
-		}
-	}()
-	New(Config{
-		TrustedOrigins: []string{"*.example.com"},
-	})
-}
-
-func TestValidateMixedOriginsHTTPWildcardPanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic when any wildcard uses http://")
-		}
-	}()
-	New(Config{
-		TrustedOrigins: []string{
-			"https://trusted.example.com",
-			"http://*.evil.com",
-		},
-	})
-}
-
-func TestValidateMixedOriginsAllValid(t *testing.T) {
-	// Should not panic: exact HTTP + wildcard HTTPS.
-	_ = New(Config{
-		TrustedOrigins: []string{
-			"http://trusted.example.com",
-			"https://*.example.com",
-		},
-	})
-}
-
-// --- GetAndDelete tests ---
-
 func TestMemoryStorageGetAndDelete(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	store := NewMemoryStorage(MemoryStorageConfig{Shards: 2, CleanupContext: ctx})
 
-	// GetAndDelete on non-existent key.
 	_, ok, err := store.GetAndDelete("missing")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1975,7 +1757,6 @@ func TestMemoryStorageGetAndDelete(t *testing.T) {
 		t.Fatal("expected not found")
 	}
 
-	// Set and GetAndDelete.
 	store.Set("key1", "token1", time.Hour)
 	val, ok, err := store.GetAndDelete("key1")
 	if err != nil {
@@ -1985,7 +1766,6 @@ func TestMemoryStorageGetAndDelete(t *testing.T) {
 		t.Fatalf("expected token1, got %q (ok=%v)", val, ok)
 	}
 
-	// Key should be gone after GetAndDelete.
 	_, ok = store.Get("key1")
 	if ok {
 		t.Fatal("expected key to be deleted after GetAndDelete")
@@ -2004,34 +1784,6 @@ func TestMemoryStorageGetAndDeleteExpired(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("expected expired token not found")
-	}
-}
-
-func TestSingleUseTokenAtomicGetAndDelete(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-	raw := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(storageKey(raw), raw, time.Hour)
-	masked := maskToken(raw, 32)
-	mw := New(Config{Storage: store, SingleUseToken: true})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-
-	// First request succeeds and atomically deletes the token.
-	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", masked),
-		celeristest.WithCookie("_csrf", masked),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-
-	// Verify token is gone.
-	_, ok := store.Get(storageKey(raw))
-	if ok {
-		t.Fatal("expected token deleted after single use")
 	}
 }
 
@@ -2066,247 +1818,18 @@ func TestExtractOrigin(t *testing.T) {
 func TestStorageKeyIsHashed(t *testing.T) {
 	token := "test-token"
 	key := storageKey(token)
-	// SHA-256 hex digest is 64 characters.
 	if len(key) != 64 {
 		t.Fatalf("expected 64-char hex digest, got %d chars", len(key))
 	}
-	// Key should not equal the raw token.
 	if key == token {
 		t.Fatal("storage key should be hashed, not plaintext")
 	}
-	// Same input should produce same key.
 	if storageKey(token) != key {
 		t.Fatal("storageKey is not deterministic")
 	}
 }
 
-// --- Referer parsing tests ---
-
-func TestRefererFullURLExtractsOriginForComparison(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New(Config{
-		TrustedOrigins: []string{"https://trusted.example.com"},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-
-	// Referer with path should match trusted origin (scheme+host extracted).
-	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("x-forwarded-proto", "https"),
-		celeristest.WithHeader("referer", "https://trusted.example.com/some/path?q=1"),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-}
-
-func TestRefererWithPathMatchesHost(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-
-	// Referer "https://localhost/deep/path" should match host "localhost".
-	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("x-forwarded-proto", "https"),
-		celeristest.WithHeader("referer", "https://localhost/deep/path?key=value"),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-}
-
-func TestRefererWildcardMatchesOriginOnly(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New(Config{
-		TrustedOrigins: []string{"https://*.example.com"},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-
-	// Referer with path should work with wildcard trusted origins.
-	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("x-forwarded-proto", "https"),
-		celeristest.WithHeader("referer", "https://app.example.com/api/v1/action"),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-}
-
-// --- buildSingleExtractor safety test ---
-
-func TestBuildSingleExtractorNoColonPanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for TokenLookup segment without colon")
-		}
-	}()
-	buildSingleExtractor("headeronly")
-}
-
-func TestBuildSingleExtractorEmptyNamePanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for TokenLookup segment with empty name")
-		}
-	}()
-	buildSingleExtractor("header:")
-}
-
-// --- Safe-method does not refresh expiry for existing tokens ---
-
-func TestSafeMethodDoesNotRefreshExpiryForExistingToken(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
-
-	// Simulate a token that was already stored.
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	store.Set(storageKey(token), token, 100*time.Millisecond)
-
-	mw := New(Config{Storage: store, Expiration: time.Hour})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-
-	// Safe-method request with existing cookie and token in storage.
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithCookie("_csrf", token),
-	)
-	testutil.AssertNoError(t, err)
-
-	// Wait for the original short expiry to pass.
-	time.Sleep(150 * time.Millisecond)
-
-	// The token should have expired because the safe method did NOT refresh it.
-	_, ok := store.Get(storageKey(token))
-	if ok {
-		t.Fatal("expected token to expire (safe method should not refresh expiry)")
-	}
-}
-
-// --- Wildcard subdomain traversal defense tests ---
-
-func TestWildcardOriginRejectsLeadingDot(t *testing.T) {
-	w := wildcardOrigin{prefix: "https://", suffix: ".example.com"}
-	// ".evil.com" starts with ".", must be rejected.
-	if w.match("https://.evil.com.example.com") {
-		t.Fatal("expected wildcard to reject middle starting with dot")
-	}
-}
-
-func TestWildcardOriginRejectsDoubleDot(t *testing.T) {
-	w := wildcardOrigin{prefix: "https://", suffix: ".example.com"}
-	// "sub..evil" contains "..", must be rejected.
-	if w.match("https://sub..evil.example.com") {
-		t.Fatal("expected wildcard to reject middle containing '..'")
-	}
-}
-
-func TestWildcardOriginAllowsValidSubdomain(t *testing.T) {
-	w := wildcardOrigin{prefix: "https://", suffix: ".example.com"}
-	if !w.match("https://app.example.com") {
-		t.Fatal("expected wildcard to allow valid subdomain")
-	}
-}
-
-func TestWildcardOriginAllowsDeepValidSubdomain(t *testing.T) {
-	w := wildcardOrigin{prefix: "https://", suffix: ".example.com"}
-	if !w.match("https://a.b.c.example.com") {
-		t.Fatal("expected wildcard to allow deep valid subdomain")
-	}
-}
-
-func TestWildcardIntegrationRejectsLeadingDotOrigin(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New(Config{
-		TrustedOrigins: []string{"https://*.example.com"},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("origin", "https://.evil.example.com"),
-	)
-	testutil.AssertHTTPError(t, err, 403)
-}
-
-func TestWildcardIntegrationRejectsDoubleDotOrigin(t *testing.T) {
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New(Config{
-		TrustedOrigins: []string{"https://*.example.com"},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-		celeristest.WithHeader("origin", "https://sub..evil.example.com"),
-	)
-	testutil.AssertHTTPError(t, err, 403)
-}
-
-// --- Cookie-injection defense tests ---
-
-func TestCookieInjectionNonHexRejected(t *testing.T) {
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// "not-hex-at-all!!" is not valid hex, should be rejected.
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", "not-hex-at-all!!"),
-		celeristest.WithCookie("_csrf", "not-hex-at-all!!"),
-	)
-	testutil.AssertHTTPError(t, err, 403)
-}
-
-func TestCookieInjectionWrongLengthRejected(t *testing.T) {
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// Valid hex but wrong length (too short for 32-byte token).
-	_, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", "abcdef"),
-		celeristest.WithCookie("_csrf", "abcdef"),
-	)
-	testutil.AssertHTTPError(t, err, 403)
-}
-
-func TestCookieInjectionValidHexRawLengthAccepted(t *testing.T) {
-	// 64 hex chars = 32 bytes raw token.
-	token := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	mw := New()
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "POST", "/submit",
-		celeristest.WithHeader("x-csrf-token", token),
-		celeristest.WithCookie("_csrf", token),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-}
+// --- isValidTokenHex tests ---
 
 func TestIsValidTokenHex(t *testing.T) {
 	tests := []struct {
@@ -2315,8 +1838,7 @@ func TestIsValidTokenHex(t *testing.T) {
 		n     int
 		want  bool
 	}{
-		{"raw length valid", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 32, true},
-		{"masked length valid", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 32, true},
+		{"raw length valid", validToken, 32, true},
 		{"wrong length", "abcdef", 32, false},
 		{"non-hex chars", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", 32, false},
 		{"empty", "", 32, false},
@@ -2332,6 +1854,40 @@ func TestIsValidTokenHex(t *testing.T) {
 	}
 }
 
+// --- Cookie-injection defense tests ---
+
+func TestCookieInjectionDefense(t *testing.T) {
+	tests := []struct {
+		name       string
+		cookie     string
+		header     string
+		wantStatus int
+	}{
+		{"non-hex rejected", "not-hex-at-all!!", "not-hex-at-all!!", 403},
+		{"wrong length rejected", "abcdef", "abcdef", 403},
+		{"valid hex raw accepted", validToken, validToken, 200},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mw := New()
+			handler := func(c *celeris.Context) error {
+				return c.String(200, "ok")
+			}
+			chain := []celeris.HandlerFunc{mw, handler}
+			rec, err := testutil.RunChain(t, chain, "POST", "/submit",
+				celeristest.WithHeader("x-csrf-token", tt.header),
+				celeristest.WithCookie("_csrf", tt.cookie),
+			)
+			if tt.wantStatus == 403 {
+				testutil.AssertHTTPError(t, err, 403)
+			} else {
+				testutil.AssertNoError(t, err)
+				testutil.AssertStatus(t, rec, 200)
+			}
+		})
+	}
+}
+
 // --- Extractor self-sabotage validation tests ---
 
 func TestValidateExtractorCookieSelfSabotagePanics(t *testing.T) {
@@ -2341,12 +1897,10 @@ func TestValidateExtractorCookieSelfSabotagePanics(t *testing.T) {
 			t.Fatal("expected panic when TokenLookup extracts from the CSRF cookie itself")
 		}
 		msg, ok := r.(string)
-		if !ok || !containsSubstring(msg, "defeats the double-submit pattern") {
+		if !ok || !strings.Contains(msg, "defeats the double-submit pattern") {
 			t.Fatalf("expected descriptive panic message, got: %v", r)
 		}
 	}()
-	// cookie:_csrf matches the default CookieName "_csrf".
-	// This should be caught by validate() before buildSingleExtractor panics.
 	cfg := Config{TokenLookup: "cookie:_csrf"}
 	cfg = applyDefaults(cfg)
 	cfg.validate()
@@ -2359,7 +1913,7 @@ func TestValidateExtractorCookieCustomNameSelfSabotagePanics(t *testing.T) {
 			t.Fatal("expected panic when TokenLookup extracts from custom CSRF cookie")
 		}
 		msg, ok := r.(string)
-		if !ok || !containsSubstring(msg, "defeats the double-submit pattern") {
+		if !ok || !strings.Contains(msg, "defeats the double-submit pattern") {
 			t.Fatalf("expected descriptive panic message, got: %v", r)
 		}
 	}()
@@ -2372,22 +1926,45 @@ func TestValidateExtractorCookieCustomNameSelfSabotagePanics(t *testing.T) {
 }
 
 func TestValidateExtractorCookieDifferentNameDoesNotPanic(t *testing.T) {
-	// cookie:some_other_cookie does not match CookieName "_csrf",
-	// so the self-sabotage check should NOT trigger. However,
-	// validateTokenLookup will still panic because "cookie" is not
-	// a supported source. We test that the self-sabotage check
-	// is not the one panicking.
 	defer func() {
 		r := recover()
 		if r == nil {
 			t.Fatal("expected panic for unsupported source 'cookie'")
 		}
 		msg, ok := r.(string)
-		if ok && containsSubstring(msg, "defeats the double-submit pattern") {
+		if ok && strings.Contains(msg, "defeats the double-submit pattern") {
 			t.Fatal("self-sabotage check should not fire for different cookie name")
 		}
 	}()
 	cfg := Config{TokenLookup: "cookie:different_name"}
 	cfg = applyDefaults(cfg)
 	cfg.validate()
+}
+
+// --- Safe-method does not refresh expiry for existing tokens ---
+
+func TestSafeMethodDoesNotRefreshExpiryForExistingToken(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := NewMemoryStorage(MemoryStorageConfig{Shards: 1, CleanupContext: ctx})
+
+	store.Set(storageKey(validToken), validToken, 100*time.Millisecond)
+
+	mw := New(Config{Storage: store, Expiration: time.Hour})
+	handler := func(c *celeris.Context) error {
+		return c.String(200, "ok")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	_, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithCookie("_csrf", validToken),
+	)
+	testutil.AssertNoError(t, err)
+
+	time.Sleep(150 * time.Millisecond)
+
+	_, ok := store.Get(storageKey(validToken))
+	if ok {
+		t.Fatal("expected token to expire (safe method should not refresh expiry)")
+	}
 }

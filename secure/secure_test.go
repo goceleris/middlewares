@@ -45,20 +45,34 @@ func TestDefaultConfigOmitsCSPAndPermissionsPolicy(t *testing.T) {
 	testutil.AssertNoHeader(t, rec, "permissions-policy")
 }
 
-func TestXSSProtectionDefault(t *testing.T) {
-	mw := New()
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	testutil.AssertHeader(t, rec, "x-xss-protection", "0")
-}
-
-func TestXSSProtectionCustom(t *testing.T) {
-	mw := New(Config{XSSProtection: "1; mode=block"})
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	testutil.AssertHeader(t, rec, "x-xss-protection", "1; mode=block")
+func TestHeaderDefaultsAndOverrides(t *testing.T) {
+	tests := []struct {
+		name   string
+		cfg    *Config
+		header string
+		want   string
+	}{
+		{"xss-protection default", nil, "x-xss-protection", "0"},
+		{"xss-protection custom", &Config{XSSProtection: "1; mode=block"}, "x-xss-protection", "1; mode=block"},
+		{"origin-agent-cluster default", nil, "origin-agent-cluster", "?1"},
+		{"origin-agent-cluster custom", &Config{OriginAgentCluster: "?0"}, "origin-agent-cluster", "?0"},
+		{"x-download-options default", nil, "x-download-options", "noopen"},
+		{"x-download-options custom", &Config{XDownloadOptions: "custom"}, "x-download-options", "custom"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mw celeris.HandlerFunc
+			if tt.cfg == nil {
+				mw = New()
+			} else {
+				mw = New(*tt.cfg)
+			}
+			chain := []celeris.HandlerFunc{mw, okHandler}
+			rec, err := testutil.RunChain(t, chain, "GET", "/")
+			testutil.AssertNoError(t, err)
+			testutil.AssertHeader(t, rec, tt.header, tt.want)
+		})
+	}
 }
 
 func TestCustomValues(t *testing.T) {
@@ -100,13 +114,10 @@ func TestHSTSIncludeSubdomainsDefault(t *testing.T) {
 }
 
 func TestHSTSIncludeSubdomainsDefaultWithCustomConfig(t *testing.T) {
-	// When user provides a partial config with an explicit HSTSMaxAge,
-	// includeSubDomains should be present because HSTSExcludeSubdomains
-	// defaults to false. Note: any user-provided Config treats HSTSMaxAge=0
-	// as explicit (disabling HSTS), so we set HSTSMaxAge to the default value.
+	// When user provides a partial config, HSTS still defaults to 2 years.
+	// There is no zero-value trap: customizing other fields does NOT disable HSTS.
 	mw := New(Config{
 		ContentSecurityPolicy: "default-src 'self'",
-		HSTSMaxAge:            63072000,
 	})
 	chain := []celeris.HandlerFunc{mw, okHandler}
 	rec, err := testutil.RunChain(t, chain, "GET", "/",
@@ -252,7 +263,7 @@ func TestSkipPaths(t *testing.T) {
 }
 
 func TestApplyDefaultsFillsEmptyFields(t *testing.T) {
-	cfg := applyDefaults(Config{}, false)
+	cfg := applyDefaults(Config{})
 	if cfg.XContentTypeOptions != "nosniff" {
 		t.Fatalf("XContentTypeOptions: got %q, want %q", cfg.XContentTypeOptions, "nosniff")
 	}
@@ -297,7 +308,7 @@ func TestApplyDefaultsPreservesCustomValues(t *testing.T) {
 		XFrameOptions:       "DENY",
 		HSTSMaxAge:          3600,
 		ReferrerPolicy:      "no-referrer",
-	}, true)
+	})
 	if cfg.XContentTypeOptions != "custom" {
 		t.Fatalf("XContentTypeOptions: got %q, want %q", cfg.XContentTypeOptions, "custom")
 	}
@@ -339,7 +350,7 @@ func TestBuildHeadersSkipsEmptyStrings(t *testing.T) {
 }
 
 func TestBuildHeadersDefaultCount(t *testing.T) {
-	cfg := applyDefaults(Config{}, false)
+	cfg := applyDefaults(Config{})
 	headers := buildHeaders(cfg)
 	// Default config should produce 11 headers (no CSP, no PermissionsPolicy).
 	// x-content-type-options, x-frame-options, x-xss-protection,
@@ -356,7 +367,7 @@ func TestBuildHeadersWithCSPAndPermissions(t *testing.T) {
 	cfg := applyDefaults(Config{
 		ContentSecurityPolicy: "default-src 'self'",
 		PermissionsPolicy:     "camera=()",
-	}, false)
+	})
 	headers := buildHeaders(cfg)
 	// 11 defaults + CSP + PermissionsPolicy = 13.
 	if len(headers) != 13 {
@@ -446,46 +457,15 @@ func TestMiddlewareReturnsHandlerError(t *testing.T) {
 	testutil.AssertHTTPError(t, err, 500)
 }
 
-func TestOriginAgentClusterDefault(t *testing.T) {
-	mw := New()
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	testutil.AssertHeader(t, rec, "origin-agent-cluster", "?1")
-}
-
-func TestOriginAgentClusterCustom(t *testing.T) {
-	mw := New(Config{OriginAgentCluster: "?0"})
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	testutil.AssertHeader(t, rec, "origin-agent-cluster", "?0")
-}
-
-func TestXDownloadOptionsDefault(t *testing.T) {
-	mw := New()
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	testutil.AssertHeader(t, rec, "x-download-options", "noopen")
-}
-
-func TestXDownloadOptionsCustom(t *testing.T) {
-	mw := New(Config{XDownloadOptions: "custom"})
-	chain := []celeris.HandlerFunc{mw, okHandler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertNoError(t, err)
-	testutil.AssertHeader(t, rec, "x-download-options", "custom")
-}
-
 func TestBuildHSTSValue(t *testing.T) {
 	tests := []struct {
 		name string
 		cfg  Config
 		want string
 	}{
-		{"disabled", Config{HSTSMaxAge: -1}, ""},
-		{"zero", Config{HSTSMaxAge: 0}, ""},
+		{"disabled negative", Config{HSTSMaxAge: -1}, ""},
+		{"disabled flag", Config{DisableHSTS: true, HSTSMaxAge: 63072000}, ""},
+		{"zero raw", Config{HSTSMaxAge: 0}, ""},
 		{"with subdomains", Config{HSTSMaxAge: 3600}, "max-age=3600; includeSubDomains"},
 		{"exclude subdomains", Config{HSTSMaxAge: 3600, HSTSExcludeSubdomains: true}, "max-age=3600"},
 		{"with preload", Config{HSTSMaxAge: 3600, HSTSPreload: true}, "max-age=3600; includeSubDomains; preload"},
@@ -502,38 +482,25 @@ func TestBuildHSTSValue(t *testing.T) {
 
 // --- validate() panic tests ---
 
-func TestValidateHSTSPreloadMaxAgeTooLow(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for HSTSPreload with max-age < 1 year")
-		}
-	}()
-	New(Config{
-		HSTSMaxAge:  3600,
-		HSTSPreload: true,
-	})
-}
-
-func TestValidateHSTSPreloadExcludeSubdomains(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for HSTSPreload with HSTSExcludeSubdomains")
-		}
-	}()
-	New(Config{
-		HSTSMaxAge:            63072000,
-		HSTSPreload:           true,
-		HSTSExcludeSubdomains: true,
-	})
-}
-
-func TestValidateCSPReportOnlyWithoutCSP(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for CSPReportOnly without ContentSecurityPolicy")
-		}
-	}()
-	New(Config{CSPReportOnly: true})
+func TestValidatePanics(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{"preload max-age too low", Config{HSTSMaxAge: 3600, HSTSPreload: true}},
+		{"preload exclude subdomains", Config{HSTSMaxAge: 63072000, HSTSPreload: true, HSTSExcludeSubdomains: true}},
+		{"CSPReportOnly without CSP", Config{CSPReportOnly: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatal("expected panic")
+				}
+			}()
+			New(tt.cfg)
+		})
+	}
 }
 
 func TestValidateHSTSPreloadValidConfig(t *testing.T) {
@@ -579,7 +546,7 @@ func TestSuppressMultipleHeaders(t *testing.T) {
 
 func TestSuppressNotOverriddenByDefaults(t *testing.T) {
 	// Suppress is not an empty string, so applyDefaults should NOT override it.
-	cfg := applyDefaults(Config{XContentTypeOptions: Suppress}, false)
+	cfg := applyDefaults(Config{XContentTypeOptions: Suppress})
 	if cfg.XContentTypeOptions != Suppress {
 		t.Fatalf("expected Suppress sentinel to survive applyDefaults, got %q", cfg.XContentTypeOptions)
 	}

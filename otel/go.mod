@@ -3,7 +3,7 @@ module github.com/goceleris/middlewares/otel
 go 1.26.0
 
 require (
-	github.com/goceleris/celeris v1.2.2
+	github.com/goceleris/celeris v1.2.4
 	go.opentelemetry.io/otel v1.36.0
 	go.opentelemetry.io/otel/metric v1.36.0
 	go.opentelemetry.io/otel/sdk v1.36.0

@@ -24,16 +24,11 @@ type Config struct {
 	// so it runs on the request goroutine (not the handler goroutine).
 	TimeoutFunc func(c *celeris.Context) time.Duration
 
-	// ErrorHandler handles timeout errors. Default: 503 Service Unavailable.
-	// If ErrorHandlerWithError is also set, it takes precedence.
-	ErrorHandler func(c *celeris.Context) error
-
-	// ErrorHandlerWithError is like ErrorHandler but receives the error that
-	// triggered the timeout response. The err parameter is
+	// ErrorHandler handles timeout errors. The err parameter is
 	// context.DeadlineExceeded for a deadline timeout, the matched
 	// TimeoutErrors entry for a semantic timeout, or a panic-wrapped error
-	// for a recovered panic. When set, it takes precedence over ErrorHandler.
-	ErrorHandlerWithError func(c *celeris.Context, err error) error
+	// for a recovered panic. Default: returns 503 Service Unavailable.
+	ErrorHandler func(c *celeris.Context, err error) error
 
 	// SkipPaths lists paths to skip (exact match).
 	SkipPaths []string
@@ -55,19 +50,14 @@ type Config struct {
 	TimeoutErrors []error
 }
 
-// defaultConfig is the default timeout configuration. Unexported to prevent
-// callers from mutating shared state.
 var defaultConfig = Config{
 	Timeout: 5 * time.Second,
 }
 
-// DefaultConfig returns a copy of the default timeout configuration.
-func DefaultConfig() Config { return defaultConfig }
-
 // ErrServiceUnavailable is returned when the request timeout is exceeded.
 var ErrServiceUnavailable = celeris.NewHTTPError(503, "Service Unavailable")
 
-func defaultErrorHandler(_ *celeris.Context) error {
+func defaultErrorHandler(_ *celeris.Context, _ error) error {
 	return ErrServiceUnavailable
 }
 
@@ -78,7 +68,7 @@ func applyDefaults(cfg Config) Config {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = defaultConfig.Timeout
 	}
-	if cfg.ErrorHandler == nil && cfg.ErrorHandlerWithError == nil {
+	if cfg.ErrorHandler == nil {
 		cfg.ErrorHandler = defaultErrorHandler
 	}
 	return cfg

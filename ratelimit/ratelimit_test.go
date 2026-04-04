@@ -12,6 +12,7 @@ import (
 	"github.com/goceleris/celeris"
 	"github.com/goceleris/celeris/celeristest"
 
+	"github.com/goceleris/middlewares/internal/fnv1a"
 	"github.com/goceleris/middlewares/internal/testutil"
 )
 
@@ -323,16 +324,11 @@ func TestRemainingDecreases(t *testing.T) {
 	testutil.AssertHeader(t, rec, "x-ratelimit-remaining", "0")
 }
 
-func TestValidatePanicsOnInvalidBurst(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for Burst < 1")
-		}
-	}()
-	// Call validate directly with Burst=0 (bypassing applyDefaults which would fix it).
-	cfg := Config{Burst: 0, RPS: 1}
-	cfg.validate()
+func TestApplyDefaultsFixesZeroBurst(t *testing.T) {
+	cfg := applyDefaults(Config{Burst: 0, RPS: 1})
+	if cfg.Burst != defaultConfig.Burst {
+		t.Fatalf("expected default burst %d, got %d", defaultConfig.Burst, cfg.Burst)
+	}
 }
 
 func TestCleanupContextCancellation(t *testing.T) {
@@ -347,20 +343,20 @@ func TestCleanupContextCancellation(t *testing.T) {
 func TestNextPow2(t *testing.T) {
 	cases := [][2]int{{0, 1}, {1, 1}, {2, 2}, {3, 4}, {4, 4}, {5, 8}, {7, 8}, {8, 8}, {9, 16}}
 	for _, tc := range cases {
-		got := nextPow2(tc[0])
+		got := fnv1a.NextPow2(tc[0])
 		if got != tc[1] {
-			t.Errorf("nextPow2(%d) = %d, want %d", tc[0], got, tc[1])
+			t.Errorf("NextPow2(%d) = %d, want %d", tc[0], got, tc[1])
 		}
 	}
 }
 
 func TestFnv1aDeterministic(t *testing.T) {
-	a := fnv1a("test-key")
-	b := fnv1a("test-key")
+	a := fnv1a.Hash("test-key")
+	b := fnv1a.Hash("test-key")
 	if a != b {
 		t.Fatalf("fnv1a not deterministic: %d != %d", a, b)
 	}
-	c := fnv1a("different-key")
+	c := fnv1a.Hash("different-key")
 	if a == c {
 		t.Fatal("fnv1a collision on different keys")
 	}
@@ -520,18 +516,35 @@ func TestLimitReachedHeadersStillSet(t *testing.T) {
 
 func TestParseRate(t *testing.T) {
 	tests := []struct {
-		input string
-		rps   float64
-		burst int
+		input   string
+		rps     float64
+		burst   int
+		wantErr bool
 	}{
-		{"5-S", 5, 5},
-		{"100-M", 100.0 / 60, 100},
-		{"1000-H", 1000.0 / 3600, 1000},
-		{"86400-D", 1, 86400},
-		{"10-s", 10, 10}, // case insensitive
+		{"5-S", 5, 5, false},
+		{"100-M", 100.0 / 60, 100, false},
+		{"1000-H", 1000.0 / 3600, 1000, false},
+		{"86400-D", 1, 86400, false},
+		{"10-s", 10, 10, false}, // case insensitive
+		{"", 0, 0, true},
+		{"100", 0, 0, true},
+		{"abc-M", 0, 0, true},
+		{"-5-S", 0, 0, true},
+		{"100-X", 0, 0, true},
+		{"0-M", 0, 0, true},
 	}
 	for _, tc := range tests {
-		rps, burst := ParseRate(tc.input)
+		rps, burst, err := ParseRate(tc.input)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("ParseRate(%q): expected error", tc.input)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseRate(%q): unexpected error: %v", tc.input, err)
+			continue
+		}
 		if burst != tc.burst {
 			t.Errorf("ParseRate(%q): burst=%d, want %d", tc.input, burst, tc.burst)
 		}
@@ -539,20 +552,6 @@ func TestParseRate(t *testing.T) {
 		if diff < -0.001 || diff > 0.001 {
 			t.Errorf("ParseRate(%q): rps=%f, want %f", tc.input, rps, tc.rps)
 		}
-	}
-}
-
-func TestParseRateInvalidPanics(t *testing.T) {
-	invalids := []string{"", "100", "abc-M", "-5-S", "100-X", "0-M"}
-	for _, s := range invalids {
-		func() {
-			defer func() {
-				if r := recover(); r == nil {
-					t.Errorf("ParseRate(%q): expected panic", s)
-				}
-			}()
-			ParseRate(s)
-		}()
 	}
 }
 
@@ -651,6 +650,7 @@ func TestStoreHeaders(t *testing.T) {
 	store := newMockStore(5)
 	mw := New(Config{
 		Store:   store,
+		Burst:   5,
 		KeyFunc: func(_ *celeris.Context) string { return "test" },
 	})
 
@@ -658,6 +658,7 @@ func TestStoreHeaders(t *testing.T) {
 	rec, err := testutil.RunChain(t, chain, "GET", "/")
 	testutil.AssertNoError(t, err)
 
+	testutil.AssertHeader(t, rec, "x-ratelimit-limit", "5")
 	got := rec.Header("x-ratelimit-remaining")
 	if got != "4" {
 		t.Fatalf("x-ratelimit-remaining: got %q, want %q", got, "4")
@@ -1556,7 +1557,7 @@ func TestDynamicLimiterMapBounded(t *testing.T) {
 			n := counter.Add(1)
 			return strings.Replace("NNN-S", "NNN", strings.Repeat("1", int(n)), 1), nil
 		},
-		CleanupInterval:   time.Hour,
+		CleanupInterval:    time.Hour,
 		CleanupContext:     ctx,
 		KeyFunc:            func(c *celeris.Context) string { return "test" },
 		MaxDynamicLimiters: 3,
@@ -1695,5 +1696,36 @@ func TestSlidingWindowFloorConsistency(t *testing.T) {
 	}
 	if remaining != 2 {
 		t.Fatalf("expected remaining=2 at half-window after one request, got %d", remaining)
+	}
+}
+
+// --- v1.2.4 celeristest option tests ---
+
+func TestClientIPWithTrustedProxies(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var capturedKey string
+	mw := New(Config{
+		RPS:             100,
+		Burst:           100,
+		CleanupInterval: time.Hour,
+		CleanupContext:  ctx,
+		KeyFunc: func(c *celeris.Context) string {
+			key := c.ClientIP()
+			capturedKey = key
+			return key
+		},
+	})
+
+	_, err := testutil.RunMiddleware(t, mw,
+		celeristest.WithTrustedProxies("10.0.0.0/8"),
+		celeristest.WithHeader("x-forwarded-for", "203.0.113.50, 10.0.0.1"),
+		celeristest.WithRemoteAddr("10.0.0.1:12345"),
+	)
+	testutil.AssertNoError(t, err)
+
+	if capturedKey != "203.0.113.50" {
+		t.Fatalf("expected rate limit key to be real client IP 203.0.113.50, got %q", capturedKey)
 	}
 }

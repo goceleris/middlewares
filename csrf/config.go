@@ -36,24 +36,17 @@ type Config struct {
 	CookieDomain string
 
 	// CookieMaxAge is the max-age of the CSRF cookie in seconds.
-	// Default: 86400 (24 hours).
+	// Default: 86400 (24 hours). Set to 0 for a session cookie
+	// (deleted when the browser closes).
 	CookieMaxAge int
 
 	// CookieSecure flags the cookie for HTTPS-only transmission.
 	CookieSecure bool
 
 	// CookieHTTPOnly prevents client-side scripts from accessing the cookie.
-	// Default: true. To disable, set DisableCookieHTTPOnly to true.
+	// Default: true. Set to false for SPA usage where JavaScript must
+	// read the cookie.
 	CookieHTTPOnly bool
-
-	// DisableCookieHTTPOnly explicitly disables the HTTPOnly flag on the
-	// CSRF cookie. This is needed for SPA usage where client-side JavaScript
-	// must read the cookie. When true, CookieHTTPOnly is forced to false.
-	DisableCookieHTTPOnly bool
-
-	// CookieSessionOnly, when true, omits MaxAge from the cookie so it
-	// becomes a browser-session-scoped cookie (deleted when the browser closes).
-	CookieSessionOnly bool
 
 	// CookieSameSite controls the SameSite attribute of the CSRF cookie.
 	// Default: celeris.SameSiteLaxMode.
@@ -99,8 +92,8 @@ type Config struct {
 	ContextKey string
 }
 
-// DefaultConfig is the default CSRF configuration.
-var DefaultConfig = Config{
+// defaultConfig is the default CSRF configuration.
+var defaultConfig = Config{
 	TokenLength:    32,
 	TokenLookup:    "header:X-CSRF-Token",
 	CookieName:     "_csrf",
@@ -115,45 +108,51 @@ var DefaultConfig = Config{
 
 func applyDefaults(cfg Config) Config {
 	if cfg.TokenLength <= 0 {
-		cfg.TokenLength = DefaultConfig.TokenLength
+		cfg.TokenLength = defaultConfig.TokenLength
 	}
 	if cfg.TokenLookup == "" {
-		cfg.TokenLookup = DefaultConfig.TokenLookup
+		cfg.TokenLookup = defaultConfig.TokenLookup
 	}
 	if cfg.CookieName == "" {
-		cfg.CookieName = DefaultConfig.CookieName
+		cfg.CookieName = defaultConfig.CookieName
 	}
 	if cfg.CookiePath == "" {
-		cfg.CookiePath = DefaultConfig.CookiePath
-	}
-	if cfg.CookieMaxAge == 0 {
-		cfg.CookieMaxAge = DefaultConfig.CookieMaxAge
+		cfg.CookiePath = defaultConfig.CookiePath
 	}
 	if cfg.CookieSameSite == 0 {
-		cfg.CookieSameSite = DefaultConfig.CookieSameSite
+		cfg.CookieSameSite = defaultConfig.CookieSameSite
 	}
 	if len(cfg.SafeMethods) == 0 {
-		cfg.SafeMethods = DefaultConfig.SafeMethods
-	}
-	if !cfg.CookieHTTPOnly && !cfg.DisableCookieHTTPOnly {
-		cfg.CookieHTTPOnly = DefaultConfig.CookieHTTPOnly
-	}
-	if cfg.DisableCookieHTTPOnly {
-		cfg.CookieHTTPOnly = false
+		cfg.SafeMethods = defaultConfig.SafeMethods
 	}
 	if cfg.Expiration <= 0 {
-		cfg.Expiration = DefaultConfig.Expiration
+		cfg.Expiration = defaultConfig.Expiration
 	}
 	if cfg.ContextKey == "" {
-		cfg.ContextKey = DefaultConfig.ContextKey
+		cfg.ContextKey = defaultConfig.ContextKey
+	}
+	// CSRF cookies MUST be HTTPOnly — there is no legitimate use case for
+	// JS-readable CSRF cookies in cookie-based double-submit. This is a
+	// security invariant, not a preference.
+	cfg.CookieHTTPOnly = true
+	// CookieMaxAge: 0 means "session cookie" (no Max-Age attribute).
+	// Only default when the value is negative (invalid); the defaultConfig
+	// already carries 86400 for the no-args path.
+	if cfg.CookieMaxAge < 0 {
+		cfg.CookieMaxAge = defaultConfig.CookieMaxAge
 	}
 	return cfg
 }
 
 // wildcardOrigin represents a parsed wildcard trusted origin pattern.
+// maxSubdomainDepth limits how many additional dot-separated labels the
+// wildcard portion may contain, aligned with the CORS middleware behavior.
+// A depth of 1 (the default) means "*.example.com" matches
+// "sub.example.com" but NOT "a.b.example.com". Set to 0 for unlimited depth.
 type wildcardOrigin struct {
-	prefix string
-	suffix string
+	prefix            string
+	suffix            string
+	maxSubdomainDepth int
 }
 
 func (w wildcardOrigin) match(origin string) bool {
@@ -170,6 +169,12 @@ func (w wildcardOrigin) match(origin string) bool {
 	middle := origin[len(w.prefix) : len(origin)-len(w.suffix)]
 	if strings.HasPrefix(middle, ".") || strings.Contains(middle, "..") {
 		return false
+	}
+	if w.maxSubdomainDepth > 0 {
+		dots := strings.Count(middle, ".")
+		if dots >= w.maxSubdomainDepth {
+			return false
+		}
 	}
 	return true
 }

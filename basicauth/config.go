@@ -25,8 +25,7 @@ type Config struct {
 	Validator func(user, pass string) bool
 
 	// ValidatorWithContext checks credentials with access to the request context.
-	// Takes precedence over Validator when set. Useful for per-request auth decisions
-	// (e.g., tenant-based authentication, IP-aware rate limiting within auth).
+	// Takes precedence over Validator when set.
 	ValidatorWithContext func(c *celeris.Context, user, pass string) bool
 
 	// Users maps usernames to passwords. When set and Validator is nil,
@@ -45,35 +44,26 @@ type Config struct {
 	// hash and the plaintext password and returns true if they match.
 	// This lets callers plug in bcrypt, argon2, or any other password
 	// hashing algorithm without this package importing those libraries.
-	// HashedUsersFunc is only consulted when HashedUsers is used to
-	// build the auto-generated validator.
+	//
+	// IMPORTANT: The function MUST take constant time for any input,
+	// including empty or invalid hash strings. For bcrypt, this means
+	// pre-computing a dummy hash (via bcrypt.GenerateFromPassword) and
+	// comparing against it for unknown users, rather than letting
+	// bcrypt.CompareHashAndPassword fail instantly on an empty hash.
 	HashedUsersFunc func(hash, password string) bool
 
 	// Realm is the authentication realm. Default: "Restricted".
 	Realm string
 
-	// HeaderLimit is the maximum allowed length of the Authorization header
-	// in bytes. Requests exceeding this limit receive a 431 (Request Header
-	// Fields Too Large) response via ErrorHandler. Default: 4096.
-	HeaderLimit int
-
 	// ErrorHandler handles authentication failures. The err parameter is
-	// the sentinel error that triggered the failure: [ErrUnauthorized] (401)
-	// for missing/invalid credentials, [ErrBadRequest] (400) for malformed
-	// headers, or [ErrHeaderTooLarge] (431) for oversized headers.
+	// [ErrUnauthorized] for all auth failures.
 	// Default: 401 with WWW-Authenticate + Cache-Control + Vary headers.
 	ErrorHandler func(c *celeris.Context, err error) error
 }
 
 // defaultConfig is the default basic auth configuration.
-// Unexported to prevent callers from mutating shared state.
 var defaultConfig = Config{
 	Realm: "Restricted",
-}
-
-// DefaultConfig returns a copy of the default configuration.
-func DefaultConfig() Config {
-	return defaultConfig
 }
 
 // hmacKey generates a 32-byte cryptographically random key.
@@ -89,58 +79,45 @@ func applyDefaults(cfg Config) Config {
 	if cfg.Realm == "" {
 		cfg.Realm = defaultConfig.Realm
 	}
-	if cfg.HeaderLimit <= 0 {
-		cfg.HeaderLimit = 4096
-	}
 	if cfg.Validator == nil && cfg.ValidatorWithContext == nil && len(cfg.Users) > 0 {
-		// Deep-copy the map so post-New() mutations don't affect the validator.
-		type userEntry struct{ passBytes []byte }
+		type userEntry struct{ mac []byte }
+		key := hmacKey()
 		entries := make(map[string]userEntry, len(cfg.Users))
 		for u, p := range cfg.Users {
-			entries[u] = userEntry{passBytes: []byte(p)}
+			entries[u] = userEntry{mac: hmacSHA256(key[:], []byte(p))}
 		}
-		// Per-instance HMAC key equalizes lengths for constant-time comparison.
-		key := hmacKey()
-		// Random dummy value for unknown-user comparisons to prevent
-		// timing side-channels on username existence.
 		dummyMAC := hmacSHA256(key[:], []byte("__celeris_dummy_pw__"))
 		cfg.Validator = func(user, pass string) bool {
 			e, ok := entries[user]
-			passMAC := hmacSHA256(key[:], []byte(pass))
+			inputMAC := hmacSHA256(key[:], []byte(pass))
 			if !ok {
-				// The comparison result is assigned to _ to document intent.
-				// In Go, function calls with side effects cannot be elided by
-				// the compiler, so the timing behavior is preserved regardless.
-				_ = subtle.ConstantTimeCompare(passMAC, dummyMAC)
+				_ = subtle.ConstantTimeCompare(inputMAC, dummyMAC)
 				return false
 			}
-			storedMAC := hmacSHA256(key[:], e.passBytes)
-			return subtle.ConstantTimeCompare(passMAC, storedMAC) == 1
+			return subtle.ConstantTimeCompare(inputMAC, e.mac) == 1
 		}
 	}
 	if cfg.Validator == nil && cfg.ValidatorWithContext == nil && len(cfg.HashedUsers) > 0 {
 		if cfg.HashedUsersFunc != nil {
-			// Custom verify function (e.g., bcrypt, argon2).
-			// Deep-copy hashes at init time; no hex validation needed since
-			// the caller controls the hash format.
 			hashCopy := make(map[string]string, len(cfg.HashedUsers))
 			for u, h := range cfg.HashedUsers {
 				hashCopy[u] = h
+			}
+			var dummyHash string
+			for _, h := range hashCopy {
+				dummyHash = h
+				break
 			}
 			verifyFn := cfg.HashedUsersFunc
 			cfg.Validator = func(user, pass string) bool {
 				h, ok := hashCopy[user]
 				if !ok {
-					// Constant-time-ish: still call verify with a dummy
-					// to avoid leaking whether the user exists via timing.
-					verifyFn("", pass)
+					verifyFn(dummyHash, pass)
 					return false
 				}
 				return verifyFn(h, pass)
 			}
 		} else {
-			// Built-in SHA-256 comparison.
-			// Deep-copy and decode hex hashes at init time.
 			type hashedEntry struct{ hashBytes [sha256.Size]byte }
 			entries := make(map[string]hashedEntry, len(cfg.HashedUsers))
 			for u, h := range cfg.HashedUsers {
@@ -152,7 +129,6 @@ func applyDefaults(cfg Config) Config {
 				copy(entry.hashBytes[:], b)
 				entries[u] = entry
 			}
-			// Random dummy hash for unknown-user timing side-channel prevention.
 			var dummyHash [sha256.Size]byte
 			if _, err := rand.Read(dummyHash[:]); err != nil {
 				panic("basicauth: crypto/rand failed: " + err.Error())

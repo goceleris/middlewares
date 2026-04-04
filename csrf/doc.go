@@ -3,18 +3,11 @@
 // server-side token storage for enhanced security.
 //
 // On safe HTTP methods (GET, HEAD, OPTIONS, TRACE by default) the
-// middleware reuses an existing CSRF cookie if present, or generates a
-// new cryptographically random token. The token is set as a cookie and
-// stored in the context under [ContextKey] ("csrf_token") or
-// [Config].ContextKey. Templates and client code can read it from the
-// context or cookie to include in subsequent requests.
-//
-// On unsafe methods (POST, PUT, DELETE, PATCH, etc.) the middleware
-// performs defense-in-depth checks (Sec-Fetch-Site and Origin validation),
-// then extracts the token from both the cookie and a configurable request
-// source (header, form field, or query parameter), and compares them using
-// [crypto/subtle.ConstantTimeCompare]. A mismatch or missing token
-// returns a 403 error.
+// middleware generates or reuses a CSRF token, sets it as a cookie,
+// and stores it in the request context. On unsafe methods (POST, PUT,
+// DELETE, PATCH) it performs defense-in-depth checks (Sec-Fetch-Site,
+// Origin, Referer) then compares the cookie token against the request
+// token using constant-time comparison.
 //
 // Default usage (token in X-CSRF-Token header):
 //
@@ -26,32 +19,16 @@
 //	    TokenLookup: "form:_csrf",
 //	}))
 //
-// Multiple token lookup sources (tried in order):
-//
-//	server.Use(csrf.New(csrf.Config{
-//	    TokenLookup: "header:X-CSRF-Token,form:_csrf",
-//	}))
-//
-// Token lookup from query parameter:
-//
-//	server.Use(csrf.New(csrf.Config{
-//	    TokenLookup: "query:csrf_token",
-//	}))
-//
 // # Retrieving the Token
 //
-// Use [TokenFromContext] to retrieve the CSRF token from downstream
-// handlers:
+// Use [TokenFromContext] to read the token in downstream handlers:
 //
 //	token := csrf.TokenFromContext(c)
 //
 // # Server-Side Token Storage
 //
-// By default, the middleware uses the pure double-submit cookie pattern.
-// For enhanced security, configure [Config].Storage to enable server-side
-// token validation (signed double-submit). When Storage is set, tokens
-// are persisted in the backend and validated against the store on unsafe
-// methods.
+// For enhanced security, configure [Config].Storage to validate tokens
+// against a server-side store (signed double-submit):
 //
 //	store := csrf.NewMemoryStorage()
 //	server.Use(csrf.New(csrf.Config{
@@ -59,50 +36,13 @@
 //	    Expiration: 2 * time.Hour,
 //	}))
 //
-// # Single-Use Tokens
+// # Session Cookies
 //
-// [Config].SingleUseToken causes each token to be consumed after a
-// single successful validation. This provides stronger replay protection
-// but requires Storage to be set:
+// Set [Config].CookieMaxAge to 0 for a browser-session-scoped cookie:
 //
 //	server.Use(csrf.New(csrf.Config{
-//	    Storage:        csrf.NewMemoryStorage(),
-//	    SingleUseToken: true,
+//	    CookieMaxAge: 0,
 //	}))
-//
-// # Deleting Tokens
-//
-// Use [DeleteToken] or [Handler.DeleteToken] during logout to remove
-// the token from server-side storage and expire the cookie:
-//
-//	server.POST("/logout", func(c *celeris.Context) error {
-//	    csrf.DeleteToken(c)
-//	    return c.String(200, "logged out")
-//	})
-//
-// The [Handler] can also be retrieved via [HandlerFromContext]:
-//
-//	h := csrf.HandlerFromContext(c)
-//	if h != nil {
-//	    h.DeleteToken(c)
-//	}
-//
-// # SPA Usage
-//
-// For single-page applications where JavaScript needs to read the CSRF
-// cookie and send the token in a request header:
-//
-//	server.Use(csrf.New(csrf.Config{
-//	    DisableCookieHTTPOnly: true, // allow JS to read the cookie
-//	}))
-//
-// Client-side JavaScript reads the _csrf cookie and includes it in
-// requests via the X-CSRF-Token header:
-//
-//	fetch("/api/action", {
-//	    method: "POST",
-//	    headers: { "X-CSRF-Token": getCookie("_csrf") },
-//	})
 //
 // # Trusted Origins
 //
@@ -116,174 +56,15 @@
 //	    },
 //	}))
 //
-// When the Origin header is present on unsafe methods, it must match
-// the request Host or one of the trusted entries.
-//
-// # Session-Scoped Cookies
-//
-// [Config].CookieSessionOnly omits MaxAge so the cookie is deleted when
-// the browser closes:
-//
-//	server.Use(csrf.New(csrf.Config{
-//	    CookieSessionOnly: true,
-//	}))
-//
-// # Custom Context Key
-//
-// [Config].ContextKey overrides the default context storage key:
-//
-//	server.Use(csrf.New(csrf.Config{
-//	    ContextKey: "my_csrf_token",
-//	}))
-//
-// # Session Store Adapter
-//
-// The session middleware's [session.Store] can be adapted to serve as a CSRF
-// [Storage] backend, allowing CSRF tokens to be scoped to authenticated
-// sessions. Below is a pseudocode adapter pattern (not provided by this
-// package):
-//
-//	type sessionCSRFStorage struct {
-//	    store  session.Store
-//	    prefix string // e.g. "csrf:"
-//	}
-//
-//	func (s *sessionCSRFStorage) Get(key string) (string, bool) {
-//	    data, err := s.store.Get(context.Background(), s.prefix+key)
-//	    if err != nil || data == nil {
-//	        return "", false
-//	    }
-//	    token, _ := data["token"].(string)
-//	    return token, token != ""
-//	}
-//
-//	func (s *sessionCSRFStorage) Set(key, token string, expiry time.Duration) {
-//	    _ = s.store.Save(context.Background(), s.prefix+key,
-//	        map[string]any{"token": token}, expiry)
-//	}
-//
-//	func (s *sessionCSRFStorage) Delete(key string) {
-//	    _ = s.store.Delete(context.Background(), s.prefix+key)
-//	}
-//
-// Usage:
-//
-//	sessStore := session.NewMemoryStore()
-//	server.Use(csrf.New(csrf.Config{
-//	    Storage: &sessionCSRFStorage{store: sessStore, prefix: "csrf:"},
-//	}))
-//
-// # Custom Key Generator
-//
-// [Config].KeyGenerator provides a custom function for token generation:
-//
-//	server.Use(csrf.New(csrf.Config{
-//	    KeyGenerator: func() string { return myCustomTokenFunc() },
-//	}))
-//
-// # Skipping
-//
-// Use [Config].Skip for dynamic skip logic or [Config].SkipPaths for
-// exact-match path exclusions (e.g., webhook endpoints):
-//
-//	server.Use(csrf.New(csrf.Config{
-//	    SkipPaths: []string{"/webhooks/stripe", "/api/public"},
-//	}))
-//
-// # Error Handling
-//
-// [ErrForbidden] is returned when the submitted token does not match
-// the cookie token. [ErrMissingToken] is returned when either the
-// cookie or the request token is absent. Both are usable with
-// errors.Is for custom error handling.
-//
-// A custom [Config].ErrorHandler can override the default error
-// behavior:
-//
-//	server.Use(csrf.New(csrf.Config{
-//	    ErrorHandler: func(c *celeris.Context, err error) error {
-//	        return c.String(403, "CSRF validation failed")
-//	    },
-//	}))
-//
-// # CookieMaxAge Zero Value
-//
-// [Config].CookieMaxAge has a default of 86400 (24 hours). A zero value
-// is treated as "use the default", not "no max-age". To create a
-// session-scoped cookie (deleted when the browser closes), set
-// [Config].CookieSessionOnly to true instead.
-//
-// # HTTP Limitation
-//
-// On plain HTTP (non-TLS) requests, the Referer-based defense-in-depth
-// check is skipped because Referer headers are unreliable over
-// unencrypted connections. The Sec-Fetch-Site and Origin header checks
-// still apply when the browser sends them, but browsers may omit these
-// headers on HTTP. The double-submit cookie pattern remains the primary
-// defense. For full protection, deploy behind TLS.
-//
-// # Token Lifecycle
-//
-// Tokens persist until the cookie expires or is deleted (via
-// [DeleteToken]). The middleware does not regenerate tokens after
-// unsafe methods; this is intentional to avoid breaking concurrent
-// browser tabs that share the same CSRF cookie. Applications that
-// require per-request tokens should enable [Config].SingleUseToken
-// with server-side [Config].Storage.
-//
-// # Sec-Fetch-Site
-//
-// The Sec-Fetch-Site header check is defense-in-depth only. Not all
-// browsers send this header, and it can be absent on same-origin
-// requests in older user agents. The middleware rejects requests only
-// when the header is explicitly "cross-site"; absence of the header
-// does not trigger rejection. Do not rely on this check as the sole
-// CSRF defense.
-//
-// # Token Masking (BREACH Mitigation)
-//
-// The BREACH attack (Browser Reconnaissance and Exfiltration via
-// Adaptive Compression of Hypertext) exploits HTTP compression to
-// extract secrets from responses by observing compressed response
-// sizes across multiple requests. If the CSRF token appeared as the
-// same value in every response, an attacker could guess it one byte
-// at a time by injecting candidate strings and measuring compression
-// ratios.
-//
-// To defeat this, the middleware applies per-request XOR masking: on
-// every response a fresh random mask of equal length is generated, the
-// raw token bytes are XORed with the mask, and the cookie value is set
-// to hex(mask) + hex(masked). Because the mask is random, the cookie
-// value changes on every response even though the underlying token
-// remains the same. On the receiving side, [unmaskToken] splits the
-// value into its two halves, decodes them, XORs them back together,
-// and recovers the original token for comparison. This ensures the
-// CSRF cookie never appears as a static string in compressed
-// responses, rendering BREACH-style compression oracles ineffective.
-//
-// # Cookie-Injection Defense
-//
-// In the double-submit cookie pattern, an attacker who can set cookies
-// on the victim's domain (e.g., via a subdomain they control) could
-// inject a known CSRF token into the cookie jar and then submit that
-// same token in the request header/form. To mitigate this:
-//
-//   - The middleware validates that the cookie value is well-formed hex
-//     of the expected token length before any cryptographic comparison.
-//     Injected values that are not valid hex or have an unexpected
-//     length are rejected with [ErrForbidden].
-//   - Cookie lookup uses exact name matching; prefix-injected cookie
-//     names (e.g., "__Host-_csrf") do not match the configured
-//     [Config].CookieName.
-//   - For stronger protection, use server-side [Config].Storage (signed
-//     double-submit). With storage enabled, the attacker must also plant
-//     a token that exists in the server's store, which they cannot do
-//     without server-side access.
-//
 // # Sentinel Errors
 //
 // The package exports sentinel errors ([ErrForbidden], [ErrMissingToken],
 // [ErrTokenNotFound], [ErrOriginMismatch], [ErrRefererMissing],
-// [ErrRefererMismatch], [ErrSecFetchSite]) as package-level variables
-// for use with errors.Is. Do not reassign these variables.
+// [ErrRefererMismatch], [ErrSecFetchSite]) for use with errors.Is.
+//
+// # Security
+//
+// CookieSecure defaults to false for development convenience. Production
+// deployments MUST set CookieSecure: true to prevent cookie transmission
+// over unencrypted connections.
 package csrf

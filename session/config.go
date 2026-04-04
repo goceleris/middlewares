@@ -1,12 +1,11 @@
 package session
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"sync"
 	"time"
 
 	"github.com/goceleris/celeris"
+
+	"github.com/goceleris/middlewares/internal/randutil"
 )
 
 // ContextKey is the context store key for the session object.
@@ -75,7 +74,10 @@ type Config struct {
 	// CookieDomain is the cookie Domain attribute.
 	CookieDomain string
 
-	// CookieMaxAge is the cookie Max-Age in seconds. Default: 86400 (24h).
+	// CookieMaxAge is the cookie Max-Age in seconds.
+	// nil means "use default (86400 = 24h)". A non-nil pointer selects
+	// the exact value: 0 for a session cookie (no Max-Age attribute),
+	// positive for an explicit lifetime.
 	//
 	// Note: CookieMaxAge controls browser-side cookie lifetime and is
 	// independent of IdleTimeout (server-side store expiry). If CookieMaxAge
@@ -83,24 +85,17 @@ type Config struct {
 	// the server still holds the session data. If longer, the browser may
 	// send a cookie for a session the server has already evicted. For
 	// consistent behavior, align CookieMaxAge with IdleTimeout (e.g.,
-	// CookieMaxAge = int(IdleTimeout.Seconds())).
-	CookieMaxAge int
+	// CookieMaxAge = intPtr(int(IdleTimeout.Seconds()))).
+	CookieMaxAge *int
 
 	// CookieSecure flags the cookie for HTTPS-only transmission.
 	CookieSecure bool
 
 	// CookieHTTPOnly prevents client-side scripts from accessing the cookie.
-	// Default: true. To disable, set DisableCookieHTTPOnly to true.
-	CookieHTTPOnly bool
-
-	// DisableCookieHTTPOnly explicitly disables the HTTPOnly flag on the
-	// session cookie. When true, CookieHTTPOnly is forced to false.
-	DisableCookieHTTPOnly bool
-
-	// CookieSessionOnly, when true, omits the Max-Age attribute from the
-	// cookie so it becomes a browser-session-scoped cookie (deleted when
-	// the browser closes).
-	CookieSessionOnly bool
+	// nil means "use default (true)". Set to a non-nil pointer to
+	// explicitly enable or disable: BoolPtr(false) disables HTTPOnly
+	// for JS-based session management.
+	CookieHTTPOnly *bool
 
 	// CookieSameSite controls cross-site request cookie behavior.
 	// Default: celeris.SameSiteLaxMode.
@@ -118,29 +113,38 @@ type Config struct {
 	// KeyGenerator generates new session IDs. Default: 32-byte crypto/rand hex.
 	KeyGenerator func() string
 
-	// SessionIDLength is the expected hex-encoded session ID length.
-	// Used for validating incoming session IDs before store lookup.
-	// Default: 64 (32 random bytes hex-encoded). Set this if you use
-	// a custom KeyGenerator that produces IDs of a different length.
-	// Set to -1 to disable length validation entirely.
-	SessionIDLength int
-
 	// ErrorHandler is called when a store operation fails. If nil, the error
 	// is returned up the middleware chain.
 	ErrorHandler func(c *celeris.Context, err error) error
 }
 
-// DefaultConfig is the default session configuration.
-var DefaultConfig = Config{
+// defaultCookieMaxAge is the default cookie Max-Age in seconds (24h).
+var defaultCookieMaxAge = 86400
+
+// defaultCookieHTTPOnly is the default for the HTTPOnly cookie attribute.
+var defaultCookieHTTPOnly = true
+
+var defaultConfig = Config{
 	CookieName:      "celeris_session",
 	CookiePath:      "/",
-	CookieMaxAge:    86400,
-	CookieHTTPOnly:  true,
+	CookieMaxAge:    &defaultCookieMaxAge,
+	CookieHTTPOnly:  &defaultCookieHTTPOnly,
 	CookieSameSite:  celeris.SameSiteLaxMode,
 	IdleTimeout:     30 * time.Minute,
 	AbsoluteTimeout: 24 * time.Hour,
-	SessionIDLength: 64,
 }
+
+// BoolPtr returns a pointer to the given bool value. Use this to
+// explicitly set [Config].CookieHTTPOnly:
+//
+//	session.New(session.Config{CookieHTTPOnly: session.BoolPtr(false)})
+func BoolPtr(v bool) *bool { return &v }
+
+// IntPtr returns a pointer to the given int value. Use this to
+// explicitly set [Config].CookieMaxAge:
+//
+//	session.New(session.Config{CookieMaxAge: session.IntPtr(0)}) // session cookie
+func IntPtr(v int) *int { return &v }
 
 // ChainExtractor returns an [Extractor] that tries each extractor in order
 // and returns the first non-empty result. This is useful when session IDs
@@ -167,34 +171,29 @@ func applyDefaults(cfg Config) Config {
 		cfg.Store = NewMemoryStore()
 	}
 	if cfg.CookieName == "" {
-		cfg.CookieName = DefaultConfig.CookieName
+		cfg.CookieName = defaultConfig.CookieName
 	}
 	if cfg.CookiePath == "" {
-		cfg.CookiePath = DefaultConfig.CookiePath
+		cfg.CookiePath = defaultConfig.CookiePath
 	}
-	if cfg.CookieMaxAge == 0 {
-		cfg.CookieMaxAge = DefaultConfig.CookieMaxAge
+	if cfg.CookieMaxAge == nil {
+		cfg.CookieMaxAge = defaultConfig.CookieMaxAge
 	}
 	if cfg.CookieSameSite == 0 {
-		cfg.CookieSameSite = DefaultConfig.CookieSameSite
+		cfg.CookieSameSite = defaultConfig.CookieSameSite
 	}
 	if cfg.IdleTimeout <= 0 {
-		cfg.IdleTimeout = DefaultConfig.IdleTimeout
+		cfg.IdleTimeout = defaultConfig.IdleTimeout
 	}
 	// AbsoluteTimeout: 0 → default (24h), -1 → disabled, >0 → as-is.
 	if cfg.AbsoluteTimeout == 0 {
-		cfg.AbsoluteTimeout = DefaultConfig.AbsoluteTimeout
+		cfg.AbsoluteTimeout = defaultConfig.AbsoluteTimeout
 	}
 	if cfg.KeyGenerator == nil {
-		cfg.KeyGenerator = newBufferedKeyGenerator().generate
+		cfg.KeyGenerator = func() string { return randutil.HexToken(keyBytes) }
 	}
-	if cfg.SessionIDLength == 0 {
-		cfg.SessionIDLength = DefaultConfig.SessionIDLength
-	}
-	if cfg.DisableCookieHTTPOnly {
-		cfg.CookieHTTPOnly = false
-	} else if !cfg.CookieHTTPOnly {
-		cfg.CookieHTTPOnly = DefaultConfig.CookieHTTPOnly
+	if cfg.CookieHTTPOnly == nil {
+		cfg.CookieHTTPOnly = defaultConfig.CookieHTTPOnly
 	}
 	return cfg
 }
@@ -208,35 +207,17 @@ func (cfg Config) validate() {
 	}
 }
 
-// bufferedKeyGenerator batches crypto/rand reads into a 4096-byte buffer,
-// amortizing syscall overhead across 128 session IDs (32 bytes each).
 const keyBytes = 32
-const keyBufSize = keyBytes * 128 // 4096 bytes
+const sessionIDHexLen = keyBytes * 2
 
-type bufferedKeyGenerator struct {
-	mu  sync.Mutex
-	buf [keyBufSize]byte
-	pos int
+// newBufferedKeyGenerator returns a key generator backed by the shared
+// randutil buffered generator. Retained for test compatibility.
+func newBufferedKeyGenerator() *bufferedKeyGen {
+	return &bufferedKeyGen{}
 }
 
-func newBufferedKeyGenerator() *bufferedKeyGenerator {
-	return &bufferedKeyGenerator{pos: keyBufSize}
-}
+type bufferedKeyGen struct{}
 
-func (g *bufferedKeyGenerator) generate() string {
-	g.mu.Lock()
-	if g.pos >= keyBufSize {
-		if _, err := rand.Read(g.buf[:]); err != nil {
-			panic("session: crypto/rand failed: " + err.Error())
-		}
-		g.pos = 0
-	}
-	var raw [keyBytes]byte
-	copy(raw[:], g.buf[g.pos:g.pos+keyBytes])
-	g.pos += keyBytes
-	g.mu.Unlock()
-
-	var dst [keyBytes * 2]byte
-	hex.Encode(dst[:], raw[:])
-	return string(dst[:])
+func (g *bufferedKeyGen) generate() string {
+	return randutil.HexToken(keyBytes)
 }

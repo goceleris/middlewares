@@ -435,8 +435,8 @@ func TestMultipleStatusCodes(t *testing.T) {
 	}
 }
 
-func TestDefaultConfig(t *testing.T) {
-	cfg := applyDefaults(DefaultConfig)
+func TestDefaultConfigValues(t *testing.T) {
+	cfg := applyDefaults(defaultConfig)
 	if cfg.Path != "/metrics" {
 		t.Fatalf("default path: got %q, want /metrics", cfg.Path)
 	}
@@ -562,6 +562,29 @@ func TestDuplicateBucketsPanics(t *testing.T) {
 		Registry: newIsolatedRegistry(),
 		Buckets:  []float64{0.1, 0.5, 0.5, 1.0},
 	})
+}
+
+func TestLabelFuncsReservedKeyPanics(t *testing.T) {
+	for _, key := range []string{"method", "path", "status"} {
+		t.Run(key, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("expected panic for reserved LabelFuncs key %q", key)
+				}
+				msg, ok := r.(string)
+				if !ok || !strings.Contains(msg, "conflicts with reserved base label") {
+					t.Fatalf("unexpected panic message: %v", r)
+				}
+			}()
+			New(Config{
+				Registry: newIsolatedRegistry(),
+				LabelFuncs: map[string]func(*celeris.Context) string{
+					key: func(_ *celeris.Context) string { return "x" },
+				},
+			})
+		})
+	}
 }
 
 func TestSortedBucketsDoNotPanic(_ *testing.T) {
@@ -1031,16 +1054,12 @@ func TestLabelFuncsMultipleLabels(t *testing.T) {
 	}
 }
 
-func TestHistogramOptsCallback(t *testing.T) {
+func TestCustomSizeBuckets(t *testing.T) {
 	reg := newIsolatedRegistry()
 	customBuckets := []float64{256, 1024, 4096}
 	mw := New(Config{
-		Registry: reg,
-		HistogramOpts: func(opts *prometheus.HistogramOpts) {
-			if opts.Name == "request_size_bytes" {
-				opts.Buckets = customBuckets
-			}
-		},
+		Registry:    reg,
+		SizeBuckets: customBuckets,
 	})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
@@ -1082,29 +1101,6 @@ func TestHistogramOptsCallback(t *testing.T) {
 		}
 	}
 	t.Fatal("request_size_bytes metric not found")
-}
-
-func TestCounterOptsCallback(t *testing.T) {
-	reg := newIsolatedRegistry()
-	var callbackCalled bool
-	mw := New(Config{
-		Registry: reg,
-		CounterOpts: func(_ *prometheus.CounterOpts) {
-			callbackCalled = true
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-
-	_, err := runChain(t, chain, "GET", "/api/counter-opts")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !callbackCalled {
-		t.Fatal("CounterOpts callback was not invoked")
-	}
 }
 
 func TestIgnoreStatusCodesExcludesFromAllMetrics(t *testing.T) {
@@ -1296,6 +1292,44 @@ func TestValidUTF8PathUnchanged(t *testing.T) {
 	})
 	if count != 1 {
 		t.Fatalf("valid UTF-8 path should be unchanged: got count %v, want 1", count)
+	}
+}
+
+// --- v1.2.4 celeristest option tests ---
+
+func TestFullPathSentinel404(t *testing.T) {
+	reg := newIsolatedRegistry()
+	mw := New(Config{Registry: reg})
+	handler := func(c *celeris.Context) error {
+		return c.String(404, "not found")
+	}
+	chain := []celeris.HandlerFunc{mw, handler}
+
+	// Simulate a 404 where the core router sets FullPath to "<unmatched>".
+	_, err := runChain(t, chain, "GET", "/nonexistent/scanner/path",
+		celeristest.WithFullPath("<unmatched>"),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The metrics path label should use the sentinel, not the raw request path.
+	count := getCounterValue(t, reg, "celeris_requests_total", map[string]string{
+		"method": "GET",
+		"path":   "<unmatched>",
+		"status": "404",
+	})
+	if count != 1 {
+		t.Fatalf("expected 404 recorded with <unmatched> sentinel path, got count %v", count)
+	}
+
+	rawCount := getCounterValue(t, reg, "celeris_requests_total", map[string]string{
+		"method": "GET",
+		"path":   "/nonexistent/scanner/path",
+		"status": "404",
+	})
+	if rawCount != 0 {
+		t.Fatalf("raw request path should NOT appear as label when sentinel is set, got count %v", rawCount)
 	}
 }
 

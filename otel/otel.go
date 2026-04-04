@@ -85,7 +85,7 @@ func SpanFromContext(c *celeris.Context) trace.Span {
 
 // New creates an OpenTelemetry tracing and metrics middleware.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := defaultConfig
 	if len(config) > 0 {
 		cfg = config[0]
 	}
@@ -178,6 +178,10 @@ func New(config ...Config) celeris.HandlerFunc {
 		rawMethod := c.Method()
 		method := normalizeMethod(rawMethod)
 
+		// With celeris v1.2.4+ core, FullPath() returns "<unmatched>" for 404
+		// and "<method-not-allowed>" for 405 when the request passes through
+		// the core router. When FullPath is empty (no core router, or
+		// pre-v1.2.4), the http.route attribute is simply omitted.
 		route := c.FullPath()
 
 		var spanBuf [14]attribute.KeyValue
@@ -196,16 +200,7 @@ func New(config ...Config) celeris.HandlerFunc {
 		n++
 		spanBuf[n] = semconv.URLPath(c.Path())
 		n++
-		// celeris Context does not yet expose the negotiated protocol
-		// version (e.g., "1.1" vs "2"). Default to "1.1". When serving
-		// HTTP/2 extended CONNECT, the ":protocol" pseudo-header is
-		// present, so use "2" in that case.
-		// TODO: replace with c.Protocol() once the framework exposes it.
-		protoVer := "1.1"
-		if c.Header(":protocol") != "" {
-			protoVer = "2"
-		}
-		spanBuf[n] = semconv.NetworkProtocolVersion(protoVer)
+		spanBuf[n] = semconv.NetworkProtocolVersion(c.Protocol())
 		n++
 		if collectClientIP {
 			spanBuf[n] = semconv.ClientAddress(c.ClientIP())
@@ -234,6 +229,12 @@ func New(config ...Config) celeris.HandlerFunc {
 
 		c.SetContext(spanCtx)
 
+		if rid, ok := c.Get(celeris.RequestIDKey); ok {
+			if s, ok := rid.(string); ok && s != "" {
+				span.SetAttributes(attribute.String("request.id", s))
+			}
+		}
+
 		if metricsEnabled {
 			var metricBuf [7]attribute.KeyValue
 			mn := 0
@@ -259,13 +260,11 @@ func New(config ...Config) celeris.HandlerFunc {
 			if activeRequests != nil {
 				activeRequests.Add(spanCtx, 1, activeAttrSet)
 			}
-			start := time.Now()
-
 			err := c.Next()
 
 			propagators.Inject(spanCtx, carrier)
 
-			duration := time.Since(start).Seconds()
+			duration := time.Since(c.StartTime()).Seconds()
 			status := c.StatusCode()
 
 			if span.IsRecording() {

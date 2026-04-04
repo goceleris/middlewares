@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"fmt"
+
 	"github.com/goceleris/celeris"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -65,18 +67,12 @@ type Config struct {
 	// after c.Next() returns, so response-derived values are available.
 	LabelFuncs map[string]func(*celeris.Context) string
 
-	// HistogramOpts is an optional callback invoked during initialization for
-	// each histogram metric. Use it to customize bucket boundaries or other
-	// histogram options per-metric.
-	HistogramOpts func(*prometheus.HistogramOpts)
-
-	// CounterOpts is an optional callback invoked during initialization for
-	// each counter metric. Use it to customize counter options per-metric.
-	CounterOpts func(*prometheus.CounterOpts)
+	// SizeBuckets defines histogram bucket boundaries for request and
+	// response size histograms. Defaults to exponential byte-size buckets.
+	SizeBuckets []float64
 }
 
-// DefaultConfig is the default metrics configuration.
-var DefaultConfig = Config{}
+var defaultConfig = Config{}
 
 func applyDefaults(cfg Config) Config {
 	if cfg.Path == "" {
@@ -88,6 +84,9 @@ func applyDefaults(cfg Config) Config {
 	if len(cfg.Buckets) == 0 {
 		cfg.Buckets = DefaultBuckets()
 	}
+	if len(cfg.SizeBuckets) == 0 {
+		cfg.SizeBuckets = []float64{100, 1000, 10000, 100000, 1000000, 10000000}
+	}
 	return cfg
 }
 
@@ -95,6 +94,17 @@ func (cfg Config) validate() {
 	for i := 1; i < len(cfg.Buckets); i++ {
 		if cfg.Buckets[i] <= cfg.Buckets[i-1] {
 			panic("metrics: Buckets must be sorted in ascending order")
+		}
+	}
+	for i := 1; i < len(cfg.SizeBuckets); i++ {
+		if cfg.SizeBuckets[i] <= cfg.SizeBuckets[i-1] {
+			panic("metrics: SizeBuckets must be sorted in ascending order")
+		}
+	}
+	reservedLabels := map[string]bool{"method": true, "path": true, "status": true}
+	for k := range cfg.LabelFuncs {
+		if reservedLabels[k] {
+			panic(fmt.Sprintf("metrics: LabelFuncs key %q conflicts with reserved base label", k))
 		}
 	}
 }

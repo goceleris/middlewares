@@ -5,83 +5,23 @@
 // slice at initialization. The hot path iterates this slice with zero
 // allocations.
 //
-// # Default Headers
+// Default headers set on every response:
 //
-// The following headers are set by default:
-//
-//   - X-Content-Type-Options: "nosniff" -- prevents browsers from MIME-sniffing
-//     the response away from the declared Content-Type, blocking drive-by
-//     download attacks.
-//   - X-Frame-Options: "SAMEORIGIN" -- prevents the page from being loaded in
-//     an iframe on a different origin, mitigating clickjacking.
-//   - X-XSS-Protection: "0" -- disables the legacy browser XSS auditor, which
-//     can introduce XSS via selective response filtering (modern best practice).
-//   - Strict-Transport-Security (HSTS) -- tells browsers to only connect via
-//     HTTPS for the configured max-age, preventing protocol downgrade attacks.
-//     HSTS is only sent over HTTPS connections (detected via c.Scheme(), which
-//     checks X-Forwarded-Proto internally). Set [Config].HSTSMaxAge to -1 to
-//     omit the header entirely. Set [Config].HSTSExcludeSubdomains to true to
-//     remove the includeSubDomains directive.
-//   - Referrer-Policy: "strict-origin-when-cross-origin" -- limits the
-//     Referer header to the origin on cross-origin requests, preventing URL
-//     path leakage.
-//   - Cross-Origin-Opener-Policy: "same-origin" -- isolates the browsing
-//     context from cross-origin popups, preventing Spectre-style side-channel
-//     attacks.
-//   - Cross-Origin-Resource-Policy: "same-origin" -- prevents other origins
-//     from loading the resource, mitigating cross-origin data leaks.
-//   - Cross-Origin-Embedder-Policy: "require-corp" -- ensures all sub-resources
-//     are loaded with CORP/CORS, enabling SharedArrayBuffer and high-resolution
-//     timers safely.
-//   - X-DNS-Prefetch-Control: "off" -- disables DNS prefetching to prevent
-//     leaking which links the user might follow.
-//   - X-Permitted-Cross-Domain-Policies: "none" -- prevents Adobe Flash and
-//     Acrobat from loading data from the domain.
-//   - Origin-Agent-Cluster: "?1" -- requests the browser to place the origin
-//     in its own agent cluster, isolating it from same-site cross-origin pages
-//     for Spectre mitigation.
-//   - X-Download-Options: "noopen" -- prevents IE from opening downloaded files
-//     directly in the browser context, forcing a save-to-disk prompt.
-//
-// # Optional Headers
+//   - X-Content-Type-Options: "nosniff"
+//   - X-Frame-Options: "SAMEORIGIN"
+//   - X-XSS-Protection: "0" (disables legacy XSS auditor)
+//   - Strict-Transport-Security (HTTPS only, 2-year max-age, includeSubDomains)
+//   - Referrer-Policy: "strict-origin-when-cross-origin"
+//   - Cross-Origin-Opener-Policy: "same-origin"
+//   - Cross-Origin-Resource-Policy: "same-origin"
+//   - Cross-Origin-Embedder-Policy: "require-corp"
+//   - X-DNS-Prefetch-Control: "off"
+//   - X-Permitted-Cross-Domain-Policies: "none"
+//   - Origin-Agent-Cluster: "?1"
+//   - X-Download-Options: "noopen"
 //
 // Content-Security-Policy and Permissions-Policy are only included when
-// their respective [Config] fields are non-empty. Set [Config].CSPReportOnly
-// to true to use Content-Security-Policy-Report-Only instead of
-// Content-Security-Policy, allowing you to test a policy without
-// enforcement.
-//
-// # HSTS Configuration
-//
-// HSTS is on by default with a 2-year max-age and includeSubDomains. Use
-// [Config].HSTSExcludeSubdomains to remove the includeSubDomains directive,
-// [Config].HSTSPreload to add the preload flag, and [Config].HSTSMaxAge set
-// to -1 to suppress the header entirely.
-//
-// When [Config].HSTSPreload is true, validate() enforces two HSTS preload
-// requirements and panics at initialization if violated:
-//   - HSTSMaxAge must be >= 31536000 (1 year).
-//   - HSTSExcludeSubdomains must be false (preload requires includeSubDomains).
-//
-// Additionally, setting CSPReportOnly without a ContentSecurityPolicy panics,
-// as report-only mode without a policy is meaningless.
-//
-// # Suppressing Individual Headers
-//
-// Set any string header field to [Suppress] ("-") to explicitly omit that
-// header from the response. Unlike an empty string (which triggers the
-// default value), Suppress survives applyDefaults and causes buildHeaders
-// to skip the header entirely:
-//
-//	server.Use(secure.New(secure.Config{
-//	    XFrameOptions: secure.Suppress, // omit X-Frame-Options
-//	}))
-//
-// # Skipping
-//
-// Use [Config].Skip for dynamic skip logic or [Config].SkipPaths for
-// exact-match path exclusions (e.g., health check endpoints). Skipped
-// requests receive no security headers at all.
+// their respective [Config] fields are non-empty.
 //
 // # Usage
 //
@@ -89,7 +29,7 @@
 //
 //	server.Use(secure.New())
 //
-// Custom configuration (override specific headers):
+// Custom configuration:
 //
 //	server.Use(secure.New(secure.Config{
 //	    ContentSecurityPolicy: "default-src 'self'",
@@ -97,12 +37,35 @@
 //	    HSTSPreload:           true,
 //	}))
 //
-// Skip health check paths:
+// # Suppressing Individual Headers
+//
+// Set any string field to [Suppress] ("-") to omit that header:
 //
 //	server.Use(secure.New(secure.Config{
-//	    SkipPaths: []string{"/health", "/ready"},
+//	    XFrameOptions: secure.Suppress,
 //	}))
 //
-// Suppress a header by setting its value to [Suppress] ("-"). For HSTS,
-// set [Config].HSTSMaxAge to -1 to omit the header.
+// For HSTS, set [Config].DisableHSTS to true to omit the header entirely.
+// HSTSMaxAge defaults to 2 years (63072000 seconds) whether or not other
+// fields are customized — there is no zero-value trap.
+//
+// # HSTS Preload Validation
+//
+// When [Config].HSTSPreload is true, validate() panics at initialization
+// if HSTSMaxAge < 31536000 or HSTSExcludeSubdomains is true, enforcing
+// HSTS preload list requirements.
+//
+// # Skipping
+//
+// Use [Config].Skip for dynamic skip logic or [Config].SkipPaths for
+// exact-match path exclusions. Skipped requests receive no security
+// headers at all.
+//
+// # CORS Interaction
+//
+// When using CORS middleware alongside secure, note that the default
+// CrossOriginEmbedderPolicy (require-corp) and CrossOriginResourcePolicy
+// (same-origin) block cross-origin resource loading. APIs serving
+// cross-origin requests should set CrossOriginResourcePolicy: "cross-origin"
+// and CrossOriginEmbedderPolicy: [Suppress].
 package secure

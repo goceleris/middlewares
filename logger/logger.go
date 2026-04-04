@@ -22,7 +22,7 @@ var cachedPID = os.Getpid()
 
 // New creates a logger middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig()
+	cfg := defaultConfigCopy()
 	if len(config) > 0 {
 		cfg = config[0]
 	}
@@ -45,11 +45,8 @@ func New(config ...Config) celeris.HandlerFunc {
 	}
 
 	handler := cfg.Output.Handler()
-	if cfg.DisableColors && !cfg.ForceColors {
+	if cfg.DisableColors {
 		disableHandlerColors(handler)
-	}
-	if cfg.ForceColors {
-		enableHandlerColors(handler)
 	}
 	levelFn := cfg.Level
 	fieldsFn := cfg.Fields
@@ -60,7 +57,6 @@ func New(config ...Config) celeris.HandlerFunc {
 	logHost := cfg.LogHost
 	logUserAgent := cfg.LogUserAgent
 	logReferer := cfg.LogReferer
-	logProtocol := cfg.LogProtocol
 	logRoute := cfg.LogRoute
 	logPID := cfg.LogPID
 	logQuery := cfg.LogQueryParams
@@ -99,9 +95,8 @@ func New(config ...Config) celeris.HandlerFunc {
 			c.CaptureResponse()
 		}
 
-		start := time.Now()
 		err := c.Next()
-		latency := time.Since(start)
+		latency := time.Since(c.StartTime())
 
 		status := c.StatusCode()
 		level := levelFn(status)
@@ -131,7 +126,7 @@ func New(config ...Config) celeris.HandlerFunc {
 		if ip := c.ClientIP(); ip != "" {
 			attrs = append(attrs, slog.String("client_ip", ip))
 		}
-		if rid, ok := c.Get("request_id"); ok {
+		if rid, ok := c.Get(celeris.RequestIDKey); ok {
 			if s, ok := rid.(string); ok && s != "" {
 				attrs = append(attrs, slog.String("request_id", s))
 			}
@@ -154,13 +149,6 @@ func New(config ...Config) celeris.HandlerFunc {
 		if logReferer {
 			if ref := c.Header("referer"); ref != "" {
 				attrs = append(attrs, slog.String("referer", ref))
-			}
-		}
-		if logProtocol {
-			// Read x-forwarded-proto (set by reverse proxies) as a
-			// best-effort signal for the upstream client-facing scheme.
-			if scheme := c.Header("x-forwarded-proto"); scheme != "" {
-				attrs = append(attrs, slog.String("scheme", scheme))
 			}
 		}
 		if logRoute {
@@ -250,7 +238,7 @@ func New(config ...Config) celeris.HandlerFunc {
 			}
 		}
 
-		ts := start
+		ts := c.StartTime()
 		if tz != nil {
 			ts = ts.In(tz)
 		}
@@ -285,16 +273,6 @@ func disableHandlerColors(h slog.Handler) {
 		v.color = false
 	case *groupHandler:
 		v.color = false
-	}
-}
-
-// enableHandlerColors sets color=true on FastHandler or groupHandler.
-func enableHandlerColors(h slog.Handler) {
-	switch v := h.(type) {
-	case *FastHandler:
-		v.color = true
-	case *groupHandler:
-		v.color = true
 	}
 }
 

@@ -3,6 +3,7 @@ package keyauth
 import (
 	"crypto/subtle"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/goceleris/celeris"
@@ -383,9 +384,8 @@ func TestUnsupportedKeyLookupSourcePanics(t *testing.T) {
 }
 
 func TestDefaultConfigKeyLookup(t *testing.T) {
-	cfg := DefaultConfig()
-	if cfg.KeyLookup != "header:X-API-Key" {
-		t.Fatalf("default KeyLookup: got %q, want %q", cfg.KeyLookup, "header:X-API-Key")
+	if defaultConfig.KeyLookup != "header:X-API-Key" {
+		t.Fatalf("default KeyLookup: got %q, want %q", defaultConfig.KeyLookup, "header:X-API-Key")
 	}
 }
 
@@ -764,13 +764,15 @@ func TestMultiSourceWithFormFallback(t *testing.T) {
 
 func TestWWWAuthenticateRFC6750AllFields(t *testing.T) {
 	mw := New(Config{
-		Validator:                 validatorFor("correct"),
-		AuthScheme:                "Bearer",
-		Realm:                     "MyAPI",
-		ChallengeError:            "invalid_token",
-		ChallengeErrorDescription: "The access token expired",
-		ChallengeErrorURI:         "https://example.com/error",
-		ChallengeScope:            "read write",
+		Validator:  validatorFor("correct"),
+		AuthScheme: "Bearer",
+		Realm:      "MyAPI",
+		ChallengeParams: map[string]string{
+			"error":             "invalid_token",
+			"error_description": "The access token expired",
+			"error_uri":         "https://example.com/error",
+			"scope":             "read write",
+		},
 	})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
@@ -782,7 +784,7 @@ func TestWWWAuthenticateRFC6750AllFields(t *testing.T) {
 	err := ctx.Next()
 	testutil.AssertHTTPError(t, err, 401)
 
-	expected := `Bearer realm="MyAPI", scope="read write", error="invalid_token", error_description="The access token expired", error_uri="https://example.com/error"`
+	expected := `Bearer realm="MyAPI", error="invalid_token", error_description="The access token expired", error_uri="https://example.com/error", scope="read write"`
 	found := false
 	for _, h := range ctx.ResponseHeaders() {
 		if h[0] == "www-authenticate" {
@@ -800,8 +802,10 @@ func TestWWWAuthenticateRFC6750AllFields(t *testing.T) {
 
 func TestWWWAuthenticateRFC6750ErrorOnly(t *testing.T) {
 	mw := New(Config{
-		Validator:      validatorFor("correct"),
-		ChallengeError: "insufficient_scope",
+		Validator: validatorFor("correct"),
+		ChallengeParams: map[string]string{
+			"error": "insufficient_scope",
+		},
 	})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
@@ -831,9 +835,11 @@ func TestWWWAuthenticateRFC6750ErrorOnly(t *testing.T) {
 
 func TestWWWAuthenticateRFC6750ScopeOnly(t *testing.T) {
 	mw := New(Config{
-		Validator:      validatorFor("correct"),
-		AuthScheme:     "Bearer",
-		ChallengeScope: "admin",
+		Validator:  validatorFor("correct"),
+		AuthScheme: "Bearer",
+		ChallengeParams: map[string]string{
+			"scope": "admin",
+		},
 	})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
@@ -863,61 +869,97 @@ func TestWWWAuthenticateRFC6750ScopeOnly(t *testing.T) {
 
 func TestWWWAuthenticateValueRFC6750(t *testing.T) {
 	got := wwwAuthenticateValue(Config{
-		AuthScheme:                "Bearer",
-		Realm:                     "API",
-		ChallengeError:            "invalid_request",
-		ChallengeErrorDescription: "missing token",
-		ChallengeErrorURI:         "https://docs.example.com/auth",
-		ChallengeScope:            "read",
+		AuthScheme: "Bearer",
+		Realm:      "API",
+		ChallengeParams: map[string]string{
+			"error":             "invalid_request",
+			"error_description": "missing token",
+			"error_uri":         "https://docs.example.com/auth",
+			"scope":             "read",
+		},
 	})
-	expected := `Bearer realm="API", scope="read", error="invalid_request", error_description="missing token", error_uri="https://docs.example.com/auth"`
+	expected := `Bearer realm="API", error="invalid_request", error_description="missing token", error_uri="https://docs.example.com/auth", scope="read"`
 	if got != expected {
 		t.Fatalf("wwwAuthenticateValue:\n  got  %q\n  want %q", got, expected)
 	}
 }
 
-func TestChallengeErrorInvalidValuePanics(t *testing.T) {
+func TestChallengeParamsRealmKeyPanics(t *testing.T) {
 	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for invalid ChallengeError")
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for ChallengeParams with 'realm' key")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "realm") {
+			t.Fatalf("unexpected panic message: %v", r)
 		}
 	}()
 	New(Config{
-		Validator:      validatorFor("x"),
-		ChallengeError: "bad_value",
+		Validator:       validatorFor("x"),
+		ChallengeParams: map[string]string{"realm": "evil"},
 	})
 }
 
-func TestChallengeErrorURIInvalidPanics(t *testing.T) {
+func TestChallengeParamsAuthSchemeKeyPanics(t *testing.T) {
 	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for invalid ChallengeErrorURI")
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for ChallengeParams with 'auth_scheme' key")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "auth_scheme") {
+			t.Fatalf("unexpected panic message: %v", r)
 		}
 	}()
 	New(Config{
-		Validator:         validatorFor("x"),
-		ChallengeErrorURI: "not-a-uri",
+		Validator:       validatorFor("x"),
+		ChallengeParams: map[string]string{"auth_scheme": "Bearer"},
 	})
 }
 
-func TestChallengeErrorURIRelativePanics(t *testing.T) {
+func TestChallengeParamsErrorInvalidValuePanics(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("expected panic for relative ChallengeErrorURI")
+			t.Fatal("expected panic for invalid ChallengeParams error")
 		}
 	}()
 	New(Config{
-		Validator:         validatorFor("x"),
-		ChallengeErrorURI: "/relative/path",
+		Validator:       validatorFor("x"),
+		ChallengeParams: map[string]string{"error": "bad_value"},
 	})
 }
 
-func TestChallengeErrorValidValues(_ *testing.T) {
+func TestChallengeParamsErrorURIInvalidPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for invalid ChallengeParams error_uri")
+		}
+	}()
+	New(Config{
+		Validator:       validatorFor("x"),
+		ChallengeParams: map[string]string{"error_uri": "not-a-uri"},
+	})
+}
+
+func TestChallengeParamsErrorURIRelativePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for relative ChallengeParams error_uri")
+		}
+	}()
+	New(Config{
+		Validator:       validatorFor("x"),
+		ChallengeParams: map[string]string{"error_uri": "/relative/path"},
+	})
+}
+
+func TestChallengeParamsErrorValidValues(_ *testing.T) {
 	for _, v := range []string{"invalid_request", "invalid_token", "insufficient_scope"} {
 		// Should not panic.
 		New(Config{
-			Validator:      validatorFor("x"),
-			ChallengeError: v,
+			Validator:       validatorFor("x"),
+			ChallengeParams: map[string]string{"error": v},
 		})
 	}
 }
@@ -1065,9 +1107,11 @@ func TestContinueOnIgnoredErrorValidKeyStillWorks(t *testing.T) {
 
 func TestWWWAuthenticateScopeValidTokens(t *testing.T) {
 	got := wwwAuthenticateValue(Config{
-		Realm:          "API",
-		AuthScheme:     "Bearer",
-		ChallengeScope: "read write",
+		Realm:      "API",
+		AuthScheme: "Bearer",
+		ChallengeParams: map[string]string{
+			"scope": "read write",
+		},
 	})
 	expected := `Bearer realm="API", scope="read write"`
 	if got != expected {
@@ -1077,9 +1121,11 @@ func TestWWWAuthenticateScopeValidTokens(t *testing.T) {
 
 func TestWWWAuthenticateEscapesDescription(t *testing.T) {
 	got := wwwAuthenticateValue(Config{
-		Realm:                     "API",
-		ChallengeError:            "invalid_token",
-		ChallengeErrorDescription: `token contains "bad" chars`,
+		Realm: "API",
+		ChallengeParams: map[string]string{
+			"error":             "invalid_token",
+			"error_description": `token contains "bad" chars`,
+		},
 	})
 	expected := `ApiKey realm="API", error="invalid_token", error_description="token contains \"bad\" chars"`
 	if got != expected {
@@ -1220,163 +1266,67 @@ func TestRealmWithControlCharPanics(t *testing.T) {
 	})
 }
 
-// --- Issue #10: DefaultConfig is a function returning a copy ---
-
-func TestDefaultConfigReturnsCopy(t *testing.T) {
-	c1 := DefaultConfig()
-	c2 := DefaultConfig()
-	c1.KeyLookup = "query:token"
-	if c2.KeyLookup != "header:X-API-Key" {
-		t.Fatalf("DefaultConfig() returned shared state: got %q", c2.KeyLookup)
+func TestDefaultConfigImmutable(t *testing.T) {
+	if defaultConfig.KeyLookup != "header:X-API-Key" {
+		t.Fatalf("defaultConfig.KeyLookup: got %q, want %q", defaultConfig.KeyLookup, "header:X-API-Key")
 	}
 }
 
-// --- CustomExtractor tests ---
+// --- ChallengeParams scope NQCHAR validation tests ---
 
-func TestCustomExtractorFallback(t *testing.T) {
-	mw := New(Config{
-		KeyLookup: "header:X-API-Key",
-		Validator: validatorFor("custom-key"),
-		CustomExtractor: func(c *celeris.Context) string {
-			return c.Header("x-custom-key")
-		},
-	})
-	var storedKey string
-	handler := func(c *celeris.Context) error {
-		storedKey = KeyFromContext(c)
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-
-	// KeyLookup finds nothing; CustomExtractor provides the key.
-	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("x-custom-key", "custom-key"),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-	if storedKey != "custom-key" {
-		t.Fatalf("key from custom extractor: got %q, want %q", storedKey, "custom-key")
-	}
-}
-
-func TestCustomExtractorKeyLookupTakesPrecedence(t *testing.T) {
-	mw := New(Config{
-		KeyLookup: "header:X-API-Key",
-		Validator: validatorFor("primary-key"),
-		CustomExtractor: func(_ *celeris.Context) string {
-			return "fallback-key"
-		},
-	})
-	var storedKey string
-	handler := func(c *celeris.Context) error {
-		storedKey = KeyFromContext(c)
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-
-	// KeyLookup finds the key; CustomExtractor should NOT be used.
-	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("x-api-key", "primary-key"),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-	if storedKey != "primary-key" {
-		t.Fatalf("key should come from KeyLookup: got %q, want %q", storedKey, "primary-key")
-	}
-}
-
-func TestCustomExtractorBothEmpty(t *testing.T) {
-	mw := New(Config{
-		Validator: validatorFor("any"),
-		CustomExtractor: func(_ *celeris.Context) string {
-			return ""
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-
-	// Neither KeyLookup nor CustomExtractor returns a key.
-	_, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertHTTPError(t, err, 401)
-	if !errors.Is(err, ErrMissingKey) {
-		t.Fatalf("expected ErrMissingKey, got %v", err)
-	}
-}
-
-func TestCustomExtractorNilIsIgnored(t *testing.T) {
-	// CustomExtractor nil should not cause issues.
-	mw := New(Config{
-		Validator:       validatorFor("test-key"),
-		CustomExtractor: nil,
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("x-api-key", "test-key"),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-}
-
-// --- ChallengeScope NQCHAR validation tests ---
-
-func TestChallengeScopeValidNQCHAR(t *testing.T) {
+func TestChallengeParamsScopeValidNQCHAR(t *testing.T) {
 	// Should not panic: valid NQCHAR tokens.
 	New(Config{
-		Validator:      validatorFor("x"),
-		ChallengeScope: "read write admin",
+		Validator:       validatorFor("x"),
+		ChallengeParams: map[string]string{"scope": "read write admin"},
 	})
 }
 
-func TestChallengeScopeWithQuotePanics(t *testing.T) {
+func TestChallengeParamsScopeWithQuotePanics(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("expected panic for ChallengeScope with double-quote")
+			t.Fatal("expected panic for scope with double-quote")
 		}
 	}()
 	New(Config{
-		Validator:      validatorFor("x"),
-		ChallengeScope: `read "write"`,
+		Validator:       validatorFor("x"),
+		ChallengeParams: map[string]string{"scope": `read "write"`},
 	})
 }
 
-func TestChallengeScopeWithBackslashPanics(t *testing.T) {
+func TestChallengeParamsScopeWithBackslashPanics(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("expected panic for ChallengeScope with backslash")
+			t.Fatal("expected panic for scope with backslash")
 		}
 	}()
 	New(Config{
-		Validator:      validatorFor("x"),
-		ChallengeScope: `read\write`,
+		Validator:       validatorFor("x"),
+		ChallengeParams: map[string]string{"scope": `read\write`},
 	})
 }
 
-func TestChallengeScopeWithControlCharPanics(t *testing.T) {
+func TestChallengeParamsScopeWithControlCharPanics(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("expected panic for ChallengeScope with control char")
+			t.Fatal("expected panic for scope with control char")
 		}
 	}()
 	New(Config{
-		Validator:      validatorFor("x"),
-		ChallengeScope: "read\x00write",
+		Validator:       validatorFor("x"),
+		ChallengeParams: map[string]string{"scope": "read\x00write"},
 	})
 }
 
-func TestChallengeScopeWithSpacePanics(t *testing.T) {
+func TestChallengeParamsScopeWithDoubleSpacePanics(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("expected panic for ChallengeScope with double space (empty token)")
+			t.Fatal("expected panic for scope with double space (empty token)")
 		}
 	}()
 	New(Config{
-		Validator:      validatorFor("x"),
-		ChallengeScope: "read  write",
+		Validator:       validatorFor("x"),
+		ChallengeParams: map[string]string{"scope": "read  write"},
 	})
 }
 

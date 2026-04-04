@@ -5,6 +5,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/goceleris/middlewares/internal/fnv1a"
 )
 
 // Storage defines the interface for server-side CSRF token storage.
@@ -72,7 +74,7 @@ func NewMemoryStorage(config ...MemoryStorageConfig) Storage {
 		cfg.CleanupInterval = time.Minute
 	}
 
-	n := nextPow2(cfg.Shards)
+	n := fnv1a.NextPow2(cfg.Shards)
 	s := &memoryStorage{
 		shards: make([]storageShard, n),
 		mask:   uint64(n - 1),
@@ -91,7 +93,7 @@ func NewMemoryStorage(config ...MemoryStorageConfig) Storage {
 }
 
 func (m *memoryStorage) shard(key string) *storageShard {
-	return &m.shards[fnv1a(key)&m.mask]
+	return &m.shards[fnv1a.Hash(key)&m.mask]
 }
 
 func (m *memoryStorage) Get(key string) (string, bool) {
@@ -176,28 +178,4 @@ func (m *memoryStorage) cleanup(ctx context.Context, interval time.Duration) {
 			}
 		}
 	}
-}
-
-func fnv1a(s string) uint64 {
-	const (
-		offset64 = 14695981039346656037
-		prime64  = 1099511628211
-	)
-	h := uint64(offset64)
-	for i := 0; i < len(s); i++ {
-		h ^= uint64(s[i])
-		h *= prime64
-	}
-	return h
-}
-
-func nextPow2(n int) int {
-	if n <= 1 {
-		return 1
-	}
-	p := 1
-	for p < n {
-		p <<= 1
-	}
-	return p
 }

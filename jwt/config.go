@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"log"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/goceleris/celeris"
 
+	"github.com/goceleris/middlewares/internal/extract"
 	"github.com/goceleris/middlewares/jwt/internal/jwtparse"
 )
 
@@ -123,32 +123,10 @@ type Config struct {
 	// middleware's return value. Enable ContinueOnIgnoredError to
 	// explicitly call c.Next() and propagate downstream errors.
 	ContinueOnIgnoredError bool
-
-	// BeforeFunc is called before any JWT processing (token extraction,
-	// parsing, validation). Use it for request decoration, logging, or
-	// other pre-processing that should occur before authentication.
-	BeforeFunc func(c *celeris.Context)
-
-	// CustomExtractor provides a user-defined token extraction function.
-	// When set, it is tried after the built-in extractors defined by
-	// TokenLookup. If all built-in extractors return empty and
-	// CustomExtractor returns a non-empty string, that value is used as
-	// the raw token. This is useful for non-standard token locations
-	// (e.g., WebSocket subprotocol, gRPC metadata).
-	CustomExtractor func(c *celeris.Context) string
-
-	// MinKeyLength, when > 0, enforces a minimum HMAC signing key length
-	// in bytes at initialization time. If SigningKey is a []byte shorter
-	// than this value, New() panics. Use this for strict security policies.
-	// When 0 (default), no hard enforcement is applied, but the middleware
-	// still logs warnings for keys shorter than the recommended minimum
-	// for the selected HMAC algorithm (32 for HS256, 48 for HS384, 64
-	// for HS512).
-	MinKeyLength int
 }
 
-// DefaultConfig is the default JWT configuration.
-var DefaultConfig = Config{
+// defaultConfig is the default JWT configuration.
+var defaultConfig = Config{
 	SigningMethod: jwtparse.SigningMethodHS256,
 	TokenLookup:   "header:Authorization:Bearer ",
 	JWKSRefresh:   time.Hour,
@@ -156,16 +134,16 @@ var DefaultConfig = Config{
 
 func applyDefaults(cfg Config) Config {
 	if cfg.SigningMethod == nil {
-		cfg.SigningMethod = DefaultConfig.SigningMethod
+		cfg.SigningMethod = defaultConfig.SigningMethod
 	}
 	if cfg.TokenLookup == "" {
-		cfg.TokenLookup = DefaultConfig.TokenLookup
+		cfg.TokenLookup = defaultConfig.TokenLookup
 	}
 	if cfg.Claims == nil && cfg.ClaimsFactory == nil {
 		cfg.Claims = jwtparse.MapClaims{}
 	}
 	if cfg.JWKSRefresh == 0 {
-		cfg.JWKSRefresh = DefaultConfig.JWKSRefresh
+		cfg.JWKSRefresh = defaultConfig.JWKSRefresh
 	}
 	if cfg.TokenContextKey == "" {
 		cfg.TokenContextKey = TokenKey
@@ -203,11 +181,6 @@ func validateHMACKeyLength(cfg Config) {
 		return
 	}
 	alg := cfg.SigningMethod.Alg()
-	if cfg.MinKeyLength > 0 {
-		if len(keyBytes) < cfg.MinKeyLength {
-			panic(fmt.Sprintf("jwt: SigningKey length %d is below MinKeyLength %d", len(keyBytes), cfg.MinKeyLength))
-		}
-	}
 	recommended, isHMAC := hmacMinKeyLengths[alg]
 	if !isHMAC {
 		return
@@ -236,72 +209,9 @@ func validateJWKSURL(rawURL string) {
 	panic("jwt: JWKS URL must use HTTPS (HTTP allowed only for localhost)")
 }
 
-// extractor extracts a token string from a request context.
-type extractor func(c *celeris.Context) string
-
-func parseExtractors(lookup string) []extractor {
-	sources := strings.Split(lookup, ",")
-	extractors := make([]extractor, 0, len(sources))
-	for _, source := range sources {
-		// Only trim leading whitespace; trailing whitespace in the prefix
-		// (e.g. "Bearer ") is significant and must be preserved.
-		source = strings.TrimLeft(source, " \t")
-		parts := strings.SplitN(source, ":", 3)
-		if len(parts) < 2 {
-			panic("jwt: invalid TokenLookup format: " + source)
-		}
-		parts[0] = strings.TrimSpace(parts[0])
-		parts[1] = strings.TrimSpace(parts[1])
-		switch parts[0] {
-		case "header":
-			key := strings.ToLower(parts[1])
-			prefix := ""
-			if len(parts) == 3 {
-				prefix = parts[2]
-			}
-			extractors = append(extractors, headerExtractor(key, prefix))
-		case "query":
-			name := parts[1]
-			extractors = append(extractors, func(c *celeris.Context) string {
-				return c.Query(name)
-			})
-		case "cookie":
-			name := parts[1]
-			extractors = append(extractors, func(c *celeris.Context) string {
-				v, _ := c.Cookie(name)
-				return v
-			})
-		case "form":
-			name := parts[1]
-			extractors = append(extractors, func(c *celeris.Context) string {
-				return c.FormValue(name)
-			})
-		case "param":
-			name := parts[1]
-			extractors = append(extractors, func(c *celeris.Context) string {
-				return c.Param(name)
-			})
-		default:
-			panic("jwt: unsupported TokenLookup source: " + parts[0])
-		}
-	}
-	return extractors
-}
-
-func headerExtractor(key, prefix string) extractor {
-	return func(c *celeris.Context) string {
-		val := c.Header(key)
-		if val == "" {
-			return ""
-		}
-		if prefix != "" {
-			if len(val) > len(prefix) && strings.EqualFold(val[:len(prefix)], prefix) {
-				return val[len(prefix):]
-			}
-			return ""
-		}
-		return val
-	}
+// parseTokenLookup parses the TokenLookup config string into an extractor.
+func parseTokenLookup(lookup string) extract.Func {
+	return extract.Parse(lookup)
 }
 
 // resolveKeyFunc builds the key function. When customValidMethods is true,

@@ -52,51 +52,25 @@ func New(config ...Config) celeris.HandlerFunc {
 			// Fall through — null is in the allowed set or allowAll is true.
 		}
 
-		// Normalize origin for case-insensitive comparison.
-		normOrigin := normalizeOrigin(origin)
-
-		// Check if origin is allowed.
-		// Order: allowAll → exactMap → wildcardPatterns → AllowOriginsFunc → AllowOriginRequestFunc
-		allowed := p.allowAllOrigins
-		if !allowed {
-			_, allowed = p.originSet[normOrigin]
-		}
-		if !allowed && origin == "null" {
-			allowed = p.nullAllowed
-		}
-		if !allowed {
-			for _, wp := range p.wildcardPatterns {
-				if wp.match(normOrigin) {
-					allowed = true
-					break
-				}
-			}
-		}
-		if !allowed && p.allowOriginsFunc != nil {
-			if !isSerializedOrigin(origin) {
-				return c.Next()
-			}
-			allowed = p.allowOriginsFunc(origin)
-		}
-		if !allowed && p.allowOriginRequestFunc != nil {
-			if p.validateOriginFunc && p.allowOriginsFunc == nil && !isSerializedOrigin(origin) {
-				return c.Next()
-			}
-			allowed = p.allowOriginRequestFunc(c, origin)
-		}
-		if !allowed {
+		if !p.isOriginAllowed(c, origin) {
 			if !p.allowAllOrigins {
 				c.AddHeader("vary", "Origin")
 			}
 			return c.Next()
 		}
 
+		isPreflight := c.Method() == "OPTIONS" && c.Header("access-control-request-method") != ""
+
 		// Set origin header.
 		if p.allowAllOrigins {
 			c.SetHeader("access-control-allow-origin", "*")
 		} else {
 			c.SetHeader("access-control-allow-origin", origin)
-			c.AddHeader("vary", "Origin")
+			// For preflight, the preflightVary string already includes Origin.
+			// Only add standalone Vary: Origin on non-preflight responses.
+			if !isPreflight {
+				c.AddHeader("vary", "Origin")
+			}
 		}
 
 		if cfg.AllowCredentials {
@@ -108,7 +82,7 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 
 		// Preflight: OPTIONS with Access-Control-Request-Method header.
-		if c.Method() == "OPTIONS" && c.Header("access-control-request-method") != "" {
+		if isPreflight {
 			c.SetHeader("access-control-allow-methods", p.allowMethods)
 			if p.mirrorRequestHeaders {
 				if reqHeaders := c.Header("access-control-request-headers"); reqHeaders != "" {

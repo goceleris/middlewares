@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -24,38 +25,36 @@ func (e *errBrokenPipe) Is(target error) bool {
 	return target == syscall.EPIPE
 }
 
-func TestRecoveryFromPanic(t *testing.T) {
-	mw := New()
-	handler := func(_ *celeris.Context) error {
-		panic("test panic")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/panic")
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 500)
-	testutil.AssertBodyContains(t, rec, "Internal Server Error")
+// errConnAborted implements error and wraps syscall.ECONNABORTED for testing.
+type errConnAborted struct{}
+
+func (e *errConnAborted) Error() string { return "connection aborted" }
+func (e *errConnAborted) Is(target error) bool {
+	return target == syscall.ECONNABORTED
 }
 
-func TestRecoveryFromErrorPanic(t *testing.T) {
-	mw := New()
-	handler := func(_ *celeris.Context) error {
-		panic(errors.New("error panic"))
+func TestRecoveryPanicTypes(t *testing.T) {
+	tests := []struct {
+		name     string
+		panicVal any
+		wantCode int
+		wantBody string
+	}{
+		{"string panic", "test panic", 500, "Internal Server Error"},
+		{"error panic", errors.New("error panic"), 500, "Internal Server Error"},
+		{"int panic", 42, 500, "Internal Server Error"},
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/panic")
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 500)
-}
-
-func TestRecoveryFromIntPanic(t *testing.T) {
-	mw := New()
-	handler := func(_ *celeris.Context) error {
-		panic(42)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mw := New()
+			handler := func(_ *celeris.Context) error { panic(tt.panicVal) }
+			chain := []celeris.HandlerFunc{mw, handler}
+			rec, err := testutil.RunChain(t, chain, "GET", "/panic")
+			testutil.AssertNoError(t, err)
+			testutil.AssertStatus(t, rec, tt.wantCode)
+			testutil.AssertBodyContains(t, rec, tt.wantBody)
+		})
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/panic")
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 500)
 }
 
 func TestRecoveryNoPanic(t *testing.T) {
@@ -105,7 +104,6 @@ func TestRecoveryCustomHandler(t *testing.T) {
 func TestRecoveryLogsStack(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
-	// Zero-value DisableLogStack = false means stacks are logged by default.
 	mw := New(Config{Logger: log, StackSize: 4096})
 	handler := func(_ *celeris.Context) error {
 		panic("stack test")
@@ -161,43 +159,39 @@ func TestErrAbortHandlerRepanics(t *testing.T) {
 }
 
 func TestRecoveryLogsMethodAndPath(t *testing.T) {
-	buf := &bytes.Buffer{}
-	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{Logger: log, StackSize: 4096})
-	handler := func(_ *celeris.Context) error {
-		panic("method path test")
+	tests := []struct {
+		name      string
+		method    string
+		path      string
+		stackSize int
+		panicVal  string
+		wantStack bool
+	}{
+		{"with stack", "POST", "/test-path", 4096, "method path test", true},
+		{"no stack", "DELETE", "/delete-path", 0, "no stack method path", false},
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, _ = testutil.RunChain(t, chain, "POST", "/test-path")
-	output := buf.String()
-	if !strings.Contains(output, `"method":"POST"`) {
-		t.Fatalf("expected method in log: %s", output)
-	}
-	if !strings.Contains(output, `"path":"/test-path"`) {
-		t.Fatalf("expected path in log: %s", output)
-	}
-}
-
-func TestRecoveryLogsMethodAndPathNoStack(t *testing.T) {
-	buf := &bytes.Buffer{}
-	log := slog.New(slog.NewJSONHandler(buf, nil))
-	// StackSize=0 disables stack capture (fix #1 allows 0).
-	// Panic value, method, and path are still logged.
-	mw := New(Config{Logger: log, StackSize: 0})
-	handler := func(_ *celeris.Context) error {
-		panic("no stack method path")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, _ = testutil.RunChain(t, chain, "DELETE", "/delete-path")
-	output := buf.String()
-	if !strings.Contains(output, `"method":"DELETE"`) {
-		t.Fatalf("expected method in log: %s", output)
-	}
-	if !strings.Contains(output, `"path":"/delete-path"`) {
-		t.Fatalf("expected path in log: %s", output)
-	}
-	if strings.Contains(output, "goroutine") {
-		t.Fatalf("expected no stack trace with StackSize=0, got: %s", output)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := &bytes.Buffer{}
+			log := slog.New(slog.NewJSONHandler(buf, nil))
+			mw := New(Config{Logger: log, StackSize: tt.stackSize})
+			handler := func(_ *celeris.Context) error { panic(tt.panicVal) }
+			chain := []celeris.HandlerFunc{mw, handler}
+			_, _ = testutil.RunChain(t, chain, tt.method, tt.path)
+			output := buf.String()
+			if !strings.Contains(output, fmt.Sprintf(`"method":"%s"`, tt.method)) {
+				t.Fatalf("expected method in log: %s", output)
+			}
+			if !strings.Contains(output, fmt.Sprintf(`"path":"%s"`, tt.path)) {
+				t.Fatalf("expected path in log: %s", output)
+			}
+			if tt.wantStack && !strings.Contains(output, "goroutine") {
+				t.Fatalf("expected stack trace in log: %s", output)
+			}
+			if !tt.wantStack && strings.Contains(output, "goroutine") {
+				t.Fatalf("expected no stack trace with StackSize=0, got: %s", output)
+			}
+		})
 	}
 }
 
@@ -206,7 +200,6 @@ func TestStackAllCapturesAllGoroutines(t *testing.T) {
 	log := slog.New(slog.NewJSONHandler(buf, nil))
 	mw := New(Config{Logger: log, StackSize: 65536, StackAll: true})
 
-	// Spin up a background goroutine that will show up in the stack dump.
 	ready := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -223,7 +216,6 @@ func TestStackAllCapturesAllGoroutines(t *testing.T) {
 	close(done)
 
 	output := buf.String()
-	// StackAll=true should capture multiple goroutine stacks.
 	count := strings.Count(output, "goroutine")
 	if count < 2 {
 		t.Fatalf("expected multiple goroutine stacks with StackAll=true, found %d occurrences in: %s", count, output)
@@ -243,13 +235,9 @@ func TestNestedRecoveryPanic(t *testing.T) {
 	rec, err := testutil.RunChain(t, chain, "GET", "/nested")
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 500)
-	// Verify the default 500 JSON body is returned when ErrorHandler panics.
 	body := rec.BodyString()
 	if !strings.Contains(body, "Internal Server Error") {
 		t.Fatalf("expected default JSON error body, got: %s", body)
-	}
-	if !strings.Contains(body, "error") {
-		t.Fatalf("expected JSON with 'error' key, got: %s", body)
 	}
 }
 
@@ -272,7 +260,6 @@ func TestBrokenPipeHandlerReceivesError(t *testing.T) {
 	if receivedErr == nil {
 		t.Fatal("expected BrokenPipeHandler to receive the error")
 	}
-	// Verify the error is the correct type (*net.OpError wrapping EPIPE).
 	opErr, ok := receivedErr.(*net.OpError)
 	if !ok {
 		t.Fatalf("expected *net.OpError, got %T", receivedErr)
@@ -285,43 +272,46 @@ func TestBrokenPipeHandlerReceivesError(t *testing.T) {
 	}
 }
 
-func TestBrokenPipeNilHandlerReturnsSentinel(t *testing.T) {
-	mw := New(Config{DisableLogStack: true})
-	handler := func(_ *celeris.Context) error {
-		panic(&net.OpError{Op: "write", Err: &errBrokenPipe{}})
+func TestBrokenPipeNilHandlerReturnsError(t *testing.T) {
+	tests := []struct {
+		name     string
+		panicVal any
+	}{
+		{"EPIPE via OpError", &net.OpError{Op: "write", Err: &errBrokenPipe{}}},
+		{"EPIPE direct", &errBrokenPipe{}},
+		{"ECONNABORTED direct", &errConnAborted{}},
+		{"ECONNABORTED via OpError", &net.OpError{Op: "write", Err: &errConnAborted{}}},
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/broken-sentinel")
-	if !errors.Is(err, ErrBrokenPipe) {
-		t.Fatalf("expected ErrBrokenPipe sentinel, got %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mw := New(Config{DisableLogStack: true})
+			handler := func(_ *celeris.Context) error { panic(tt.panicVal) }
+			chain := []celeris.HandlerFunc{mw, handler}
+			_, err := testutil.RunChain(t, chain, "GET", "/broken")
+			if err == nil {
+				t.Fatal("expected error from broken pipe")
+			}
+			if !strings.Contains(err.Error(), "broken pipe") {
+				t.Fatalf("expected 'broken pipe' in error message, got: %v", err)
+			}
+		})
 	}
 }
 
-func TestBrokenPipeDirectEPIPE(t *testing.T) {
-	// errBrokenPipe implements Is(syscall.EPIPE) directly, no net.OpError wrapper.
-	mw := New(Config{DisableLogStack: true})
+func TestNegativeStackSizeSilentlyFixed(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(buf, nil))
+	mw := New(Config{Logger: log, StackSize: -1})
 	handler := func(_ *celeris.Context) error {
-		panic(&errBrokenPipe{})
+		panic("negative stack")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/broken-direct")
-	if !errors.Is(err, ErrBrokenPipe) {
-		t.Fatalf("expected ErrBrokenPipe sentinel, got %v", err)
+	rec, err := testutil.RunChain(t, chain, "GET", "/neg-stack")
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 500)
+	if !strings.Contains(buf.String(), "goroutine") {
+		t.Fatalf("expected stack trace after negative StackSize was fixed, got: %s", buf.String())
 	}
-}
-
-func TestValidateRejectsNegativeStackSize(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for negative StackSize")
-		}
-		msg, ok := r.(string)
-		if !ok || !strings.Contains(msg, "StackSize") {
-			t.Fatalf("expected StackSize panic message, got: %v", r)
-		}
-	}()
-	New(Config{StackSize: -1})
 }
 
 func TestNestedRecoveryLogs(t *testing.T) {
@@ -349,30 +339,44 @@ func TestNestedRecoveryLogs(t *testing.T) {
 	}
 }
 
-func TestDisableBrokenPipeLogSuppressesLog(t *testing.T) {
+func TestBrokenPipeLogging(t *testing.T) {
+	tests := []struct {
+		name       string
+		disableLog bool
+		wantLog    bool
+	}{
+		{"log enabled by default", false, true},
+		{"log suppressed", true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := &bytes.Buffer{}
+			log := slog.New(slog.NewJSONHandler(buf, nil))
+			mw := New(Config{Logger: log, DisableBrokenPipeLog: tt.disableLog})
+			handler := func(_ *celeris.Context) error {
+				panic(&net.OpError{Op: "write", Err: &errBrokenPipe{}})
+			}
+			chain := []celeris.HandlerFunc{mw, handler}
+			_, _ = testutil.RunChain(t, chain, "GET", "/broken")
+			if tt.wantLog && !strings.Contains(buf.String(), "broken pipe") {
+				t.Fatalf("expected broken pipe log, got: %s", buf.String())
+			}
+			if !tt.wantLog && buf.Len() > 0 {
+				t.Fatalf("expected no log, got: %s", buf.String())
+			}
+		})
+	}
+}
+
+func TestDisableBrokenPipeLogStillLogsNormalPanics(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{
-		Logger:               log,
-		DisableBrokenPipeLog: true,
-	})
+	mw := New(Config{Logger: log, DisableBrokenPipeLog: true})
 	handler := func(_ *celeris.Context) error {
-		panic(&net.OpError{Op: "write", Err: &errBrokenPipe{}})
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, _ = testutil.RunChain(t, chain, "GET", "/broken-no-log")
-	if buf.Len() > 0 {
-		t.Fatalf("expected no log with DisableBrokenPipeLog=true, got: %s", buf.String())
-	}
-
-	// Verify that normal (non-broken-pipe) panics are still logged even
-	// when DisableBrokenPipeLog is true.
-	buf.Reset()
-	normalHandler := func(_ *celeris.Context) error {
 		panic("normal panic")
 	}
-	normalChain := []celeris.HandlerFunc{mw, normalHandler}
-	_, _ = testutil.RunChain(t, normalChain, "GET", "/normal-panic")
+	chain := []celeris.HandlerFunc{mw, handler}
+	_, _ = testutil.RunChain(t, chain, "GET", "/normal-panic")
 	if buf.Len() == 0 {
 		t.Fatal("expected normal panics to still be logged when DisableBrokenPipeLog=true")
 	}
@@ -381,90 +385,33 @@ func TestDisableBrokenPipeLogSuppressesLog(t *testing.T) {
 	}
 }
 
-func TestBrokenPipeLogEnabledByDefault(t *testing.T) {
-	buf := &bytes.Buffer{}
-	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{Logger: log})
-	handler := func(_ *celeris.Context) error {
-		panic(&net.OpError{Op: "write", Err: &errBrokenPipe{}})
+func TestDisableLogStackBehavior(t *testing.T) {
+	tests := []struct {
+		name      string
+		disable   bool
+		stackSize int
+		wantStack bool
+		wantLog   bool
+	}{
+		{"zero-value logs stack", false, 4096, true, true},
+		{"true suppresses all logging", true, 4096, false, false},
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, _ = testutil.RunChain(t, chain, "GET", "/broken-log")
-	if !strings.Contains(buf.String(), "broken pipe") {
-		t.Fatalf("expected broken pipe log by default, got: %s", buf.String())
-	}
-}
-
-// --- DisableLogStack tests ---
-
-func TestDisableLogStackZeroValueLogsStack(t *testing.T) {
-	// The whole point of the rename: zero-value DisableLogStack should log stacks.
-	// StackSize must be set explicitly since 0 now means "no stack capture".
-	buf := &bytes.Buffer{}
-	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{Logger: log, StackSize: 4096})
-	handler := func(_ *celeris.Context) error { panic("zero-value test") }
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, _ = testutil.RunChain(t, chain, "GET", "/zero-value")
-	if !strings.Contains(buf.String(), "goroutine") {
-		t.Fatalf("expected stack trace with zero-value DisableLogStack, got: %s", buf.String())
-	}
-}
-
-func TestDisableLogStackTrueSuppressesLog(t *testing.T) {
-	buf := &bytes.Buffer{}
-	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{Logger: log, DisableLogStack: true})
-	handler := func(_ *celeris.Context) error { panic("suppress test") }
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, _ = testutil.RunChain(t, chain, "GET", "/suppress")
-	if buf.Len() > 0 {
-		t.Fatalf("expected no log with DisableLogStack=true, got: %s", buf.String())
-	}
-}
-
-func TestDeprecatedLogStackOverridesDisableLogStack(t *testing.T) {
-	// LogStack: true should force DisableLogStack to false even if both are set.
-	buf := &bytes.Buffer{}
-	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{Logger: log, StackSize: 4096, DisableLogStack: true, LogStack: true})
-	handler := func(_ *celeris.Context) error { panic("compat test") }
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, _ = testutil.RunChain(t, chain, "GET", "/compat")
-	if !strings.Contains(buf.String(), "goroutine") {
-		t.Fatalf("expected stack trace when LogStack=true overrides DisableLogStack, got: %s", buf.String())
-	}
-}
-
-// errConnAborted implements error and wraps syscall.ECONNABORTED for testing.
-type errConnAborted struct{}
-
-func (e *errConnAborted) Error() string { return "connection aborted" }
-func (e *errConnAborted) Is(target error) bool {
-	return target == syscall.ECONNABORTED
-}
-
-func TestBrokenPipeECONNABORTED(t *testing.T) {
-	mw := New(Config{DisableLogStack: true})
-	handler := func(_ *celeris.Context) error {
-		panic(&errConnAborted{})
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/broken-connaborted")
-	if !errors.Is(err, ErrBrokenPipe) {
-		t.Fatalf("expected ErrBrokenPipe sentinel for ECONNABORTED, got %v", err)
-	}
-}
-
-func TestBrokenPipeECONNABORTEDOpError(t *testing.T) {
-	mw := New(Config{DisableLogStack: true})
-	handler := func(_ *celeris.Context) error {
-		panic(&net.OpError{Op: "write", Err: &errConnAborted{}})
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/broken-connaborted-op")
-	if !errors.Is(err, ErrBrokenPipe) {
-		t.Fatalf("expected ErrBrokenPipe sentinel for ECONNABORTED via OpError, got %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := &bytes.Buffer{}
+			log := slog.New(slog.NewJSONHandler(buf, nil))
+			mw := New(Config{Logger: log, StackSize: tt.stackSize, DisableLogStack: tt.disable})
+			handler := func(_ *celeris.Context) error { panic("test") }
+			chain := []celeris.HandlerFunc{mw, handler}
+			_, _ = testutil.RunChain(t, chain, "GET", "/test")
+			hasStack := strings.Contains(buf.String(), "goroutine")
+			if tt.wantStack && !hasStack {
+				t.Fatalf("expected stack trace, got: %s", buf.String())
+			}
+			if !tt.wantLog && buf.Len() > 0 {
+				t.Fatalf("expected no log, got: %s", buf.String())
+			}
+		})
 	}
 }
 
@@ -476,10 +423,8 @@ func TestPanicAfterResponseWritten(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "GET", "/written-then-panic")
-	// The middleware should NOT overwrite the already-committed 200 response.
 	testutil.AssertStatus(t, rec, 200)
 	testutil.AssertBodyContains(t, rec, "ok")
-	// The error should propagate instead of writing a second response.
 	testutil.AssertError(t, err)
 	if !strings.Contains(err.Error(), "response committed") {
 		t.Fatalf("expected 'response committed' in error, got: %v", err)
@@ -491,7 +436,6 @@ func TestPanicAfterContextCancelled(t *testing.T) {
 	log := slog.New(slog.NewJSONHandler(buf, nil))
 	mw := New(Config{Logger: log})
 	handler := func(c *celeris.Context) error {
-		// Cancel the context before panicking.
 		ctx, cancel := context.WithCancel(c.Context())
 		cancel()
 		c.SetContext(ctx)
@@ -499,45 +443,53 @@ func TestPanicAfterContextCancelled(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 	_, err := testutil.RunChain(t, chain, "GET", "/cancelled-panic")
-	// The middleware should return an error without writing a response.
 	testutil.AssertError(t, err)
 	if !strings.Contains(err.Error(), "recovery: panic:") {
 		t.Fatalf("expected 'recovery: panic:' in error, got: %v", err)
 	}
-	// Verify the WARN-level "context cancelled" log was emitted.
 	output := buf.String()
 	if !strings.Contains(output, "panic after context cancelled") {
 		t.Fatalf("expected 'panic after context cancelled' in log, got: %s", output)
 	}
 }
 
-func TestLogLevelConfig(t *testing.T) {
+func TestLogLevelInfoNotOverridden(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	mw := New(Config{Logger: log, StackSize: 4096, LogLevel: slog.LevelWarn})
-	handler := func(_ *celeris.Context) error {
-		panic("level test")
-	}
+	mw := New(Config{Logger: log, LogLevel: slog.LevelInfo})
+	handler := func(_ *celeris.Context) error { panic("info level test") }
 	chain := []celeris.HandlerFunc{mw, handler}
-	_, _ = testutil.RunChain(t, chain, "GET", "/log-level")
+	_, _ = testutil.RunChain(t, chain, "GET", "/info-level")
 	output := buf.String()
-	if !strings.Contains(output, `"level":"WARN"`) {
-		t.Fatalf("expected WARN level in log, got: %s", output)
+	if !strings.Contains(output, `"level":"INFO"`) {
+		t.Fatalf("expected INFO level in log (LevelInfo should not be overridden to ERROR), got: %s", output)
+	}
+	if strings.Contains(output, `"level":"ERROR"`) {
+		t.Fatalf("LogLevel=slog.LevelInfo was overridden to ERROR: %s", output)
 	}
 }
 
-func TestLogLevelDefaultIsError(t *testing.T) {
-	buf := &bytes.Buffer{}
-	log := slog.New(slog.NewJSONHandler(buf, nil))
-	mw := New(Config{Logger: log, StackSize: 4096})
-	handler := func(_ *celeris.Context) error {
-		panic("default level")
+func TestLogLevel(t *testing.T) {
+	tests := []struct {
+		name      string
+		level     slog.Level
+		wantLevel string
+	}{
+		{"custom WARN", slog.LevelWarn, `"level":"WARN"`},
+		{"default ERROR", slog.LevelError, `"level":"ERROR"`},
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, _ = testutil.RunChain(t, chain, "GET", "/log-level-default")
-	output := buf.String()
-	if !strings.Contains(output, `"level":"ERROR"`) {
-		t.Fatalf("expected ERROR level in log (default), got: %s", output)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := &bytes.Buffer{}
+			log := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			mw := New(Config{Logger: log, StackSize: 4096, LogLevel: tt.level})
+			handler := func(_ *celeris.Context) error { panic("level test") }
+			chain := []celeris.HandlerFunc{mw, handler}
+			_, _ = testutil.RunChain(t, chain, "GET", "/log-level")
+			if !strings.Contains(buf.String(), tt.wantLevel) {
+				t.Fatalf("expected %s level in log, got: %s", tt.wantLevel, buf.String())
+			}
+		})
 	}
 }
 

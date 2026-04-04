@@ -23,54 +23,42 @@
 // accepted, with a maximum length of 128 characters. Invalid or
 // oversized IDs are silently replaced with a fresh UUID.
 //
-// # DisableTrustProxy (replaces TrustProxy)
+// # DisableTrustProxy
 //
 // [Config].DisableTrustProxy controls whether the inbound request header
 // is accepted. When false (default), a valid inbound header is propagated
 // as-is. When true, the inbound header is always ignored and a fresh ID
-// is generated. Set to true when running behind untrusted clients to
-// prevent request ID spoofing:
+// is generated:
 //
 //	server.Use(requestid.New(requestid.Config{
 //	    DisableTrustProxy: true,
 //	}))
 //
-// The old [Config].TrustProxy *bool field is retained as a deprecated
-// backward-compatibility alias. When set to a non-nil value, it overrides
-// DisableTrustProxy in applyDefaults (*TrustProxy==false maps to
-// DisableTrustProxy=true and vice versa).
-//
 // # Retrieving the Request ID
 //
 // Use [FromContext] to retrieve the request ID from downstream handlers:
 //
-//	id := requestid.FromContext(c) // reads ContextKey from context store
+//	id := requestid.FromContext(c)
 //
-// Use [FromStdContext] to retrieve the request ID from a stdlib
-// [context.Context], which is useful for passing the ID to libraries that
-// only accept a context.Context:
+// Use [FromStdContext] to retrieve it from a stdlib [context.Context]:
 //
 //	id := requestid.FromStdContext(ctx)
 //
 // # Skipping
 //
 // Use [Config].Skip for dynamic skip logic or [Config].SkipPaths for
-// path exclusions. SkipPaths uses exact matching after trimming trailing
-// slashes from both the configured paths and the request path.
-//
-// # AfterGenerate
-//
-// [Config].AfterGenerate is called after the request ID is set. Panics
-// in AfterGenerate are recovered by the middleware: a panic message is
-// logged to stderr and the request continues normally.
+// path exclusions. SkipPaths uses exact path matching.
 //
 // # Custom Generator Validation
 //
 // Custom generator output is validated with the same rules as inbound
-// headers (printable ASCII, max 128 characters). If the generator
-// returns an invalid or empty string, it is retried up to 3 times
-// before falling back to the built-in UUID generator.
+// headers. If the generator returns an invalid or empty string, it is
+// retried up to 3 times before falling back to the built-in UUID.
 //
 // [CounterGenerator] returns a monotonic ID generator ("{prefix}-{N}")
 // with zero syscalls after initialization.
+//
+// # Middleware Order
+//
+// Register first -- all downstream middleware can access the request ID.
 package requestid

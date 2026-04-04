@@ -17,7 +17,7 @@ const jsonContentType = "application/json"
 
 // New creates a healthcheck middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig()
+	cfg := defaultConfigCopy()
 	if len(config) > 0 {
 		cfg = config[0]
 	}
@@ -33,8 +33,17 @@ func New(config ...Config) celeris.HandlerFunc {
 	startChecker := cfg.StartChecker
 	checkerTimeout := cfg.CheckerTimeout
 
+	skipMap := make(map[string]struct{}, len(cfg.SkipPaths))
+	for _, p := range cfg.SkipPaths {
+		skipMap[p] = struct{}{}
+	}
+
 	return func(c *celeris.Context) error {
 		if cfg.Skip != nil && cfg.Skip(c) {
+			return c.Next()
+		}
+
+		if _, ok := skipMap[c.Path()]; ok {
 			return c.Next()
 		}
 

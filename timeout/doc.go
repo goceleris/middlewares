@@ -12,89 +12,43 @@
 //
 //	server.Use(timeout.New(timeout.Config{
 //	    Timeout: 10 * time.Second,
-//	    ErrorHandler: func(c *celeris.Context) error {
+//	    ErrorHandler: func(c *celeris.Context, err error) error {
 //	        return c.JSON(503, map[string]string{"error": "timed out"})
 //	    },
 //	}))
 //
-// # Preemptive Mode
-//
 // Set [Config].Preemptive to true to run the handler in a separate
 // goroutine with response buffering. In preemptive mode, the middleware
 // returns the timeout error immediately when the deadline expires, even
-// if the handler is blocked on a non-context-aware operation. Panics in
-// the preemptive goroutine are recovered automatically.
-//
-//	server.Use(timeout.New(timeout.Config{
-//	    Timeout:    5 * time.Second,
-//	    Preemptive: true,
-//	}))
-//
-// # Per-Request Timeout
+// if the handler is blocked on a non-context-aware operation.
 //
 // Set [Config].TimeoutFunc to compute a timeout dynamically per request.
 // The static [Config].Timeout is used as a fallback when TimeoutFunc is
 // nil or returns a non-positive duration.
 //
-//	server.Use(timeout.New(timeout.Config{
-//	    Timeout: 5 * time.Second,
-//	    TimeoutFunc: func(c *celeris.Context) time.Duration {
-//	        if c.Path() == "/upload" {
-//	            return 30 * time.Second
-//	        }
-//	        return 0 // fall back to static Timeout
-//	    },
-//	}))
-//
-// # Cooperative vs Preemptive Tradeoffs
-//
 // In cooperative mode (default), the handler runs in the request
 // goroutine. The context deadline is set, but the handler must check
-// c.Context().Done() or use context-aware I/O to respect the timeout.
-// If the handler blocks on a non-context-aware call (e.g., a raw
-// syscall), the timeout fires after the handler returns. Cooperative
-// mode has no extra goroutine overhead and no response buffering cost.
+// c.Context().Done() to respect the timeout. Cooperative mode has no
+// extra goroutine overhead and no response buffering cost.
 //
-// In preemptive mode, the handler runs in a separate goroutine and
-// the response is buffered. When the deadline expires, the middleware
-// immediately returns the timeout error even if the handler is still
-// blocked. The tradeoff is one extra goroutine per request plus memory
-// for response buffering. Panics in the handler goroutine are recovered
-// automatically.
+// [Config].ErrorHandler receives the triggering error
+// (context.DeadlineExceeded, a matched TimeoutErrors entry, or a
+// panic-wrapped error). If it panics, [ErrServiceUnavailable] is
+// returned as a last-resort fallback.
 //
-// Handlers MUST check c.Context().Done() to react promptly to
-// cancellation in both modes.
+// [Config].TimeoutErrors lists errors that should be treated as
+// timeouts even if the deadline has not been reached (e.g., database
+// query timeouts).
 //
-// In preemptive mode, the done-signal channels are pooled via sync.Pool
-// to avoid allocating a new channel per request.
-//
-// # Error Handling
-//
-// [ErrServiceUnavailable] is the exported sentinel error (*celeris.HTTPError
-// with code 503) returned when a request times out and no custom error
-// handler is configured. Upstream middleware can match it with errors.Is:
-//
-//	var he *celeris.HTTPError
-//	if errors.As(err, &he) && he.Code == 503 { ... }
-//
-// To customize the timeout response, set [Config].ErrorHandler. To inspect
-// the failure reason (deadline exceeded, matched TimeoutErrors entry, or
-// recovered panic), set [Config].ErrorHandlerWithError instead — it takes
-// precedence over ErrorHandler when both are set:
-//
-//	server.Use(timeout.New(timeout.Config{
-//	    Timeout: 5 * time.Second,
-//	    ErrorHandlerWithError: func(c *celeris.Context, err error) error {
-//	        log.Printf("timeout cause: %v", err)
-//	        return c.JSON(503, map[string]string{"error": "timed out"})
-//	    },
-//	}))
-//
-// If the error handler itself panics, the middleware recovers and returns
-// [ErrServiceUnavailable] as a last-resort fallback.
-//
-// # Skipping
+// [ErrServiceUnavailable] is the exported sentinel error (503) returned
+// when no custom error handler is configured, usable with errors.Is.
 //
 // Set [Config].Skip to bypass the middleware dynamically, or
 // [Config].SkipPaths for exact-match path exclusions.
+//
+// Warning: In preemptive mode, if the handler does not exit promptly
+// after context cancellation, the middleware goroutine blocks waiting
+// for the handler to complete. This ties up the connection and prevents
+// the Context from being returned to the pool. Handlers MUST check
+// c.Context().Done() and return quickly on cancellation.
 package timeout

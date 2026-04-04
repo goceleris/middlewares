@@ -4,9 +4,12 @@ import (
 	"crypto/subtle"
 	"math"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/goceleris/celeris"
+
+	"github.com/goceleris/middlewares/internal/extract"
 )
 
 // ContextKey is the context store key for the authenticated API key.
@@ -37,11 +40,6 @@ type Config struct {
 	// ready-made constant-time validator.
 	Validator func(c *celeris.Context, key string) (bool, error)
 
-	// CustomExtractor provides a user-defined key extraction function.
-	// When set, it is tried AFTER the KeyLookup extractors as a fallback.
-	// Return an empty string to indicate no key was found.
-	CustomExtractor func(c *celeris.Context) string
-
 	// SuccessHandler is called after a key is successfully validated,
 	// before c.Next(). Use it to enrich the context (e.g., set tenant ID
 	// based on key). If nil, no extra action is taken.
@@ -60,18 +58,15 @@ type Config struct {
 	// header (e.g. "Bearer"). When empty, "ApiKey" is used as the scheme.
 	AuthScheme string
 
-	// ChallengeError is the RFC 6750 error code for WWW-Authenticate.
-	// Valid values: "invalid_request", "invalid_token", "insufficient_scope".
-	ChallengeError string
-
-	// ChallengeErrorDescription is the RFC 6750 error_description for WWW-Authenticate.
-	ChallengeErrorDescription string
-
-	// ChallengeErrorURI is the RFC 6750 error_uri for WWW-Authenticate.
-	ChallengeErrorURI string
-
-	// ChallengeScope is the RFC 6750 scope for WWW-Authenticate.
-	ChallengeScope string
+	// ChallengeParams is a map of RFC 6750 parameters for the
+	// WWW-Authenticate header. Common keys: "error", "error_description",
+	// "error_uri", "scope". Values are emitted as quoted-string parameters
+	// in sorted key order.
+	//
+	// The "error" value must be one of "invalid_request", "invalid_token",
+	// or "insufficient_scope". "error_uri" must be a valid absolute URI.
+	// "scope" tokens must be valid NQCHAR per RFC 6749 Appendix A.
+	ChallengeParams map[string]string
 
 	// ContinueOnIgnoredError, when true, allows the request to proceed
 	// if ErrorHandler returns nil. This enables mixed public/private routes
@@ -81,14 +76,8 @@ type Config struct {
 
 // defaultConfig is the default key auth configuration.
 // It is unexported to prevent callers from mutating shared state.
-// Use DefaultConfig() to obtain a copy.
 var defaultConfig = Config{
 	KeyLookup: "header:X-API-Key",
-}
-
-// DefaultConfig returns a copy of the default key auth configuration.
-func DefaultConfig() Config {
-	return defaultConfig
 }
 
 func applyDefaults(cfg Config) Config {
@@ -119,27 +108,33 @@ func (cfg Config) validate() {
 			}
 		}
 	}
-	if cfg.ChallengeError != "" {
-		switch cfg.ChallengeError {
+	if _, ok := cfg.ChallengeParams["realm"]; ok {
+		panic("keyauth: ChallengeParams must not contain 'realm' (use the Realm field instead)")
+	}
+	if _, ok := cfg.ChallengeParams["auth_scheme"]; ok {
+		panic("keyauth: ChallengeParams must not contain 'auth_scheme' (use the AuthScheme field instead)")
+	}
+	if errVal, ok := cfg.ChallengeParams["error"]; ok && errVal != "" {
+		switch errVal {
 		case "invalid_request", "invalid_token", "insufficient_scope":
 		default:
-			panic("keyauth: ChallengeError must be \"invalid_request\", \"invalid_token\", or \"insufficient_scope\"")
+			panic("keyauth: ChallengeParams[\"error\"] must be \"invalid_request\", \"invalid_token\", or \"insufficient_scope\"")
 		}
 	}
-	if cfg.ChallengeErrorURI != "" {
-		u, err := url.Parse(cfg.ChallengeErrorURI)
+	if uriVal, ok := cfg.ChallengeParams["error_uri"]; ok && uriVal != "" {
+		u, err := url.Parse(uriVal)
 		if err != nil || !u.IsAbs() {
-			panic("keyauth: ChallengeErrorURI must be a valid absolute URI")
+			panic("keyauth: ChallengeParams[\"error_uri\"] must be a valid absolute URI")
 		}
 	}
-	if cfg.ChallengeScope != "" {
-		for _, tok := range strings.Split(cfg.ChallengeScope, " ") {
+	if scopeVal, ok := cfg.ChallengeParams["scope"]; ok && scopeVal != "" {
+		for _, tok := range strings.Split(scopeVal, " ") {
 			if tok == "" {
-				panic("keyauth: ChallengeScope contains empty token (double space)")
+				panic("keyauth: ChallengeParams[\"scope\"] contains empty token (double space)")
 			}
 			for _, r := range tok {
 				if !isNQCHAR(r) {
-					panic("keyauth: ChallengeScope contains invalid character (must be NQCHAR per RFC 6750 Section 3)")
+					panic("keyauth: ChallengeParams[\"scope\"] contains invalid character (must be NQCHAR per RFC 6750 Section 3)")
 				}
 			}
 		}
@@ -240,111 +235,32 @@ func wwwAuthenticateValue(cfg Config) string {
 		b.WriteString("ApiKey")
 	}
 	b.WriteString(` realm="`)
-	b.WriteString(escapeQuotedString(cfg.Realm))
+	b.WriteString(celeris.EscapeQuotedString(cfg.Realm))
 	b.WriteByte('"')
-	if cfg.ChallengeScope != "" {
-		b.WriteString(`, scope="`)
-		b.WriteString(escapeQuotedString(cfg.ChallengeScope))
-		b.WriteByte('"')
-	}
-	if cfg.ChallengeError != "" {
-		b.WriteString(`, error="`)
-		b.WriteString(cfg.ChallengeError)
-		b.WriteByte('"')
-	}
-	if cfg.ChallengeErrorDescription != "" {
-		b.WriteString(`, error_description="`)
-		b.WriteString(escapeQuotedString(cfg.ChallengeErrorDescription))
-		b.WriteByte('"')
-	}
-	if cfg.ChallengeErrorURI != "" {
-		b.WriteString(`, error_uri="`)
-		b.WriteString(cfg.ChallengeErrorURI)
-		b.WriteByte('"')
-	}
-	return b.String()
-}
 
-// escapeQuotedString escapes backslashes and double-quotes for use in
-// HTTP quoted-string values (RFC 7230 section 3.2.6).
-func escapeQuotedString(s string) string {
-	if !strings.ContainsAny(s, `"\`) {
-		return s
-	}
-	var b strings.Builder
-	b.Grow(len(s) + 4)
-	for _, r := range s {
-		if r == '"' || r == '\\' {
-			b.WriteByte('\\')
+	if len(cfg.ChallengeParams) > 0 {
+		// Sort keys for deterministic output.
+		keys := make([]string, 0, len(cfg.ChallengeParams))
+		for k := range cfg.ChallengeParams {
+			keys = append(keys, k)
 		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
-type extractor func(c *celeris.Context) string
-
-func parseKeyLookup(lookup string) extractor {
-	sources := strings.Split(lookup, ",")
-	extractors := make([]extractor, 0, len(sources))
-	for _, src := range sources {
-		extractors = append(extractors, parseSingleLookup(src))
-	}
-	if len(extractors) == 1 {
-		return extractors[0]
-	}
-	return func(c *celeris.Context) string {
-		for _, ex := range extractors {
-			if v := ex(c); v != "" {
-				return v
+		sort.Strings(keys)
+		for _, k := range keys {
+			v := cfg.ChallengeParams[k]
+			if v == "" {
+				continue
 			}
+			b.WriteString(`, `)
+			b.WriteString(k)
+			b.WriteString(`="`)
+			b.WriteString(celeris.EscapeQuotedString(v))
+			b.WriteByte('"')
 		}
-		return ""
 	}
+	return b.String()
 }
 
-func parseSingleLookup(lookup string) extractor {
-	parts := strings.SplitN(lookup, ":", 3)
-	if len(parts) < 2 {
-		panic("keyauth: invalid KeyLookup format: " + lookup)
-	}
-	source := strings.TrimSpace(parts[0])
-	name := strings.TrimSpace(parts[1])
-	prefix := ""
-	if len(parts) == 3 {
-		prefix = parts[2] // preserve whitespace in prefix (e.g. "Bearer ")
-	}
-
-	var base extractor
-	switch source {
-	case "header":
-		key := strings.ToLower(name)
-		base = func(c *celeris.Context) string { return c.Header(key) }
-	case "query":
-		base = func(c *celeris.Context) string { return c.Query(name) }
-	case "cookie":
-		base = func(c *celeris.Context) string { v, _ := c.Cookie(name); return v }
-	case "form":
-		base = func(c *celeris.Context) string { return c.FormValue(name) }
-	case "param":
-		base = func(c *celeris.Context) string { return c.Param(name) }
-	default:
-		panic("keyauth: unsupported KeyLookup source: " + source)
-	}
-
-	if prefix == "" {
-		return base
-	}
-
-	return func(c *celeris.Context) string {
-		v := base(c)
-		if v == "" {
-			return ""
-		}
-		after, found := strings.CutPrefix(v, prefix)
-		if !found {
-			return ""
-		}
-		return after
-	}
+// parseKeyLookup parses the KeyLookup config string into an extractor.
+func parseKeyLookup(lookup string) extract.Func {
+	return extract.Parse(lookup)
 }

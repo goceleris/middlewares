@@ -18,47 +18,6 @@
 //	    AbsoluteTimeout: 2 * time.Hour,
 //	}))
 //
-// # Pluggable Extractors
-//
-// By default the session ID is read from a cookie via [CookieExtractor].
-// The [Config].Extractor field accepts any function matching the
-// [Extractor] signature, and three built-in constructors are provided:
-//
-//   - [CookieExtractor](name) -- reads the session ID from a named
-//     cookie. This is the default when [Config].Extractor is nil.
-//   - [HeaderExtractor](name) -- reads the session ID from a named
-//     request header. Ideal for API clients that cannot store cookies.
-//   - [QueryExtractor](name) -- reads the session ID from a named
-//     query parameter. Useful for callback URLs or environments where
-//     headers and cookies are unavailable.
-//
-// [ChainExtractor] tries multiple extractors in order and returns the
-// first non-empty result. This is useful when session IDs may arrive via
-// different transport mechanisms:
-//
-//	server.Use(session.New(session.Config{
-//	    Extractor: session.ChainExtractor(
-//	        session.CookieExtractor("celeris_session"),
-//	        session.HeaderExtractor("X-Session-ID"),
-//	    ),
-//	}))
-//
-// Example using a header extractor:
-//
-//	server.Use(session.New(session.Config{
-//	    Extractor: session.HeaderExtractor("X-Session-ID"),
-//	}))
-//
-// Example using a query parameter extractor:
-//
-//	server.Use(session.New(session.Config{
-//	    Extractor: session.QueryExtractor("sid"),
-//	}))
-//
-// When a non-cookie extractor is used, the session ID is returned in a
-// response header named after [Config].CookieName so API clients can
-// capture and resend it.
-//
 // # Accessing the Session
 //
 // Use [FromContext] to retrieve the session from downstream handlers:
@@ -74,10 +33,7 @@
 // # Session Fixation Prevention
 //
 // Applications MUST call [Session.Regenerate] (or [Session.Reset]) after
-// any authentication state change -- login, logout, privilege escalation,
-// or role switch. Failing to regenerate the session ID allows an attacker
-// who knows the pre-authentication ID to hijack the post-authentication
-// session. Example:
+// any authentication state change to prevent session fixation attacks:
 //
 //	func loginHandler(c *celeris.Context) error {
 //	    // ... validate credentials ...
@@ -89,144 +45,35 @@
 //	    return nil
 //	}
 //
-// # Session Methods
+// # Pluggable Extractors
 //
-//   - Get(key) (any, bool) -- retrieve a value by key.
-//   - GetString(key) string -- retrieve a string value (zero value if missing or wrong type).
-//   - GetInt(key) int -- retrieve an int value (zero value if missing or wrong type).
-//   - GetBool(key) bool -- retrieve a bool value (zero value if missing or wrong type).
-//   - GetFloat64(key) float64 -- retrieve a float64 value (zero value if missing or wrong type).
-//   - Set(key, value) -- store a key-value pair; marks session as modified.
-//   - Delete(key) -- remove a key; marks session as modified.
-//   - Clear() -- remove all user data; marks session as modified.
-//   - Keys() []string -- return all keys in sorted order.
-//   - Len() int -- return the number of stored key-value pairs.
-//   - ID() string -- return the session identifier.
-//   - IsFresh() bool -- true if this is a newly created session (no prior cookie).
-//   - Save() error -- explicitly persist data to the store mid-handler.
-//   - Destroy() error -- clear data, delete from store, expire cookie.
-//   - Regenerate() error -- issue a new session ID, delete old from store.
-//   - Reset() error -- combined Clear + Regenerate in a single call.
-//   - SetIdleTimeout(d) -- override idle timeout for this session only.
+// [CookieExtractor], [HeaderExtractor], [QueryExtractor], and
+// [ChainExtractor] control where the session ID is read from. When a
+// non-cookie extractor is used, the session ID is returned in a response
+// header named after [Config].CookieName so API clients can capture it.
+//
+// # Out-of-Band Access
+//
+// [NewHandler] returns a [Handler] providing both the middleware and
+// out-of-band session access via [Handler.GetByID] for admin tools or
+// background jobs.
 //
 // # Timeout Semantics
 //
-// IdleTimeout controls how long a session can be idle (no requests) before
-// the store entry expires. Each request that modifies the session resets
-// this timer. Default: 30 minutes.
-//
-// AbsoluteTimeout caps the total lifetime of a session regardless of
-// activity. Once exceeded, the session is destroyed and a fresh one is
-// created. This prevents long-lived sessions from accumulating risk.
-// Default: 24 hours. AbsoluteTimeout must be >= IdleTimeout.
-// Set to -1 to disable absolute timeout enforcement entirely.
-//
-// [Session.SetIdleTimeout] overrides the config-level idle timeout for an
-// individual session, useful for "remember me" flows.
-//
-// # Browser-Session Cookies
-//
-// Set [Config].CookieSessionOnly to true to omit the Max-Age attribute
-// from the cookie. The cookie then becomes browser-session-scoped and is
-// deleted when the browser closes.
-//
-// # Out-of-Band Access via Handler
-//
-// [NewHandler] returns a [Handler] that provides both the middleware
-// (via [Handler.Middleware]) and out-of-band session access via
-// [Handler.GetByID]. GetByID retrieves a read-only [Session] by its
-// raw ID without an HTTP context, which is useful for admin tools,
-// background jobs, or WebSocket handlers:
-//
-//	h := session.NewHandler(session.Config{...})
-//	server.Use(h.Middleware())
-//
-//	// In an admin endpoint or background job:
-//	s, err := h.GetByID(ctx, sessionID)
-//	if err != nil { /* store error */ }
-//	if s == nil { /* not found */ }
-//	user, _ := s.Get("user")
-//
-// The returned Session is read-only: changes will NOT be auto-saved.
-//
-// # Store.Get by ID
-//
-// The [Store] interface's Get method accepts a raw session ID string,
-// allowing direct session lookup without an HTTP context. This is useful
-// for administrative tools, background jobs, or WebSocket handlers that
-// need to inspect session data outside of the middleware pipeline.
-//
-// # Error Handling
-//
-// [Config].ErrorHandler is called when a store operation (Get or Save) fails.
-// When nil, the error is returned directly up the middleware chain. This
-// allows upstream error-handling middleware to decide the response:
-//
-//	server.Use(session.New(session.Config{
-//	    ErrorHandler: func(c *celeris.Context, err error) error {
-//	        return celeris.NewHTTPError(503, "session store unavailable")
-//	    },
-//	}))
-//
-// # Session ID Validation
-//
-// Incoming session IDs are validated before store lookup to prevent
-// injection attacks. The default KeyGenerator produces 64-character
-// lowercase hex strings, so [Config].SessionIDLength defaults to 64.
-// IDs that fail validation (wrong length or non-hex characters) are
-// silently treated as "no session" and a fresh session is created.
-//
-// If you use a custom KeyGenerator that produces IDs of a different
-// length, set SessionIDLength accordingly. Set SessionIDLength to -1 to
-// disable length and format validation entirely.
-//
-// # MemoryStore Lifecycle
-//
-// [NewMemoryStore] spawns a background goroutine for expired-entry cleanup.
-// Create a MemoryStore once and reuse it for the application's lifetime.
-// If you need deterministic shutdown (e.g., in tests), either provide a
-// cancellable context via [MemoryStoreConfig].CleanupContext or call
-// Close() on the returned store (type-assert to *memoryStore or use the
-// interface's Close if available). Creating a MemoryStore per-request
-// leaks goroutines.
-//
-// # Implementation Notes
-//
-// Session objects are pooled via sync.Pool and reused across requests
-// to reduce GC pressure. Fields are reset at the start of each request.
-//
-// # Skipping
-//
-// Use [Config].Skip for dynamic skip logic or [Config].SkipPaths for
-// exact-match path exclusions (e.g., health check endpoints).
+// IdleTimeout (default 30m) controls server-side expiry per session.
+// AbsoluteTimeout (default 24h) caps total session lifetime. Set
+// AbsoluteTimeout to -1 to disable it. [Session.SetIdleTimeout]
+// overrides idle timeout for individual sessions ("remember me" flows).
 //
 // # Custom Stores
 //
-// Implement the [Store] interface to back sessions with any storage backend.
-// Pass the store via [Config].Store:
+// Implement the [Store] interface to back sessions with any storage
+// backend. All [Store] methods receive a [context.Context] propagated
+// from the request for cancellation and deadline support.
 //
-//	server.Use(session.New(session.Config{
-//	    Store: myCustomStore,
-//	}))
+// # Security
 //
-// All [Store] methods receive a [context.Context] propagated from the
-// request. Implementations can use it for cancellation, deadlines, or
-// tracing. The built-in [MemoryStore] ignores the context since in-memory
-// operations are instantaneous, but external stores should pass it through
-// to their backend calls.
-//
-// External store implementations (e.g., for distributed deployments) will
-// be provided by the celeris core driver ecosystem in a future release.
-// The [Store] interface is designed to be trivially implementable against
-// any key-value backend.
-//
-// # Store-level Reset
-//
-// [Store].Reset wipes every session from the backend in a single call.
-// This is useful for administrative "log out all users" operations or
-// integration-test cleanup. The [MemoryStore] implementation iterates all
-// shards, locks each one, and clears the map.
-//
-// [ContextKey] is the key used to store the session in the request context,
-// usable with c.Get/c.Set for advanced scenarios.
+// CookieSecure defaults to false for development convenience. Production
+// deployments MUST set CookieSecure: true to prevent cookie transmission
+// over unencrypted connections.
 package session

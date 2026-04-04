@@ -134,12 +134,6 @@ type Config struct {
 	// slog attr. Disabled by default.
 	LogReferer bool
 
-	// LogProtocol reads the x-forwarded-proto header (typically set by
-	// reverse proxies) and emits it as the "scheme" slog attr. The field
-	// is omitted when the header is absent. This emits the same "scheme"
-	// attr as LogScheme; enabling both causes a panic at initialization.
-	LogProtocol bool
-
 	// LogRoute includes the matched route pattern from c.FullPath() as
 	// the "route" slog attr. Omitted when the route is empty (e.g., 404).
 	LogRoute bool
@@ -169,20 +163,13 @@ type Config struct {
 	LogBytesIn bool
 
 	// LogScheme includes the request scheme from c.Scheme() (e.g.,
-	// "https") as the "scheme" slog attr. This emits the same attr as
-	// LogProtocol; enabling both causes a panic at initialization.
+	// "https") as the "scheme" slog attr.
 	LogScheme bool
 
 	// DisableColors overrides the Color flag on FastHandlerOptions. When
 	// true, the FastHandler emits plain text without ANSI escape codes.
 	// Useful for log files, CI pipelines, or any non-terminal output.
 	DisableColors bool
-
-	// ForceColors forces ANSI color output regardless of DisableColors.
-	// When both DisableColors and ForceColors are true, ForceColors wins.
-	// Useful for testing color output in environments that would otherwise
-	// suppress it.
-	ForceColors bool
 
 	// LogResponseHeaders lists specific response header names whose values
 	// should be included in the log entry. Names are compared
@@ -216,9 +203,8 @@ type Config struct {
 	LogContextKeys []string
 }
 
-// DefaultConfig returns the default logger configuration.
-// Each call returns a fresh value to prevent mutation.
-func DefaultConfig() Config { return Config{} }
+// defaultConfigCopy returns the default logger configuration.
+func defaultConfigCopy() Config { return Config{} }
 
 func applyDefaults(cfg Config) Config {
 	if cfg.Output == nil {
@@ -247,9 +233,6 @@ func defaultLevel(status int) slog.Level {
 func (cfg Config) validate() {
 	if cfg.MaxCaptureBytes < 0 && (cfg.CaptureRequestBody || cfg.CaptureResponseBody) {
 		panic("logger: MaxCaptureBytes must not be negative when body capture is enabled")
-	}
-	if cfg.LogProtocol && cfg.LogScheme {
-		panic("logger: LogProtocol and LogScheme cannot both be enabled (they emit the same attribute)")
 	}
 }
 
@@ -283,7 +266,7 @@ func CLFConfig() Config {
 			}
 			line := fmt.Sprintf(`%s - - [%s] "%s %s %s" %d %d "%s" "%s"`,
 				host,
-				time.Now().UTC().Format("02/Jan/2006:15:04:05 -0700"),
+				time.Now().Add(-latency).UTC().Format("02/Jan/2006:15:04:05 -0700"),
 				c.Method(), c.Path(), proto,
 				c.StatusCode(), c.BytesWritten(),
 				ref, ua,

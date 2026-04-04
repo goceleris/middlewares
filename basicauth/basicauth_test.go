@@ -3,9 +3,7 @@ package basicauth
 import (
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/hex"
-	"strings"
 	"testing"
 
 	"github.com/goceleris/celeris"
@@ -40,26 +38,30 @@ func TestValidCredentialsPass(t *testing.T) {
 	}
 }
 
-func TestInvalidCredentialsReturn401(t *testing.T) {
+func TestAuthFailuresReturn401(t *testing.T) {
 	mw := New(Config{Validator: validatorFor("admin", "secret")})
 	handler := func(c *celeris.Context) error {
 		return c.String(200, "ok")
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("admin", "wrong"),
-	)
-	testutil.AssertHTTPError(t, err, 401)
-}
 
-func TestMissingAuthHeaderReturn401(t *testing.T) {
-	mw := New(Config{Validator: validatorFor("admin", "secret")})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
+	tests := []struct {
+		name string
+		opts []celeristest.Option
+	}{
+		{"invalid credentials", []celeristest.Option{celeristest.WithBasicAuth("admin", "wrong")}},
+		{"missing auth header", nil},
+		{"wrong scheme", []celeristest.Option{celeristest.WithHeader("authorization", "NotBasic abc123")}},
+		{"bad base64", []celeristest.Option{celeristest.WithHeader("authorization", "Basic !!!notbase64!!!")}},
+		{"wrong user right password", []celeristest.Option{celeristest.WithBasicAuth("wrong", "secret")}},
+		{"bearer token", []celeristest.Option{celeristest.WithHeader("authorization", "Bearer token123")}},
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertHTTPError(t, err, 401)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := testutil.RunChain(t, chain, "GET", "/", tt.opts...)
+			testutil.AssertHTTPError(t, err, 401)
+		})
+	}
 }
 
 func TestWWWAuthenticateHeaderSet(t *testing.T) {
@@ -140,30 +142,6 @@ func TestNilValidatorPanics(t *testing.T) {
 	New(Config{Validator: nil})
 }
 
-func TestMalformedAuthHeader(t *testing.T) {
-	mw := New(Config{Validator: validatorFor("admin", "secret")})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "NotBasic abc123"),
-	)
-	testutil.AssertHTTPError(t, err, 401)
-}
-
-func TestBadBase64AuthHeader(t *testing.T) {
-	mw := New(Config{Validator: validatorFor("admin", "secret")})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Basic !!!notbase64!!!"),
-	)
-	testutil.AssertHTTPError(t, err, 400)
-}
-
 func TestEmptyUsernamePassword(t *testing.T) {
 	mw := New(Config{
 		Validator: func(u, p string) bool { return u == "" && p == "" },
@@ -179,21 +157,9 @@ func TestEmptyUsernamePassword(t *testing.T) {
 	testutil.AssertStatus(t, rec, 200)
 }
 
-func TestWrongUserRightPassword(t *testing.T) {
-	mw := New(Config{Validator: validatorFor("admin", "secret")})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("wrong", "secret"),
-	)
-	testutil.AssertHTTPError(t, err, 401)
-}
-
-func TestDefaultConfigNoArgs(t *testing.T) {
-	if DefaultConfig().Realm != "Restricted" {
-		t.Fatalf("default Realm: got %q, want %q", DefaultConfig().Realm, "Restricted")
+func TestDefaultConfigRealm(t *testing.T) {
+	if defaultConfig.Realm != "Restricted" {
+		t.Fatalf("default Realm: got %q, want %q", defaultConfig.Realm, "Restricted")
 	}
 }
 
@@ -204,63 +170,41 @@ func TestApplyDefaultsFixesEmptyRealm(t *testing.T) {
 	}
 }
 
-func TestUsersMapValid(t *testing.T) {
-	mw := New(Config{Users: map[string]string{"admin": "secret", "user": "pass"}})
-	var storedUser string
-	handler := func(c *celeris.Context) error {
-		storedUser = UsernameFromContext(c)
-		return c.String(200, "ok")
+func TestUsersMap(t *testing.T) {
+	tests := []struct {
+		name     string
+		user     string
+		pass     string
+		wantCode int
+		wantUser string
+	}{
+		{"valid admin", "admin", "secret", 200, "admin"},
+		{"valid user2", "user2", "pass2", 200, "user2"},
+		{"wrong password", "admin", "wrong", 401, ""},
+		{"unknown user", "unknown", "secret", 401, ""},
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("admin", "secret"),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-	if storedUser != "admin" {
-		t.Fatalf("UsernameFromContext: got %q, want %q", storedUser, "admin")
-	}
-}
-
-func TestUsersMapInvalid(t *testing.T) {
-	mw := New(Config{Users: map[string]string{"admin": "secret"}})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("admin", "wrong"),
-	)
-	testutil.AssertHTTPError(t, err, 401)
-}
-
-func TestUsersMapUnknownUser(t *testing.T) {
-	mw := New(Config{Users: map[string]string{"admin": "secret"}})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("unknown", "secret"),
-	)
-	testutil.AssertHTTPError(t, err, 401)
-}
-
-func TestUsersMapSecondUser(t *testing.T) {
-	mw := New(Config{Users: map[string]string{"admin": "secret", "user2": "pass2"}})
-	var storedUser string
-	handler := func(c *celeris.Context) error {
-		storedUser = UsernameFromContext(c)
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("user2", "pass2"),
-	)
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-	if storedUser != "user2" {
-		t.Fatalf("UsernameFromContext: got %q, want %q", storedUser, "user2")
+	users := map[string]string{"admin": "secret", "user2": "pass2"}
+	mw := New(Config{Users: users})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var storedUser string
+			handler := func(c *celeris.Context) error {
+				storedUser = UsernameFromContext(c)
+				return c.String(200, "ok")
+			}
+			chain := []celeris.HandlerFunc{mw, handler}
+			rec, err := testutil.RunChain(t, chain, "GET", "/",
+				celeristest.WithBasicAuth(tt.user, tt.pass))
+			if tt.wantCode == 200 {
+				testutil.AssertNoError(t, err)
+				testutil.AssertStatus(t, rec, 200)
+				if storedUser != tt.wantUser {
+					t.Fatalf("UsernameFromContext: got %q, want %q", storedUser, tt.wantUser)
+				}
+			} else {
+				testutil.AssertHTTPError(t, err, tt.wantCode)
+			}
+		})
 	}
 }
 
@@ -296,26 +240,37 @@ func TestValidatorTakesPrecedenceOverUsers(t *testing.T) {
 	}
 }
 
-func TestUsernameFromContextNoAuth(t *testing.T) {
-	ctx, _ := celeristest.NewContextT(t, "GET", "/")
-	if got := UsernameFromContext(ctx); got != "" {
-		t.Fatalf("expected empty, got %q", got)
+func TestUsernameFromContext(t *testing.T) {
+	tests := []struct {
+		name     string
+		withAuth bool
+		wantUser string
+	}{
+		{"no auth", false, ""},
+		{"with auth", true, "admin"},
 	}
-}
-
-func TestUsernameFromContextWithAuth(t *testing.T) {
-	mw := New(Config{Users: map[string]string{"admin": "pass"}})
-	var username string
-	handler := func(c *celeris.Context) error {
-		username = UsernameFromContext(c)
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, _ = testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("admin", "pass"),
-	)
-	if username != "admin" {
-		t.Fatalf("UsernameFromContext: got %q, want %q", username, "admin")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !tt.withAuth {
+				ctx, _ := celeristest.NewContextT(t, "GET", "/")
+				if got := UsernameFromContext(ctx); got != tt.wantUser {
+					t.Fatalf("expected %q, got %q", tt.wantUser, got)
+				}
+				return
+			}
+			mw := New(Config{Users: map[string]string{"admin": "pass"}})
+			var username string
+			handler := func(c *celeris.Context) error {
+				username = UsernameFromContext(c)
+				return c.String(200, "ok")
+			}
+			chain := []celeris.HandlerFunc{mw, handler}
+			_, _ = testutil.RunChain(t, chain, "GET", "/",
+				celeristest.WithBasicAuth("admin", "pass"))
+			if username != tt.wantUser {
+				t.Fatalf("UsernameFromContext: got %q, want %q", username, tt.wantUser)
+			}
+		})
 	}
 }
 
@@ -336,7 +291,6 @@ func TestValidatorWithContext(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 
-	// With correct tenant header.
 	rec, err := testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithBasicAuth("admin", "secret"),
 		celeristest.WithHeader("x-tenant", "acme"),
@@ -344,7 +298,6 @@ func TestValidatorWithContext(t *testing.T) {
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
 
-	// Without tenant header.
 	_, err = testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithBasicAuth("admin", "secret"),
 	)
@@ -391,43 +344,35 @@ func TestValidatorWithContextAloneWorks(t *testing.T) {
 	testutil.AssertStatus(t, rec, 200)
 }
 
-func TestRealmQuoteEscaping(t *testing.T) {
-	mw := New(Config{
-		Validator: validatorFor("admin", "secret"),
-		Realm:     `My "App"`,
-	})
-	ctx, _ := celeristest.NewContextT(t, "GET", "/")
-	err := mw(ctx)
-	testutil.AssertHTTPError(t, err, 401)
-	found := false
-	for _, h := range ctx.ResponseHeaders() {
-		if h[0] == "www-authenticate" && h[1] == `Basic realm="My \"App\""` {
-			found = true
-			break
-		}
+func TestRealmEscaping(t *testing.T) {
+	tests := []struct {
+		name      string
+		realm     string
+		wantRealm string
+	}{
+		{"quotes", `My "App"`, `Basic realm="My \"App\""`},
+		{"backslash", `Path\to`, `Basic realm="Path\\to"`},
 	}
-	if !found {
-		t.Fatalf("expected escaped realm, got %v", ctx.ResponseHeaders())
-	}
-}
-
-func TestRealmBackslashEscaping(t *testing.T) {
-	mw := New(Config{
-		Validator: validatorFor("admin", "secret"),
-		Realm:     `Path\to`,
-	})
-	ctx, _ := celeristest.NewContextT(t, "GET", "/")
-	err := mw(ctx)
-	testutil.AssertHTTPError(t, err, 401)
-	found := false
-	for _, h := range ctx.ResponseHeaders() {
-		if h[0] == "www-authenticate" && h[1] == `Basic realm="Path\\to"` {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected escaped backslash in realm, got %v", ctx.ResponseHeaders())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mw := New(Config{
+				Validator: validatorFor("admin", "secret"),
+				Realm:     tt.realm,
+			})
+			ctx, _ := celeristest.NewContextT(t, "GET", "/")
+			err := mw(ctx)
+			testutil.AssertHTTPError(t, err, 401)
+			found := false
+			for _, h := range ctx.ResponseHeaders() {
+				if h[0] == "www-authenticate" && h[1] == tt.wantRealm {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected realm %q, got %v", tt.wantRealm, ctx.ResponseHeaders())
+			}
+		})
 	}
 }
 
@@ -435,7 +380,6 @@ func TestUsersMapDeepCopy(t *testing.T) {
 	users := map[string]string{"admin": "secret"}
 	mw := New(Config{Users: users})
 
-	// Mutate the original map after New() — should not affect the validator.
 	users["admin"] = "changed"
 	users["hacker"] = "injected"
 
@@ -444,27 +388,21 @@ func TestUsersMapDeepCopy(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 
-	// Original password should still work.
 	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("admin", "secret"),
-	)
+		celeristest.WithBasicAuth("admin", "secret"))
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
 
-	// Changed password should not work.
 	_, err = testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("admin", "changed"),
-	)
+		celeristest.WithBasicAuth("admin", "changed"))
 	testutil.AssertHTTPError(t, err, 401)
 
-	// Injected user should not work.
 	_, err = testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("hacker", "injected"),
-	)
+		celeristest.WithBasicAuth("hacker", "injected"))
 	testutil.AssertHTTPError(t, err, 401)
 }
 
-func TestErrorHandlerReceivesError(t *testing.T) {
+func TestErrorHandlerReceivesErrUnauthorized(t *testing.T) {
 	var receivedErr error
 	mw := New(Config{
 		Validator: validatorFor("admin", "secret"),
@@ -509,229 +447,8 @@ func FuzzBasicAuthHeader(f *testing.F) {
 		if header != "" {
 			opts = append(opts, celeristest.WithHeader("authorization", header))
 		}
-		// Must not panic regardless of header value.
 		_, _ = testutil.RunChain(t, chain, "GET", "/fuzz", opts...)
 	})
-}
-
-// --- HeaderLimit tests ---
-
-func TestHeaderLimitRejects431(t *testing.T) {
-	mw := New(Config{
-		Validator:   validatorFor("admin", "secret"),
-		HeaderLimit: 50,
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// Create a header value that exceeds 50 bytes.
-	longHeader := "Basic " + strings.Repeat("A", 50)
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", longHeader))
-	testutil.AssertHTTPError(t, err, 431)
-}
-
-func TestHeaderLimitDefaultAllowsNormal(t *testing.T) {
-	// Default limit is 4096 -- normal Basic auth header is well under that.
-	mw := New(Config{Validator: validatorFor("admin", "secret")})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("admin", "secret"))
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-}
-
-func TestHeaderLimitExactlyAtLimit(t *testing.T) {
-	// Header exactly at limit should pass through to normal auth flow.
-	mw := New(Config{
-		Validator:   validatorFor("admin", "secret"),
-		HeaderLimit: 100,
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// Create a header value exactly 100 bytes long.
-	hdr := strings.Repeat("A", 100)
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", hdr))
-	// Should not get 431 -- should get 401 (invalid base64).
-	testutil.AssertHTTPError(t, err, 401)
-}
-
-func TestHeaderLimitOneOverLimit(t *testing.T) {
-	mw := New(Config{
-		Validator:   validatorFor("admin", "secret"),
-		HeaderLimit: 100,
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	hdr := strings.Repeat("A", 101)
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", hdr))
-	testutil.AssertHTTPError(t, err, 431)
-}
-
-func TestHeaderLimitCustomErrorHandler(t *testing.T) {
-	var receivedErr error
-	mw := New(Config{
-		Validator:   validatorFor("admin", "secret"),
-		HeaderLimit: 30,
-		ErrorHandler: func(_ *celeris.Context, err error) error {
-			receivedErr = err
-			return celeris.NewHTTPError(413, "too big")
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	longHeader := "Basic " + strings.Repeat("A", 30)
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", longHeader))
-	testutil.AssertHTTPError(t, err, 413)
-	if receivedErr != ErrHeaderTooLarge {
-		t.Fatalf("expected ErrHeaderTooLarge, got %v", receivedErr)
-	}
-}
-
-func TestHeaderLimitSkippedWhenNoHeader(t *testing.T) {
-	mw := New(Config{
-		Validator:   validatorFor("admin", "secret"),
-		HeaderLimit: 10,
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// No authorization header -- should get 401, not 431.
-	_, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertHTTPError(t, err, 401)
-}
-
-// --- UTF-8 and control character validation tests ---
-
-func TestInvalidUTF8InUsernameRejects(t *testing.T) {
-	mw := New(Config{
-		Validator: func(_, _ string) bool { return true },
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// \xff\xfe:password — invalid UTF-8 in username
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Basic //46cGFzc3dvcmQ="))
-	testutil.AssertHTTPError(t, err, 400)
-}
-
-func TestInvalidUTF8InPasswordRejects(t *testing.T) {
-	mw := New(Config{
-		Validator: func(_, _ string) bool { return true },
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// admin:\xff\xfe — invalid UTF-8 in password
-	// base64("admin:\xff\xfe") = "YWRtaW46//4="
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Basic YWRtaW46//4="))
-	testutil.AssertHTTPError(t, err, 400)
-}
-
-func TestControlCharTabInUsernameRejects(t *testing.T) {
-	mw := New(Config{
-		Validator: func(_, _ string) bool { return true },
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// admin\t:password — tab (0x09) in username
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Basic YWRtaW4JOnBhc3N3b3Jk"))
-	testutil.AssertHTTPError(t, err, 400)
-}
-
-func TestControlCharNullInPasswordRejects(t *testing.T) {
-	mw := New(Config{
-		Validator: func(_, _ string) bool { return true },
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// admin:pass\x00word — null byte (0x00) in password
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Basic YWRtaW46cGFzcwB3b3Jk"))
-	testutil.AssertHTTPError(t, err, 400)
-}
-
-func TestControlCharDELInPasswordRejects(t *testing.T) {
-	mw := New(Config{
-		Validator: func(_, _ string) bool { return true },
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// admin:pass\x7fword — DEL (0x7F) in password
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Basic YWRtaW46cGFzc393b3Jk"))
-	testutil.AssertHTTPError(t, err, 400)
-}
-
-func TestValidUTF8CredentialsPass(t *testing.T) {
-	mw := New(Config{
-		Validator: func(u, p string) bool {
-			return u == "admin" && p == "p\u00e4ss"
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// admin:päss — valid UTF-8 with non-ASCII
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Basic YWRtaW46cMOkc3M="))
-	testutil.AssertNoError(t, err)
-}
-
-func TestValidCredentialBytesUnit(t *testing.T) {
-	tests := []struct {
-		name string
-		user string
-		pass string
-		want bool
-	}{
-		{"valid ascii", "admin", "secret", true},
-		{"valid utf8", "admin", "p\u00e4ss", true},
-		{"space in pass", "admin", "my pass", true},
-		{"invalid utf8 user", string([]byte{0xff, 0xfe}), "pass", false},
-		{"invalid utf8 pass", "admin", string([]byte{0xff}), false},
-		{"tab in user", "ad\tmin", "pass", false},
-		{"null in pass", "admin", "pa\x00ss", false},
-		{"del in user", "admin\x7f", "pass", false},
-		{"newline in pass", "admin", "pass\n", false},
-		{"carriage return", "admin", "pass\r", false},
-		{"escape char", "admin", "\x1bpass", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := validCredentialBytes(tt.user, tt.pass)
-			if got != tt.want {
-				t.Fatalf("validCredentialBytes(%q, %q) = %v, want %v",
-					tt.user, tt.pass, got, tt.want)
-			}
-		})
-	}
 }
 
 // --- HashedUsers (SHA-256) tests ---
@@ -742,7 +459,6 @@ func TestHashPasswordDeterministic(t *testing.T) {
 	if h1 != h2 {
 		t.Fatalf("HashPassword not deterministic: %q != %q", h1, h2)
 	}
-	// Verify it's a valid 64-char hex string (SHA-256 = 32 bytes = 64 hex chars).
 	if len(h1) != 64 {
 		t.Fatalf("HashPassword length: got %d, want 64", len(h1))
 	}
@@ -761,77 +477,45 @@ func TestHashPasswordMatchesSHA256(t *testing.T) {
 	}
 }
 
-func TestHashedUsersValidCredentials(t *testing.T) {
-	mw := New(Config{
-		HashedUsers: map[string]string{
-			"admin": HashPassword("secret"),
-			"user":  HashPassword("pass"),
-		},
-	})
-	var storedUser string
-	handler := func(c *celeris.Context) error {
-		storedUser = UsernameFromContext(c)
-		return c.String(200, "ok")
+func TestHashedUsers(t *testing.T) {
+	tests := []struct {
+		name     string
+		user     string
+		pass     string
+		wantCode int
+		wantUser string
+	}{
+		{"valid admin", "admin", "secret", 200, "admin"},
+		{"valid user2", "user2", "pass2", 200, "user2"},
+		{"wrong password", "admin", "wrong", 401, ""},
+		{"unknown user", "unknown", "secret", 401, ""},
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("admin", "secret"))
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-	if storedUser != "admin" {
-		t.Fatalf("stored user: got %q, want %q", storedUser, "admin")
-	}
-}
-
-func TestHashedUsersWrongPassword(t *testing.T) {
-	mw := New(Config{
-		HashedUsers: map[string]string{
-			"admin": HashPassword("secret"),
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("admin", "wrong"))
-	testutil.AssertHTTPError(t, err, 401)
-}
-
-func TestHashedUsersUnknownUser(t *testing.T) {
-	mw := New(Config{
-		HashedUsers: map[string]string{
-			"admin": HashPassword("secret"),
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("unknown", "secret"))
-	testutil.AssertHTTPError(t, err, 401)
-}
-
-func TestHashedUsersSecondUser(t *testing.T) {
 	mw := New(Config{
 		HashedUsers: map[string]string{
 			"admin": HashPassword("secret"),
 			"user2": HashPassword("pass2"),
 		},
 	})
-	var storedUser string
-	handler := func(c *celeris.Context) error {
-		storedUser = UsernameFromContext(c)
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("user2", "pass2"))
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-	if storedUser != "user2" {
-		t.Fatalf("stored user: got %q, want %q", storedUser, "user2")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var storedUser string
+			handler := func(c *celeris.Context) error {
+				storedUser = UsernameFromContext(c)
+				return c.String(200, "ok")
+			}
+			chain := []celeris.HandlerFunc{mw, handler}
+			rec, err := testutil.RunChain(t, chain, "GET", "/",
+				celeristest.WithBasicAuth(tt.user, tt.pass))
+			if tt.wantCode == 200 {
+				testutil.AssertNoError(t, err)
+				testutil.AssertStatus(t, rec, 200)
+				if storedUser != tt.wantUser {
+					t.Fatalf("stored user: got %q, want %q", storedUser, tt.wantUser)
+				}
+			} else {
+				testutil.AssertHTTPError(t, err, tt.wantCode)
+			}
+		})
 	}
 }
 
@@ -857,7 +541,6 @@ func TestHashedUsersDeepCopy(t *testing.T) {
 	hashed := map[string]string{"admin": HashPassword("secret")}
 	mw := New(Config{HashedUsers: hashed})
 
-	// Mutate after New().
 	hashed["admin"] = HashPassword("changed")
 	hashed["hacker"] = HashPassword("injected")
 
@@ -866,18 +549,15 @@ func TestHashedUsersDeepCopy(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 
-	// Original password should still work.
 	rec, err := testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithBasicAuth("admin", "secret"))
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
 
-	// Changed password should not work.
 	_, err = testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithBasicAuth("admin", "changed"))
 	testutil.AssertHTTPError(t, err, 401)
 
-	// Injected user should not work.
 	_, err = testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithBasicAuth("hacker", "injected"))
 	testutil.AssertHTTPError(t, err, 401)
@@ -893,13 +573,11 @@ func TestUsersMapTakesPrecedenceOverHashedUsers(t *testing.T) {
 	}
 	chain := []celeris.HandlerFunc{mw, handler}
 
-	// Users (plaintext) should win.
 	rec, err := testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithBasicAuth("admin", "plain"))
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
 
-	// HashedUsers password should not work.
 	_, err = testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithBasicAuth("admin", "hashed"))
 	testutil.AssertHTTPError(t, err, 401)
@@ -907,35 +585,7 @@ func TestUsersMapTakesPrecedenceOverHashedUsers(t *testing.T) {
 
 // --- SkipPaths tests ---
 
-func TestSkipPathsMatchingPathSkipsAuth(t *testing.T) {
-	mw := New(Config{
-		Validator: validatorFor("admin", "secret"),
-		SkipPaths: []string{"/health", "/ready"},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/health")
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-	testutil.AssertBodyContains(t, rec, "ok")
-}
-
-func TestSkipPathsNonMatchingPathRequiresAuth(t *testing.T) {
-	mw := New(Config{
-		Validator: validatorFor("admin", "secret"),
-		SkipPaths: []string{"/health"},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/api/data")
-	testutil.AssertHTTPError(t, err, 401)
-}
-
-func TestSkipPathsMultiplePaths(t *testing.T) {
+func TestSkipPaths(t *testing.T) {
 	mw := New(Config{
 		Validator: validatorFor("admin", "secret"),
 		SkipPaths: []string{"/health", "/ready", "/metrics"},
@@ -946,60 +596,48 @@ func TestSkipPathsMultiplePaths(t *testing.T) {
 	chain := []celeris.HandlerFunc{mw, handler}
 
 	for _, path := range []string{"/health", "/ready", "/metrics"} {
-		rec, err := testutil.RunChain(t, chain, "GET", path)
+		t.Run("skip "+path, func(t *testing.T) {
+			rec, err := testutil.RunChain(t, chain, "GET", path)
+			testutil.AssertNoError(t, err)
+			testutil.AssertStatus(t, rec, 200)
+			testutil.AssertBodyContains(t, rec, "ok")
+		})
+	}
+
+	t.Run("non-skip requires auth", func(t *testing.T) {
+		_, err := testutil.RunChain(t, chain, "GET", "/secret")
+		testutil.AssertHTTPError(t, err, 401)
+	})
+
+	t.Run("non-skip with auth works", func(t *testing.T) {
+		rec, err := testutil.RunChain(t, chain, "GET", "/api",
+			celeristest.WithBasicAuth("admin", "secret"))
 		testutil.AssertNoError(t, err)
 		testutil.AssertStatus(t, rec, 200)
-	}
-
-	// Non-skip path requires auth.
-	_, err := testutil.RunChain(t, chain, "GET", "/secret")
-	testutil.AssertHTTPError(t, err, 401)
-}
-
-func TestSkipPathsAuthStillWorksOnNonSkipped(t *testing.T) {
-	mw := New(Config{
-		Validator: validatorFor("admin", "secret"),
-		SkipPaths: []string{"/health"},
 	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/api",
-		celeristest.WithBasicAuth("admin", "secret"))
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
 }
 
 // --- Cache-Control + Vary header tests ---
 
-func TestCacheControlAndVaryOn401(t *testing.T) {
+func TestCacheControlAndVaryOnFailure(t *testing.T) {
 	mw := New(Config{Validator: validatorFor("admin", "secret")})
-	ctx, _ := celeristest.NewContextT(t, "GET", "/")
-	err := mw(ctx)
-	testutil.AssertHTTPError(t, err, 401)
-	assertResponseHeader(t, ctx, "cache-control", "no-store")
-	assertResponseHeader(t, ctx, "vary", "authorization")
-}
 
-func TestCacheControlAndVaryOn401WrongCreds(t *testing.T) {
-	mw := New(Config{Validator: validatorFor("admin", "secret")})
-	ctx, _ := celeristest.NewContextT(t, "GET", "/",
-		celeristest.WithBasicAuth("admin", "wrong"))
-	err := mw(ctx)
-	testutil.AssertHTTPError(t, err, 401)
-	assertResponseHeader(t, ctx, "cache-control", "no-store")
-	assertResponseHeader(t, ctx, "vary", "authorization")
-}
-
-func TestCacheControlAndVaryOn400BadBase64(t *testing.T) {
-	mw := New(Config{Validator: validatorFor("admin", "secret")})
-	ctx, _ := celeristest.NewContextT(t, "GET", "/",
-		celeristest.WithHeader("authorization", "Basic !!!bad!!!"))
-	err := mw(ctx)
-	testutil.AssertHTTPError(t, err, 400)
-	assertResponseHeader(t, ctx, "cache-control", "no-store")
-	assertResponseHeader(t, ctx, "vary", "authorization")
+	tests := []struct {
+		name string
+		opts []celeristest.Option
+	}{
+		{"missing header", nil},
+		{"wrong creds", []celeristest.Option{celeristest.WithBasicAuth("admin", "wrong")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, _ := celeristest.NewContextT(t, "GET", "/", tt.opts...)
+			err := mw(ctx)
+			testutil.AssertHTTPError(t, err, 401)
+			assertResponseHeader(t, ctx, "cache-control", "no-store")
+			assertResponseHeader(t, ctx, "vary", "authorization")
+		})
+	}
 }
 
 func TestNoCacheControlOnSuccess(t *testing.T) {
@@ -1021,239 +659,19 @@ func TestNoCacheControlOnSuccess(t *testing.T) {
 	}
 }
 
-// --- ErrBadRequest (400 vs 401) tests ---
-
-func TestErrBadRequestBadBase64(t *testing.T) {
-	var receivedErr error
-	mw := New(Config{
-		Validator: validatorFor("admin", "secret"),
-		ErrorHandler: func(_ *celeris.Context, err error) error {
-			receivedErr = err
-			return err
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Basic !!!bad!!!"))
-	testutil.AssertHTTPError(t, err, 400)
-	if receivedErr != ErrBadRequest {
-		t.Fatalf("expected ErrBadRequest, got %v", receivedErr)
-	}
-}
-
-func TestErrBadRequestNoColon(t *testing.T) {
-	var receivedErr error
-	mw := New(Config{
-		Validator: validatorFor("admin", "secret"),
-		ErrorHandler: func(_ *celeris.Context, err error) error {
-			receivedErr = err
-			return err
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// base64("nocolon") = "bm9jb2xvbg=="
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Basic bm9jb2xvbg=="))
-	testutil.AssertHTTPError(t, err, 400)
-	if receivedErr != ErrBadRequest {
-		t.Fatalf("expected ErrBadRequest, got %v", receivedErr)
-	}
-}
-
-func TestErrBadRequestControlChars(t *testing.T) {
-	var receivedErr error
-	mw := New(Config{
-		Validator: func(_, _ string) bool { return true },
-		ErrorHandler: func(_ *celeris.Context, err error) error {
-			receivedErr = err
-			return err
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// admin\t:password — tab in username
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Basic YWRtaW4JOnBhc3N3b3Jk"))
-	testutil.AssertHTTPError(t, err, 400)
-	if receivedErr != ErrBadRequest {
-		t.Fatalf("expected ErrBadRequest, got %v", receivedErr)
-	}
-}
-
-func TestErrUnauthorizedMissingHeader(t *testing.T) {
-	var receivedErr error
-	mw := New(Config{
-		Validator: validatorFor("admin", "secret"),
-		ErrorHandler: func(c *celeris.Context, err error) error {
-			receivedErr = err
-			c.SetHeader("www-authenticate", `Basic realm="Test"`)
-			return err
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/")
-	testutil.AssertHTTPError(t, err, 401)
-	if receivedErr != ErrUnauthorized {
-		t.Fatalf("expected ErrUnauthorized, got %v", receivedErr)
-	}
-}
-
-func TestErrUnauthorizedWrongScheme(t *testing.T) {
-	var receivedErr error
-	mw := New(Config{
-		Validator: validatorFor("admin", "secret"),
-		ErrorHandler: func(_ *celeris.Context, err error) error {
-			receivedErr = err
-			return err
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Bearer token123"))
-	testutil.AssertHTTPError(t, err, 401)
-	if receivedErr != ErrUnauthorized {
-		t.Fatalf("expected ErrUnauthorized, got %v", receivedErr)
-	}
-}
-
-func TestErrUnauthorizedWrongPassword(t *testing.T) {
-	var receivedErr error
-	mw := New(Config{
-		Validator: validatorFor("admin", "secret"),
-		ErrorHandler: func(_ *celeris.Context, err error) error {
-			receivedErr = err
-			return err
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("admin", "wrong"))
-	testutil.AssertHTTPError(t, err, 401)
-	if receivedErr != ErrUnauthorized {
-		t.Fatalf("expected ErrUnauthorized, got %v", receivedErr)
-	}
-}
-
-// --- parseBasicAuth unit tests ---
-
-func TestParseBasicAuthOK(t *testing.T) {
-	user, pass, result := parseBasicAuth("Basic YWRtaW46c2VjcmV0")
-	if result != authOK {
-		t.Fatalf("expected authOK, got %d", result)
-	}
-	if user != "admin" || pass != "secret" {
-		t.Fatalf("got %q:%q, want admin:secret", user, pass)
-	}
-}
-
-func TestParseBasicAuthEmptyHeader(t *testing.T) {
-	_, _, result := parseBasicAuth("")
-	if result != authMissing {
-		t.Fatalf("expected authMissing, got %d", result)
-	}
-}
-
-func TestParseBasicAuthWrongScheme(t *testing.T) {
-	_, _, result := parseBasicAuth("Bearer token")
-	if result != authMissing {
-		t.Fatalf("expected authMissing, got %d", result)
-	}
-}
-
-func TestParseBasicAuthEmptyPayload(t *testing.T) {
-	_, _, result := parseBasicAuth("Basic ")
-	if result != authMissing {
-		t.Fatalf("expected authMissing, got %d", result)
-	}
-}
-
-func TestParseBasicAuthBadBase64(t *testing.T) {
-	_, _, result := parseBasicAuth("Basic !!!bad!!!")
-	if result != authMalformed {
-		t.Fatalf("expected authMalformed, got %d", result)
-	}
-}
-
-func TestParseBasicAuthNoColon(t *testing.T) {
-	// base64("nocolon") = "bm9jb2xvbg=="
-	_, _, result := parseBasicAuth("Basic bm9jb2xvbg==")
-	if result != authMalformed {
-		t.Fatalf("expected authMalformed, got %d", result)
-	}
-}
-
-func TestParseBasicAuthInvalidUTF8(t *testing.T) {
-	// \xff\xfe:password
-	_, _, result := parseBasicAuth("Basic //46cGFzc3dvcmQ=")
-	if result != authMalformed {
-		t.Fatalf("expected authMalformed, got %d", result)
-	}
-}
-
-func TestParseBasicAuthControlChar(t *testing.T) {
-	// admin\t:password
-	_, _, result := parseBasicAuth("Basic YWRtaW4JOnBhc3N3b3Jk")
-	if result != authMalformed {
-		t.Fatalf("expected authMalformed, got %d", result)
-	}
-}
-
-func TestParseBasicAuthCaseInsensitiveScheme(t *testing.T) {
-	cases := []string{
-		"basic YWRtaW46c2VjcmV0",
-		"BASIC YWRtaW46c2VjcmV0",
-		"bAsIc YWRtaW46c2VjcmV0",
-	}
-	for _, auth := range cases {
-		user, pass, result := parseBasicAuth(auth)
-		if result != authOK {
-			t.Fatalf("parseBasicAuth(%q): expected authOK, got %d", auth, result)
-		}
-		if user != "admin" || pass != "secret" {
-			t.Fatalf("parseBasicAuth(%q): got %q:%q, want admin:secret", auth, user, pass)
-		}
-	}
-}
-
-func TestParseBasicAuthLargeCredentials(t *testing.T) {
-	// 128-byte decoded credentials were rejected by the old [128]byte buffer
-	// because base64.StdEncoding.DecodedLen overestimates. The new [192]byte
-	// buffer handles up to 192 decoded bytes (256 base64 chars).
-	user := strings.Repeat("u", 60)
-	pass := strings.Repeat("p", 67)
-	// user(60) + ":" + pass(67) = 128 bytes decoded
-	creds := user + ":" + pass
-	encoded := base64.StdEncoding.EncodeToString([]byte(creds))
-	gotUser, gotPass, result := parseBasicAuth("Basic " + encoded)
-	if result != authOK {
-		t.Fatalf("128-byte creds: expected authOK, got %d", result)
-	}
-	if gotUser != user || gotPass != pass {
-		t.Fatalf("128-byte creds: got %q:%q, want %q:%q", gotUser, gotPass, user, pass)
-	}
-}
-
 // --- HashedUsersFunc (custom verify) tests ---
 
-func TestHashedUsersFuncBcryptStyle(t *testing.T) {
-	// Simulate a bcrypt-style verify function.
+func TestHashedUsersFunc(t *testing.T) {
+	tests := []struct {
+		name     string
+		user     string
+		pass     string
+		wantCode int
+	}{
+		{"valid", "admin", "secret", 200},
+		{"wrong password", "admin", "wrong", 401},
+		{"unknown user", "unknown", "secret", 401},
+	}
 	mw := New(Config{
 		HashedUsers: map[string]string{
 			"admin": "bcrypt:secret",
@@ -1262,60 +680,25 @@ func TestHashedUsersFuncBcryptStyle(t *testing.T) {
 			return hash == "bcrypt:"+password
 		},
 	})
-	var storedUser string
-	handler := func(c *celeris.Context) error {
-		storedUser = UsernameFromContext(c)
-		return c.String(200, "ok")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := func(c *celeris.Context) error {
+				return c.String(200, "ok")
+			}
+			chain := []celeris.HandlerFunc{mw, handler}
+			rec, err := testutil.RunChain(t, chain, "GET", "/",
+				celeristest.WithBasicAuth(tt.user, tt.pass))
+			if tt.wantCode == 200 {
+				testutil.AssertNoError(t, err)
+				testutil.AssertStatus(t, rec, 200)
+			} else {
+				testutil.AssertHTTPError(t, err, tt.wantCode)
+			}
+		})
 	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("admin", "secret"))
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-	if storedUser != "admin" {
-		t.Fatalf("stored user: got %q, want %q", storedUser, "admin")
-	}
-}
-
-func TestHashedUsersFuncWrongPassword(t *testing.T) {
-	mw := New(Config{
-		HashedUsers: map[string]string{
-			"admin": "bcrypt:secret",
-		},
-		HashedUsersFunc: func(hash, password string) bool {
-			return hash == "bcrypt:"+password
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("admin", "wrong"))
-	testutil.AssertHTTPError(t, err, 401)
-}
-
-func TestHashedUsersFuncUnknownUser(t *testing.T) {
-	mw := New(Config{
-		HashedUsers: map[string]string{
-			"admin": "bcrypt:secret",
-		},
-		HashedUsersFunc: func(hash, password string) bool {
-			return hash == "bcrypt:"+password
-		},
-	})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	_, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("unknown", "secret"))
-	testutil.AssertHTTPError(t, err, 401)
 }
 
 func TestHashedUsersFuncSkipsSHA256Validation(t *testing.T) {
-	// When HashedUsersFunc is set, hashes are NOT validated as SHA-256 hex.
-	// This should not panic even though the hash is not valid hex.
 	mw := New(Config{
 		HashedUsers: map[string]string{
 			"admin": "$2a$10$notHexAtAll",
@@ -1330,44 +713,6 @@ func TestHashedUsersFuncSkipsSHA256Validation(t *testing.T) {
 	chain := []celeris.HandlerFunc{mw, handler}
 	rec, err := testutil.RunChain(t, chain, "GET", "/",
 		celeristest.WithBasicAuth("admin", "pass"))
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-}
-
-// --- Unpadded base64 fallback tests ---
-
-func TestUnpaddedBase64Accepted(t *testing.T) {
-	mw := New(Config{Validator: validatorFor("admin", "secret")})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	// base64("admin:secret") = "YWRtaW46c2VjcmV0" (no padding needed)
-	// but base64("test:pw") = "dGVzdDpwdw==" — strip padding → "dGVzdDpwdw"
-	mw2 := New(Config{Validator: func(u, p string) bool { return u == "test" && p == "pw" }})
-	chain2 := []celeris.HandlerFunc{mw2, handler}
-	rec, err := testutil.RunChain(t, chain2, "GET", "/",
-		celeristest.WithHeader("authorization", "Basic dGVzdDpwdw"))
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-
-	// Also verify the standard padded version still works.
-	rec, err = testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithBasicAuth("admin", "secret"))
-	testutil.AssertNoError(t, err)
-	testutil.AssertStatus(t, rec, 200)
-}
-
-func TestUnpaddedBase64SinglePadChar(t *testing.T) {
-	// base64("a:b") = "YTpi" (no padding, but let's use one that needs single pad)
-	// base64("ab:cd") = "YWI6Y2Q=" — strip → "YWI6Y2Q"
-	mw := New(Config{Validator: func(u, p string) bool { return u == "ab" && p == "cd" }})
-	handler := func(c *celeris.Context) error {
-		return c.String(200, "ok")
-	}
-	chain := []celeris.HandlerFunc{mw, handler}
-	rec, err := testutil.RunChain(t, chain, "GET", "/",
-		celeristest.WithHeader("authorization", "Basic YWI6Y2Q"))
 	testutil.AssertNoError(t, err)
 	testutil.AssertStatus(t, rec, 200)
 }

@@ -27,8 +27,12 @@ type Config struct {
 	XSSProtection string `yaml:"xss_protection"`
 
 	// HSTSMaxAge sets the max-age directive of Strict-Transport-Security in seconds.
-	// Set to 0 or -1 to omit the header entirely. Default: 63072000 (2 years).
+	// Default: 63072000 (2 years). Use [Config].DisableHSTS to omit the header.
 	HSTSMaxAge int `yaml:"hsts_max_age"`
+
+	// DisableHSTS omits the Strict-Transport-Security header entirely.
+	// Default: false (HSTS is enabled with HSTSMaxAge).
+	DisableHSTS bool `yaml:"disable_hsts"`
 
 	// HSTSExcludeSubdomains opts out of includeSubDomains in the HSTS header.
 	// By default includeSubDomains is included. Set to true to remove it.
@@ -101,7 +105,7 @@ var defaultConfig = Config{
 	XDownloadOptions:          "noopen",
 }
 
-func applyDefaults(cfg Config, hstsExplicit bool) Config {
+func applyDefaults(cfg Config) Config {
 	if cfg.XContentTypeOptions == "" {
 		cfg.XContentTypeOptions = defaultConfig.XContentTypeOptions
 	}
@@ -111,7 +115,7 @@ func applyDefaults(cfg Config, hstsExplicit bool) Config {
 	if cfg.XSSProtection == "" {
 		cfg.XSSProtection = defaultConfig.XSSProtection
 	}
-	if cfg.HSTSMaxAge == 0 && !hstsExplicit {
+	if cfg.HSTSMaxAge == 0 && !cfg.DisableHSTS {
 		cfg.HSTSMaxAge = defaultConfig.HSTSMaxAge
 	}
 	if cfg.ReferrerPolicy == "" {
@@ -222,7 +226,7 @@ func buildHeaders(cfg Config) [][2]string {
 // buildHSTSValue pre-computes the HSTS header value. Returns empty string
 // when HSTS is disabled (HSTSMaxAge <= 0).
 func buildHSTSValue(cfg Config) string {
-	if cfg.HSTSMaxAge <= 0 {
+	if cfg.DisableHSTS || cfg.HSTSMaxAge <= 0 {
 		return ""
 	}
 	v := "max-age=" + strconv.Itoa(cfg.HSTSMaxAge)

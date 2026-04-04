@@ -662,6 +662,261 @@ func TestJWKSECCurveValidation(t *testing.T) {
 	}
 }
 
+func TestJWKSFetchAndCache(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := rsaJWKSJSON("cache-kid", &privKey.PublicKey)
+
+	var requestCount atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	defer ts.Close()
+
+	fetcher := newJWKSFetcher(ts.URL, time.Hour)
+
+	tok := &jwtparse.Token{Header: jwtparse.Header{Kid: "cache-kid"}}
+
+	// First call triggers a fetch.
+	key, err := fetcher.keyFunc(tok)
+	if err != nil {
+		t.Fatalf("first keyFunc: %v", err)
+	}
+	if key == nil {
+		t.Fatal("expected non-nil key")
+	}
+	if requestCount.Load() != 1 {
+		t.Fatalf("expected 1 HTTP request after first call, got %d", requestCount.Load())
+	}
+
+	// Second call should use the cache (no additional HTTP request).
+	key2, err := fetcher.keyFunc(tok)
+	if err != nil {
+		t.Fatalf("second keyFunc: %v", err)
+	}
+	if key2 == nil {
+		t.Fatal("expected non-nil cached key")
+	}
+	if requestCount.Load() != 1 {
+		t.Fatalf("expected 1 HTTP request after second call (cached), got %d", requestCount.Load())
+	}
+}
+
+func TestJWKSKeyRevocation(t *testing.T) {
+	keyA, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyB, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bodyA := rsaJWKSJSON("kid-A", &keyA.PublicKey)
+	bodyB := rsaJWKSJSON("kid-B", &keyB.PublicKey)
+
+	var serveB atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if serveB.Load() {
+			_, _ = w.Write(bodyB)
+		} else {
+			_, _ = w.Write(bodyA)
+		}
+	}))
+	defer ts.Close()
+
+	fetcher := newJWKSFetcher(ts.URL, 10*time.Millisecond)
+
+	// Fetch key A.
+	tokA := &jwtparse.Token{Header: jwtparse.Header{Kid: "kid-A"}}
+	key, err := fetcher.keyFunc(tokA)
+	if err != nil {
+		t.Fatalf("fetch key A: %v", err)
+	}
+	if key == nil {
+		t.Fatal("expected non-nil key A")
+	}
+
+	// Switch server to serve only key B and force staleness.
+	serveB.Store(true)
+	fetcher.mu.Lock()
+	fetcher.lastFetch = time.Now().Add(-time.Hour)
+	fetcher.mu.Unlock()
+
+	// Request key B, triggering a refresh.
+	tokB := &jwtparse.Token{Header: jwtparse.Header{Kid: "kid-B"}}
+	key, err = fetcher.keyFunc(tokB)
+	if err != nil {
+		t.Fatalf("fetch key B after rotation: %v", err)
+	}
+	if key == nil {
+		t.Fatal("expected non-nil key B")
+	}
+
+	// Verify key A is gone (revoked key purged).
+	fetcher.mu.RLock()
+	_, hasA := fetcher.keys["kid-A"]
+	_, hasB := fetcher.keys["kid-B"]
+	fetcher.mu.RUnlock()
+	if hasA {
+		t.Fatal("revoked key A should have been purged after successful refresh")
+	}
+	if !hasB {
+		t.Fatal("key B should be present after refresh")
+	}
+}
+
+func TestJWKSParseRSAKey(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := &privKey.PublicKey
+
+	jwk := map[string]any{
+		"kty": "RSA",
+		"n":   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+		"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+	}
+
+	parsed, err := parseRSAKey(jwk)
+	if err != nil {
+		t.Fatalf("parseRSAKey: %v", err)
+	}
+	if parsed.N.Cmp(pub.N) != 0 {
+		t.Fatal("RSA modulus mismatch")
+	}
+	if parsed.E != pub.E {
+		t.Fatalf("RSA exponent: got %d, want %d", parsed.E, pub.E)
+	}
+}
+
+func TestJWKSParseECKey(t *testing.T) {
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := &privKey.PublicKey
+
+	byteLen := (pub.Curve.Params().BitSize + 7) / 8
+	xBytes := pub.X.Bytes()
+	yBytes := pub.Y.Bytes()
+	xPadded := make([]byte, byteLen)
+	yPadded := make([]byte, byteLen)
+	copy(xPadded[byteLen-len(xBytes):], xBytes)
+	copy(yPadded[byteLen-len(yBytes):], yBytes)
+
+	jwk := map[string]any{
+		"kty": "EC",
+		"crv": "P-256",
+		"x":   base64.RawURLEncoding.EncodeToString(xPadded),
+		"y":   base64.RawURLEncoding.EncodeToString(yPadded),
+	}
+
+	parsed, err := parseECKey(jwk)
+	if err != nil {
+		t.Fatalf("parseECKey: %v", err)
+	}
+	if parsed.X.Cmp(pub.X) != 0 || parsed.Y.Cmp(pub.Y) != 0 {
+		t.Fatal("EC key coordinate mismatch")
+	}
+	if parsed.Curve != elliptic.P256() {
+		t.Fatal("EC curve mismatch")
+	}
+}
+
+func TestJWKSParseOKPKey(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	jwk := map[string]any{
+		"kty": "OKP",
+		"crv": "Ed25519",
+		"x":   base64.RawURLEncoding.EncodeToString(pub),
+	}
+
+	parsed, err := parseOKPKey(jwk)
+	if err != nil {
+		t.Fatalf("parseOKPKey: %v", err)
+	}
+	if !parsed.Equal(pub) {
+		t.Fatal("Ed25519 key mismatch")
+	}
+}
+
+func TestJWKSFetchError(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := rsaJWKSJSON("error-kid", &privKey.PublicKey)
+
+	var shouldFail atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if shouldFail.Load() {
+			w.WriteHeader(500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	defer ts.Close()
+
+	fetcher := newJWKSFetcher(ts.URL, 10*time.Millisecond)
+
+	// Initial successful fetch.
+	tok := &jwtparse.Token{Header: jwtparse.Header{Kid: "error-kid"}}
+	key, err := fetcher.keyFunc(tok)
+	if err != nil {
+		t.Fatalf("initial fetch: %v", err)
+	}
+	if key == nil {
+		t.Fatal("expected non-nil key")
+	}
+
+	// Make server fail, force staleness.
+	shouldFail.Store(true)
+	fetcher.mu.Lock()
+	fetcher.lastFetch = time.Now().Add(-time.Hour)
+	fetcher.mu.Unlock()
+
+	// Stale keys should be preserved despite fetch failure.
+	key2, err := fetcher.keyFunc(tok)
+	if err != nil {
+		t.Fatalf("stale fallback should succeed: %v", err)
+	}
+	if key2 == nil {
+		t.Fatal("expected non-nil stale key")
+	}
+}
+
+func TestJWKSMaxBodySize(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"keys":[`))
+		buf := make([]byte, 1<<20) // 1MB of padding
+		for i := range buf {
+			buf[i] = ' '
+		}
+		_, _ = w.Write(buf)
+		_, _ = w.Write([]byte(`]}`))
+	}))
+	defer ts.Close()
+
+	fetcher := newJWKSFetcher(ts.URL, time.Hour)
+	err := fetcher.fetch()
+	if err == nil {
+		t.Fatal("expected error for >1MB body")
+	}
+}
+
 // --- Multi-JWKS (JWKSURLs) integration tests ---
 
 func TestMultiJWKSKeyFuncFirstProviderHasKey(t *testing.T) {

@@ -41,7 +41,7 @@ func ExampleNew_queryExtractor() {
 func ExampleNew_sessionOnlyCookie() {
 	// Browser-session-scoped cookie (no Max-Age, deleted when browser closes).
 	_ = session.New(session.Config{
-		CookieSessionOnly: true,
+		CookieMaxAge: session.IntPtr(0),
 	})
 }
 

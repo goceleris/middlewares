@@ -22,7 +22,7 @@ var ErrLengthRequired = celeris.NewHTTPError(411, "Length Required")
 // [Config].ContentLengthRequired to reject such requests with 411 Length
 // Required before the body check runs.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := defaultConfig
 	if len(config) > 0 {
 		cfg = config[0]
 	}

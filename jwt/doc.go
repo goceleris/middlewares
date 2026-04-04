@@ -2,30 +2,17 @@
 //
 // The middleware extracts a JWT from a configurable source (header, query
 // parameter, cookie, form field, or URL parameter), validates it using HMAC,
-// RSA, ECDSA, EdDSA, or RSA-PSS (PS256/PS384/PS512) keys, and stores the
-// parsed token and claims in the context
-// store under [TokenKey] and [ClaimsKey] (or custom keys via
-// [Config].TokenContextKey and [Config].ClaimsContextKey). Failed
+// RSA, ECDSA, EdDSA, or RSA-PSS keys, and stores the parsed token and claims
+// in the context store under [TokenKey] and [ClaimsKey]. Failed
 // authentication returns 401.
 //
-// The package includes a self-contained, zero-dependency JWT parser optimized
-// for low allocation overhead. All public types ([Token], [Claims],
-// [MapClaims], [RegisteredClaims], [SigningMethod], etc.) are re-exported
-// from the internal parser -- users only need to import this package.
+// All public types ([Token], [Claims], [MapClaims], [RegisteredClaims],
+// [SigningMethod], etc.) are re-exported from the internal parser.
 //
 // Simple usage with a symmetric HMAC secret:
 //
 //	server.Use(jwt.New(jwt.Config{
 //	    SigningKey: []byte("my-secret-key"),
-//	}))
-//
-// Key rotation with kid-based key selection:
-//
-//	server.Use(jwt.New(jwt.Config{
-//	    SigningKeys: map[string]any{
-//	        "key-1": []byte("secret-1"),
-//	        "key-2": []byte("secret-2"),
-//	    },
 //	}))
 //
 // JWKS auto-discovery (e.g. Auth0, Keycloak):
@@ -37,107 +24,46 @@
 //
 // # Retrieving Token and Claims
 //
-// Use [TokenFromContext] and [ClaimsFromContext] to retrieve the parsed
-// token and typed claims from downstream handlers:
-//
 //	token := jwt.TokenFromContext(c)
 //	claims, ok := jwt.ClaimsFromContext[jwt.MapClaims](c)
 //
 // # Token Lookup
 //
-// The [Config].TokenLookup field supports comma-separated sources tried in
-// order. Format: "source:name[:prefix]". Supported sources: header, query,
-// cookie, form, param.
-//
-//	jwt.New(jwt.Config{
-//	    SigningKey:   secret,
-//	    TokenLookup: "header:Authorization:Bearer ,query:token,cookie:jwt",
-//	})
+// [Config].TokenLookup supports comma-separated sources tried in order.
+// Format: "source:name[:prefix]". Sources: header, query, cookie, form, param.
 //
 // # Custom Claims
 //
-// Use [Config].ClaimsFactory for custom struct claims types to avoid data
-// races:
+// Use [Config].ClaimsFactory for custom struct claims types:
 //
 //	jwt.New(jwt.Config{
 //	    SigningKey: secret,
-//	    ClaimsFactory: func() jwt.Claims {
-//	        return &MyClaims{}
-//	    },
+//	    ClaimsFactory: func() jwt.Claims { return &MyClaims{} },
 //	})
 //
 // # Creating Tokens
-//
-// Use [SignToken] to create signed JWTs:
 //
 //	token, err := jwt.SignToken(jwt.SigningMethodHS256, jwt.MapClaims{
 //	    "sub": "user-123",
 //	    "exp": float64(time.Now().Add(time.Hour).Unix()),
 //	}, []byte("secret"))
 //
-// [ErrUnauthorized], [ErrTokenMissing], and [ErrTokenInvalid] are the
-// exported sentinel errors (all 401) returned on authentication failure,
-// usable with errors.Is for error handling in upstream middleware. Parse
-// errors from the internal parser are wrapped alongside [ErrTokenInvalid]
-// for detailed error inspection via errors.Unwrap.
-//
 // # Security Best Practices
 //
-// Always set the "exp" (expiration) claim on issued tokens. Tokens without
-// an expiry remain valid indefinitely, which increases the window for
-// misuse if a token is leaked.
-//
-// Use the "aud" (audience) claim and validate it with [WithAudience] or
-// [Config].ParseOptions to ensure tokens are only accepted by their
-// intended recipients. This prevents token confusion attacks in
-// multi-service architectures.
-//
-// Rotate signing keys using the "kid" (key ID) header field.
-// [Config].SigningKeys maps kid values to keys, allowing seamless key
-// rotation without invalidating in-flight tokens.
-//
-// Prefer asymmetric algorithms (RS256, ES256) over HMAC (HS256) in
-// multi-service deployments. With HMAC, every service that validates
-// tokens must hold the shared secret, increasing the blast radius of a
-// key compromise. Asymmetric algorithms let services verify tokens with a
-// public key while only the issuer holds the private key.
-//
-// Store signing secrets and private keys in environment variables or a
-// secrets manager. Never hard-code them in source or configuration files.
-//
-// When using JWKS auto-discovery via [Config].JWKSURL, always serve the
-// JWKS endpoint over HTTPS. Set [Config].JWKSRefresh to a reasonable
-// interval (e.g., 30 minutes) to balance freshness with performance.
+// Always set "exp" on issued tokens. Use "aud" with [WithAudience] to
+// prevent token confusion. Prefer asymmetric algorithms (RS256, ES256) in
+// multi-service deployments. Store keys in environment variables or a
+// secrets manager. Serve JWKS endpoints over HTTPS.
 //
 // # Algorithm-Key-Type Binding
 //
-// The middleware does NOT enforce that the signing key type matches the
-// configured signing algorithm. For example, if [Config].SigningMethod
-// is set to RS256, the caller must supply an *rsa.PublicKey as
-// [Config].SigningKey. Supplying a []byte HMAC secret with an RSA
-// algorithm (or vice versa) will result in a runtime error from the
-// signing method's Verify function, not a configuration-time panic.
-// Always ensure the key type matches the algorithm:
-//
 //   - HS256/HS384/HS512: []byte
-//   - RS256/RS384/RS512/PS256/PS384/PS512: *rsa.PublicKey (verify) / *rsa.PrivateKey (sign)
-//   - ES256/ES384/ES512: *ecdsa.PublicKey (verify) / *ecdsa.PrivateKey (sign)
-//   - EdDSA: ed25519.PublicKey (verify) / ed25519.PrivateKey (sign)
-//
-// # Custom Parser
-//
-// The internal jwtparse package (jwt/internal/jwtparse) includes a hand-written
-// JSON parser (jsonlite.go) that avoids encoding/json for header and claims
-// decoding. This trades a broader correctness surface area for lower allocation
-// overhead on the hot path (zero heap allocations for header parsing, minimal
-// allocations for claims). The parser handles the JSON subset needed by JWT
-// (strings, numbers, booleans, null, arrays, nested objects) and rejects bare
-// control characters per RFC 8259. Fuzz tests (fuzz_test.go) continuously
-// validate equivalence with encoding/json. If you encounter a parsing edge
-// case, report it so the fuzz corpus can be extended.
+//   - RS256/RS384/RS512/PS256/PS384/PS512: *rsa.PublicKey / *rsa.PrivateKey
+//   - ES256/ES384/ES512: *ecdsa.PublicKey / *ecdsa.PrivateKey
+//   - EdDSA: ed25519.PublicKey / ed25519.PrivateKey
 //
 // # Skipping
 //
-// Set [Config].Skip to bypass the middleware dynamically, or
-// [Config].SkipPaths for exact-match path exclusions.
+// Set [Config].Skip to bypass dynamically, or [Config].SkipPaths for
+// exact-match path exclusions.
 package jwt
