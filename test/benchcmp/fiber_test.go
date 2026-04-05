@@ -9,8 +9,12 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	fiberextractors "github.com/gofiber/fiber/v3/extractors"
 	fiberbasicauth "github.com/gofiber/fiber/v3/middleware/basicauth"
 	fibercors "github.com/gofiber/fiber/v3/middleware/cors"
+	fibercsrf "github.com/gofiber/fiber/v3/middleware/csrf"
+	fiberhelmet "github.com/gofiber/fiber/v3/middleware/helmet"
+	fiberkeyauth "github.com/gofiber/fiber/v3/middleware/keyauth"
 	fiberlimiter "github.com/gofiber/fiber/v3/middleware/limiter"
 	fiberlogger "github.com/gofiber/fiber/v3/middleware/logger"
 	fiberrecover "github.com/gofiber/fiber/v3/middleware/recover"
@@ -139,6 +143,54 @@ func BenchmarkRequestID_Fiber(b *testing.B) {
 func BenchmarkTimeout_Fiber(b *testing.B) {
 	h := fiberApp(func(app *fiber.App) {
 		app.Get("/bench", fibertimeout.New(func(c fiber.Ctx) error { return nil }, fibertimeout.Config{Timeout: 5 * time.Second}))
+	})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		fctx := acquireFctx(fiber.MethodGet, "/bench")
+		h(fctx)
+		releaseFctx(fctx)
+	}
+}
+
+func BenchmarkSecure_Fiber(b *testing.B) {
+	h := fiberApp(func(app *fiber.App) {
+		app.Use(fiberhelmet.New())
+		app.Get("/bench", func(c fiber.Ctx) error { return nil })
+	})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		fctx := acquireFctx(fiber.MethodGet, "/bench")
+		h(fctx)
+		releaseFctx(fctx)
+	}
+}
+
+func BenchmarkKeyAuth_Fiber(b *testing.B) {
+	h := fiberApp(func(app *fiber.App) {
+		app.Use(fiberkeyauth.New(fiberkeyauth.Config{
+			Extractor: fiberextractors.FromHeader("X-Api-Key"),
+			Validator: func(_ fiber.Ctx, key string) (bool, error) {
+				return subtle.ConstantTimeCompare([]byte(key), []byte("test-api-key")) == 1, nil
+			},
+		}))
+		app.Get("/bench", func(c fiber.Ctx) error { return nil })
+	})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		fctx := acquireFctx(fiber.MethodGet, "/bench")
+		fctx.Request.Header.Set("X-Api-Key", "test-api-key")
+		h(fctx)
+		releaseFctx(fctx)
+	}
+}
+
+func BenchmarkCSRF_Fiber(b *testing.B) {
+	h := fiberApp(func(app *fiber.App) {
+		app.Use(fibercsrf.New())
+		app.Get("/bench", func(c fiber.Ctx) error { return nil })
 	})
 	b.ReportAllocs()
 	b.ResetTimer()

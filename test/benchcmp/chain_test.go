@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -18,26 +19,35 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goceleris/celeris/celeristest"
-	"github.com/goceleris/middlewares/basicauth"
-	"github.com/goceleris/middlewares/cors"
-	"github.com/goceleris/middlewares/logger"
-	"github.com/goceleris/middlewares/ratelimit"
-	"github.com/goceleris/middlewares/recovery"
-	"github.com/goceleris/middlewares/requestid"
-
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/goceleris/celeris/celeristest"
 	"github.com/gofiber/fiber/v3"
+	fiberextractors "github.com/gofiber/fiber/v3/extractors"
 	fiberbasicauth "github.com/gofiber/fiber/v3/middleware/basicauth"
 	fibercors "github.com/gofiber/fiber/v3/middleware/cors"
+	fibercsrf "github.com/gofiber/fiber/v3/middleware/csrf"
+	fiberhelmet "github.com/gofiber/fiber/v3/middleware/helmet"
+	fiberkeyauth "github.com/gofiber/fiber/v3/middleware/keyauth"
 	fiberlimiter "github.com/gofiber/fiber/v3/middleware/limiter"
 	fiberlogger "github.com/gofiber/fiber/v3/middleware/logger"
 	fiberrecover "github.com/gofiber/fiber/v3/middleware/recover"
 	fiberrequestid "github.com/gofiber/fiber/v3/middleware/requestid"
+	fibertimeout "github.com/gofiber/fiber/v3/middleware/timeout"
 	"github.com/labstack/echo/v4"
 	echomw "github.com/labstack/echo/v4/middleware"
 	rscors "github.com/rs/cors"
+
+	"github.com/goceleris/middlewares/basicauth"
+	"github.com/goceleris/middlewares/cors"
+	"github.com/goceleris/middlewares/csrf"
+	"github.com/goceleris/middlewares/keyauth"
+	"github.com/goceleris/middlewares/logger"
+	"github.com/goceleris/middlewares/ratelimit"
+	"github.com/goceleris/middlewares/recovery"
+	"github.com/goceleris/middlewares/requestid"
+	"github.com/goceleris/middlewares/secure"
+	"github.com/goceleris/middlewares/timeout"
 )
 
 // ---------------------------------------------------------------------------
@@ -272,6 +282,251 @@ func BenchmarkChainAuth_Stdlib(b *testing.B) {
 }
 
 // ---------------------------------------------------------------------------
+// Chain C: Security — Recovery + Secure + CSRF + KeyAuth + handler
+// This is a security-focused middleware stack for protected API endpoints.
+// ---------------------------------------------------------------------------
+
+func BenchmarkChainSecurity_Celeris(b *testing.B) {
+	rec := recovery.New(recovery.Config{LogStack: false})
+	sec := secure.New()
+	cs := csrf.New()
+	ka := keyauth.New(keyauth.Config{
+		Validator: keyauth.StaticKeys("test-key"),
+	})
+
+	opts := []celeristest.Option{
+		celeristest.WithHeader("x-api-key", "test-key"),
+		celeristest.WithHandlers(rec, sec, cs, ka, noop),
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		c, _ := celeristest.NewContext("GET", "/secure/data", opts...)
+		c.Next()
+		celeristest.ReleaseContext(c)
+	}
+}
+
+func BenchmarkChainSecurity_Fiber(b *testing.B) {
+	h := fiberApp(func(app *fiber.App) {
+		app.Use(fiberrecover.New())
+		app.Use(fiberhelmet.New())
+		app.Use(fibercsrf.New())
+		app.Use(fiberkeyauth.New(fiberkeyauth.Config{
+			Extractor: fiberextractors.FromHeader("X-Api-Key"),
+			Validator: func(_ fiber.Ctx, key string) (bool, error) {
+				return subtle.ConstantTimeCompare([]byte(key), []byte("test-key")) == 1, nil
+			},
+		}))
+		app.Get("/secure/data", func(c fiber.Ctx) error { return nil })
+	})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		fctx := acquireFctx(fiber.MethodGet, "/secure/data")
+		fctx.Request.Header.Set("X-Api-Key", "test-key")
+		h(fctx)
+		releaseFctx(fctx)
+	}
+}
+
+func BenchmarkChainSecurity_Echo(b *testing.B) {
+	e := echo.New()
+	e.Use(echomw.Recover())
+	e.Use(echomw.Secure())
+	e.Use(echomw.CSRF())
+	e.Use(echomw.KeyAuthWithConfig(echomw.KeyAuthConfig{
+		KeyLookup:  "header:X-Api-Key",
+		AuthScheme: "",
+		Validator: func(key string, _ echo.Context) (bool, error) {
+			return subtle.ConstantTimeCompare([]byte(key), []byte("test-key")) == 1, nil
+		},
+	}))
+	e.GET("/secure/data", func(c echo.Context) error { return nil })
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		req := httptest.NewRequest(http.MethodGet, "/secure/data", nil)
+		req.Header.Set("X-Api-Key", "test-key")
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkChainSecurity_Chi(b *testing.B) {
+	r := chi.NewRouter()
+	r.Use(chimw.Recoverer)
+	r.Use(stdlibSecureHeaders)
+	r.Use(stdlibCSRF)
+	r.Use(chiKeyAuth("test-key"))
+	r.Get("/secure/data", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		req := httptest.NewRequest(http.MethodGet, "/secure/data", nil)
+		req.Header.Set("X-Api-Key", "test-key")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkChainSecurity_Stdlib(b *testing.B) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	})
+	chain := stdlibRecovery(stdlibSecureHeaders(stdlibCSRF(
+		stdlibKeyAuth("test-key", handler),
+	)))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		req := httptest.NewRequest(http.MethodGet, "/secure/data", nil)
+		req.Header.Set("X-Api-Key", "test-key")
+		rec := httptest.NewRecorder()
+		chain.ServeHTTP(rec, req)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Chain D: Full Stack — Recovery + Logger + RequestID + CORS + RateLimit + Secure + Timeout + handler
+// This is a comprehensive middleware stack testing maximum chain depth (7 middleware).
+// ---------------------------------------------------------------------------
+
+func BenchmarkChainFullStack_Celeris(b *testing.B) {
+	bgCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rec := recovery.New(recovery.Config{LogStack: false})
+	lg := logger.New(logger.Config{
+		Output: slog.New(logger.NewFastHandler(io.Discard, nil)),
+	})
+	rid := requestid.New()
+	co := cors.New()
+	rl := ratelimit.New(ratelimit.Config{
+		RPS: 1e9, Burst: 1e9, CleanupContext: bgCtx,
+	})
+	sec := secure.New()
+	to := timeout.New(timeout.Config{Timeout: 5 * time.Second})
+
+	opts := []celeristest.Option{
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("x-forwarded-for", "1.2.3.4"),
+		celeristest.WithHandlers(rec, lg, rid, co, rl, sec, to, noop),
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		c, _ := celeristest.NewContext("GET", "/full-stack", opts...)
+		c.Next()
+		celeristest.ReleaseContext(c)
+	}
+}
+
+func BenchmarkChainFullStack_Fiber(b *testing.B) {
+	h := fiberApp(func(app *fiber.App) {
+		app.Use(fiberrecover.New())
+		app.Use(fiberlogger.New(fiberlogger.Config{Stream: io.Discard}))
+		app.Use(fiberrequestid.New())
+		app.Use(fibercors.New(fibercors.Config{AllowOrigins: []string{"*"}}))
+		app.Use(fiberlimiter.New(fiberlimiter.Config{
+			Max: int(1e9), Expiration: time.Hour,
+		}))
+		app.Use(fiberhelmet.New())
+		app.Get("/full-stack", fibertimeout.New(
+			func(c fiber.Ctx) error { return nil },
+			fibertimeout.Config{Timeout: 5 * time.Second},
+		))
+	})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		fctx := acquireFctx(fiber.MethodGet, "/full-stack")
+		fctx.Request.Header.Set("Origin", "http://example.com")
+		fctx.Request.Header.Set("X-Forwarded-For", "1.2.3.4")
+		h(fctx)
+		releaseFctx(fctx)
+	}
+}
+
+func BenchmarkChainFullStack_Echo(b *testing.B) {
+	e := echo.New()
+	e.Use(echomw.Recover())
+	e.Use(echomw.LoggerWithConfig(echomw.LoggerConfig{Output: io.Discard}))
+	e.Use(echomw.RequestID())
+	e.Use(echomw.CORSWithConfig(echomw.CORSConfig{AllowOrigins: []string{"*"}}))
+	e.Use(echomw.RateLimiterWithConfig(echomw.RateLimiterConfig{
+		Store: echomw.NewRateLimiterMemoryStore(1e9),
+	}))
+	e.Use(echomw.Secure())
+	e.Use(echomw.TimeoutWithConfig(echomw.TimeoutConfig{Timeout: 5 * time.Second}))
+	e.GET("/full-stack", func(c echo.Context) error { return nil })
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		req := httptest.NewRequest(http.MethodGet, "/full-stack", nil)
+		req.Header.Set("Origin", "http://example.com")
+		req.Header.Set("X-Forwarded-For", "1.2.3.4")
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkChainFullStack_Chi(b *testing.B) {
+	r := chi.NewRouter()
+	r.Use(chimw.Recoverer)
+	r.Use(chimw.RequestLogger(&chimw.DefaultLogFormatter{Logger: log.New(io.Discard, "", 0), NoColor: true}))
+	r.Use(chimw.RequestID)
+	r.Use(rscors.New(rscors.Options{AllowedOrigins: []string{"*"}}).Handler)
+	// Chi has no built-in rate limiter; skip to keep comparison fair
+	r.Use(stdlibSecureHeaders)
+	r.Use(chimw.Timeout(5 * time.Second))
+	r.Get("/full-stack", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		req := httptest.NewRequest(http.MethodGet, "/full-stack", nil)
+		req.Header.Set("Origin", "http://example.com")
+		req.Header.Set("X-Forwarded-For", "1.2.3.4")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+	}
+}
+
+func BenchmarkChainFullStack_Stdlib(b *testing.B) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	})
+	// stdlib chain: recovery → logger → requestid → cors → secure → timeout → handler
+	// No stdlib rate limiter; skip to keep comparison fair
+	chain := stdlibRecovery(stdlibLogger(stdlibRequestID(
+		rscors.New(rscors.Options{AllowedOrigins: []string{"*"}}).Handler(
+			stdlibSecureHeaders(
+				http.TimeoutHandler(handler, 5*time.Second, "timeout"),
+			),
+		),
+	)))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		req := httptest.NewRequest(http.MethodGet, "/full-stack", nil)
+		req.Header.Set("Origin", "http://example.com")
+		req.Header.Set("X-Forwarded-For", "1.2.3.4")
+		rec := httptest.NewRecorder()
+		chain.ServeHTTP(rec, req)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Stdlib middleware helpers for chain benchmarks
 // ---------------------------------------------------------------------------
 
@@ -341,5 +596,50 @@ func stdlibBasicAuth(user, pass string, next http.Handler) http.Handler {
 func chiBasicAuth(user, pass string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return stdlibBasicAuth(user, pass, next)
+	}
+}
+
+func stdlibSecureHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+		w.Header().Set("X-DNS-Prefetch-Control", "off")
+		w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
+		w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func stdlibCSRF(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" || r.Method == "HEAD" || r.Method == "OPTIONS" {
+			var buf [32]byte
+			_, _ = rand.Read(buf[:])
+			token := hex.EncodeToString(buf[:])
+			http.SetCookie(w, &http.Cookie{Name: "_csrf", Value: token, Path: "/", HttpOnly: true})
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func stdlibKeyAuth(key string, next http.Handler) http.Handler {
+	keyBytes := []byte(key)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiKey := r.Header.Get("X-Api-Key")
+		if subtle.ConstantTimeCompare([]byte(apiKey), keyBytes) != 1 {
+			w.WriteHeader(401)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func chiKeyAuth(key string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return stdlibKeyAuth(key, next)
 	}
 }

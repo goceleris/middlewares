@@ -23,12 +23,42 @@
 // accepted, with a maximum length of 128 characters. Invalid or
 // oversized IDs are silently replaced with a fresh UUID.
 //
+// # DisableTrustProxy
+//
+// [Config].DisableTrustProxy controls whether the inbound request header
+// is accepted. When false (default), a valid inbound header is propagated
+// as-is. When true, the inbound header is always ignored and a fresh ID
+// is generated:
+//
+//	server.Use(requestid.New(requestid.Config{
+//	    DisableTrustProxy: true,
+//	}))
+//
 // # Retrieving the Request ID
 //
 // Use [FromContext] to retrieve the request ID from downstream handlers:
 //
-//	id := requestid.FromContext(c) // reads ContextKey from context store
+//	id := requestid.FromContext(c)
+//
+// Use [FromStdContext] to retrieve it from a stdlib [context.Context]:
+//
+//	id := requestid.FromStdContext(ctx)
+//
+// # Skipping
+//
+// Use [Config].Skip for dynamic skip logic or [Config].SkipPaths for
+// path exclusions. SkipPaths uses exact path matching.
+//
+// # Custom Generator Validation
+//
+// Custom generator output is validated with the same rules as inbound
+// headers. If the generator returns an invalid or empty string, it is
+// retried up to 3 times before falling back to the built-in UUID.
 //
 // [CounterGenerator] returns a monotonic ID generator ("{prefix}-{N}")
 // with zero syscalls after initialization.
+//
+// # Middleware Order
+//
+// Register first -- all downstream middleware can access the request ID.
 package requestid

@@ -1,6 +1,7 @@
 package cors
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/goceleris/celeris"
@@ -381,6 +382,22 @@ func TestPreflightVaryHeaders(t *testing.T) {
 	if vary == "" {
 		t.Fatal("expected Vary header on preflight")
 	}
+	testutil.AssertHeaderContains(t, rec, "vary", "Origin")
+	testutil.AssertHeaderContains(t, rec, "vary", "Access-Control-Request-Method")
+	testutil.AssertHeaderContains(t, rec, "vary", "Access-Control-Request-Headers")
+}
+
+func TestPreflightVaryWildcardOmitsOrigin(t *testing.T) {
+	mw := New()
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "GET"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 204)
+	vary := rec.Header("vary")
+	if strings.Contains(vary, "Origin") {
+		t.Fatalf("wildcard preflight Vary should not contain Origin, got %q", vary)
+	}
 	testutil.AssertHeaderContains(t, rec, "vary", "Access-Control-Request-Method")
 	testutil.AssertHeaderContains(t, rec, "vary", "Access-Control-Request-Headers")
 }
@@ -484,6 +501,68 @@ func FuzzOriginMatching(f *testing.F) {
 	})
 }
 
+func TestVaryHeaderOnNonPreflight(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://a.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Non-preflight GET with specific origin should set Vary: Origin.
+	rec, err := testutil.RunChain(t, chain, "GET", "/api/data",
+		celeristest.WithHeader("origin", "http://a.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertHeader(t, rec, "vary", "Origin")
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "http://a.com")
+
+	// POST non-preflight should also set Vary: Origin.
+	rec, err = testutil.RunChain(t, chain, "POST", "/api/data",
+		celeristest.WithHeader("origin", "http://a.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertHeader(t, rec, "vary", "Origin")
+
+	// Denied origin should still set Vary: Origin (for cache correctness).
+	rec, err = testutil.RunChain(t, chain, "GET", "/api/data",
+		celeristest.WithHeader("origin", "http://evil.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "vary", "Origin")
+}
+
+func TestSkipPaths(t *testing.T) {
+	mw := New(Config{SkipPaths: []string{"/health", "/ready"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Skipped path: no CORS headers.
+	rec, err := testutil.RunChain(t, chain, "GET", "/health",
+		celeristest.WithHeader("origin", "http://example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+
+	// Skipped path: no CORS headers.
+	rec, err = testutil.RunChain(t, chain, "GET", "/ready",
+		celeristest.WithHeader("origin", "http://example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+
+	// Non-skipped path: CORS headers present.
+	rec, err = testutil.RunChain(t, chain, "GET", "/api/data",
+		celeristest.WithHeader("origin", "http://example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "*")
+}
+
+func TestSkipPathsWithPreflight(t *testing.T) {
+	mw := New(Config{SkipPaths: []string{"/health"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Skipped path: preflight should pass through.
+	rec, err := testutil.RunChain(t, chain, "OPTIONS", "/health",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "GET"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 200)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-methods")
+}
+
 func FuzzHeaderValues(f *testing.F) {
 	f.Add("X-Custom")
 	f.Add("")
@@ -496,4 +575,571 @@ func FuzzHeaderValues(f *testing.F) {
 		ctx, _ := celeristest.NewContextT(t, "OPTIONS", "/", celeristest.WithHeader("origin", "http://example.com"))
 		_ = mw(ctx)
 	})
+}
+
+// --- Origin Normalization ---
+
+func TestOriginNormalizationCaseInsensitive(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Uppercase scheme+host should match lowercase configured origin.
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "HTTP://EXAMPLE.COM"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "HTTP://EXAMPLE.COM")
+}
+
+func TestOriginNormalizationMixedCase(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"HTTP://Example.COM"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Lowercase incoming origin should match mixed-case configured origin.
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "http://example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "http://example.com")
+}
+
+func TestOriginNormalizationWildcard(t *testing.T) {
+	// Wildcard "*" should not be affected by normalization.
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "HTTP://ANYTHING.COM"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "*")
+}
+
+func TestOriginNormalizationSubdomainWildcard(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"https://*.EXAMPLE.COM"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "https://api.example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "https://api.example.com")
+}
+
+func TestOriginNormalizationDeniedStillDenied(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "HTTP://EVIL.COM"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+}
+
+func TestOriginNormalizationWithPort(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://LOCALHOST:8080"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "http://localhost:8080"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "http://localhost:8080")
+}
+
+// --- Mirror Access-Control-Request-Headers ---
+
+func TestMirrorRequestHeadersWhenNotConfigured(t *testing.T) {
+	// MirrorRequestHeaders: true — should mirror the request headers.
+	mw := New(Config{
+		AllowOrigins:         []string{"http://example.com"},
+		MirrorRequestHeaders: true,
+	})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "POST"),
+		celeristest.WithHeader("access-control-request-headers", "X-Custom, X-Token"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 204)
+	testutil.AssertHeader(t, rec, "access-control-allow-headers", "X-Custom, X-Token")
+}
+
+func TestMirrorRequestHeadersNoACRH(t *testing.T) {
+	// MirrorRequestHeaders: true and no ACRH header — no allow-headers in response.
+	mw := New(Config{
+		AllowOrigins:         []string{"http://example.com"},
+		MirrorRequestHeaders: true,
+	})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "POST"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 204)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-headers")
+}
+
+func TestExplicitAllowHeadersNotMirrored(t *testing.T) {
+	// When AllowHeaders IS configured, mirror should NOT apply.
+	mw := New(Config{
+		AllowOrigins: []string{"http://example.com"},
+		AllowHeaders: []string{"X-Only-This"},
+	})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "POST"),
+		celeristest.WithHeader("access-control-request-headers", "X-Custom, X-Token"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 204)
+	testutil.AssertHeader(t, rec, "access-control-allow-headers", "X-Only-This")
+}
+
+func TestDefaultConfigDoesNotMirror(t *testing.T) {
+	// Default config has AllowHeaders set — should use those, not mirror.
+	mw := New()
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "POST"),
+		celeristest.WithHeader("access-control-request-headers", "X-Custom"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeaderContains(t, rec, "access-control-allow-headers", "Content-Type")
+	testutil.AssertHeaderContains(t, rec, "access-control-allow-headers", "Authorization")
+}
+
+// --- Negative MaxAge ---
+
+func TestNegativeMaxAgeSendsZero(t *testing.T) {
+	mw := New(Config{MaxAge: -1})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "GET"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-max-age", "0")
+}
+
+func TestNegativeMaxAgeLargeValue(t *testing.T) {
+	mw := New(Config{MaxAge: -100})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "GET"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-max-age", "0")
+}
+
+func TestZeroMaxAgeStillOmitted(t *testing.T) {
+	mw := New(Config{MaxAge: 0})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "GET"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-max-age")
+}
+
+func TestPositiveMaxAgeUnchanged(t *testing.T) {
+	mw := New(Config{MaxAge: 600})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "GET"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-max-age", "600")
+}
+
+// --- Null Origin Handling ---
+
+func TestNullOriginAllowed(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"null", "http://example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "null"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "null")
+}
+
+func TestNullOriginRejected(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "null"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+}
+
+func TestNullOriginWithWildcard(t *testing.T) {
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "null"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "*")
+}
+
+func TestNullOriginPreflightAllowed(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"null"}})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "null"),
+		celeristest.WithHeader("access-control-request-method", "GET"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 204)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "null")
+}
+
+func TestNullOriginNotInFuncList(t *testing.T) {
+	// "null" origin should not be passed to AllowOriginsFunc since it is not
+	// a serialized origin. It should only be allowed via static list.
+	funcCalled := false
+	mw := New(Config{
+		AllowOrigins: []string{"http://example.com"},
+		AllowOriginsFunc: func(_ string) bool {
+			funcCalled = true
+			return true
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "null"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+	if funcCalled {
+		t.Fatal("AllowOriginsFunc should not be called for non-serialized origin 'null'")
+	}
+}
+
+// --- Non-Serialized Origin Rejection ---
+
+func TestMalformedOriginRejectedBeforeFunc(t *testing.T) {
+	funcCalled := false
+	mw := New(Config{
+		AllowOrigins: []string{"http://example.com"},
+		AllowOriginsFunc: func(_ string) bool {
+			funcCalled = true
+			return true
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	tests := []string{
+		"http://example.com/path",
+		"http://user@example.com",
+		"http://example.com?q=1",
+		"http://example.com#frag",
+		"notaurl",
+		"ftp://",
+	}
+
+	for _, origin := range tests {
+		funcCalled = false
+		rec, err := testutil.RunChain(t, chain, "GET", "/",
+			celeristest.WithHeader("origin", origin))
+		testutil.AssertNoError(t, err)
+		if funcCalled {
+			t.Fatalf("AllowOriginsFunc should not be called for malformed origin %q", origin)
+		}
+		_ = rec
+	}
+}
+
+func TestValidOriginPassedToFunc(t *testing.T) {
+	funcCalled := false
+	mw := New(Config{
+		AllowOrigins: []string{"http://static.com"},
+		AllowOriginsFunc: func(origin string) bool {
+			funcCalled = true
+			return origin == "http://dynamic.com"
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "http://dynamic.com"))
+	testutil.AssertNoError(t, err)
+	if !funcCalled {
+		t.Fatal("AllowOriginsFunc should be called for valid serialized origin")
+	}
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "http://dynamic.com")
+}
+
+func TestMalformedOriginRejectedBeforeRequestFunc(t *testing.T) {
+	funcCalled := false
+	mw := New(Config{
+		AllowOrigins: []string{"http://example.com"},
+		AllowOriginRequestFunc: func(_ *celeris.Context, _ string) bool {
+			funcCalled = true
+			return true
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "http://example.com/path"))
+	testutil.AssertNoError(t, err)
+	if funcCalled {
+		t.Fatal("AllowOriginRequestFunc should not be called for malformed origin")
+	}
+	_ = rec
+}
+
+func TestOriginWithPortIsValid(t *testing.T) {
+	funcCalled := false
+	mw := New(Config{
+		AllowOrigins: []string{"http://static.com"},
+		AllowOriginsFunc: func(origin string) bool {
+			funcCalled = true
+			return origin == "http://example.com:8080"
+		},
+	})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "http://example.com:8080"))
+	testutil.AssertNoError(t, err)
+	if !funcCalled {
+		t.Fatal("AllowOriginsFunc should be called for origin with port")
+	}
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "http://example.com:8080")
+}
+
+// --- Origin Length Limit ---
+
+func TestOriginLengthExceedsMax(t *testing.T) {
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	longOrigin := "http://" + string(make([]byte, 300))
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", longOrigin))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+}
+
+func TestOriginAtMaxLength(t *testing.T) {
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Origin at exactly 256 chars should be accepted (wildcard allows all).
+	origin := "http://example" + string(make([]byte, 256-len("http://example")-4)) + ".com"
+	if len(origin) > 256 {
+		origin = origin[:256]
+	}
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", origin))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "*")
+}
+
+func TestOriginLengthExceedsMaxSpecific(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	longOrigin := "http://" + string(make([]byte, 300))
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", longOrigin))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+}
+
+// --- Value Redaction ---
+
+func TestValueRedactionInPanicDefault(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("expected string panic, got %T", r)
+		}
+		if !strings.Contains(msg, "[redacted]") {
+			t.Fatalf("expected [redacted] in panic message, got: %s", msg)
+		}
+		if strings.Contains(msg, "example.com") {
+			t.Fatalf("origin value should be redacted, got: %s", msg)
+		}
+	}()
+	New(Config{
+		AllowOrigins: []string{"https://*.*"},
+	})
+}
+
+func TestMultiWildcardPanicRedacted(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("expected string panic, got %T", r)
+		}
+		if !strings.Contains(msg, "[redacted]") {
+			t.Fatalf("expected [redacted] in panic message, got: %s", msg)
+		}
+	}()
+	New(Config{
+		AllowOrigins: []string{"https://*.*"},
+	})
+}
+
+// --- normalizeOrigin rejects paths ---
+
+func TestNormalizeOriginRejectsPath(t *testing.T) {
+	got := normalizeOrigin("http://example.com/path")
+	if got != "" {
+		t.Fatalf("expected empty string for origin with path, got %q", got)
+	}
+}
+
+func TestNormalizeOriginAcceptsTrailingSlash(t *testing.T) {
+	got := normalizeOrigin("http://example.com/")
+	if got != "http://example.com" {
+		t.Fatalf("expected http://example.com, got %q", got)
+	}
+}
+
+func TestNormalizeOriginAcceptsClean(t *testing.T) {
+	got := normalizeOrigin("http://example.com")
+	if got != "http://example.com" {
+		t.Fatalf("expected http://example.com, got %q", got)
+	}
+}
+
+// --- isSerializedOrigin rejects trailing slash ---
+
+func TestIsSerializedOriginRejectsTrailingSlash(t *testing.T) {
+	if isSerializedOrigin("http://example.com/") {
+		t.Fatal("trailing slash should be rejected")
+	}
+}
+
+func TestIsSerializedOriginAcceptsClean(t *testing.T) {
+	if !isSerializedOrigin("http://example.com") {
+		t.Fatal("clean origin should be accepted")
+	}
+}
+
+// --- Denied origin gets Vary:Origin ---
+
+func TestDeniedOriginGetsVary(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://allowed.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "http://denied.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+	testutil.AssertHeader(t, rec, "vary", "Origin")
+}
+
+func TestDeniedWildcardOriginNoVary(t *testing.T) {
+	// When allowAllOrigins is true, denied origins are impossible
+	// (all are allowed), but for completeness: wildcard + no Origin header
+	// should not set Vary.
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "vary")
+}
+
+// --- AllowHeaders default applied for partial config ---
+
+func TestPartialConfigGetsDefaultAllowHeaders(t *testing.T) {
+	// User provides only AllowOrigins — AllowHeaders should default.
+	mw := New(Config{AllowOrigins: []string{"http://example.com"}})
+	rec, err := testutil.RunMiddlewareWithMethod(t, mw, "OPTIONS", "/",
+		celeristest.WithHeader("origin", "http://example.com"),
+		celeristest.WithHeader("access-control-request-method", "POST"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertStatus(t, rec, 204)
+	testutil.AssertHeaderContains(t, rec, "access-control-allow-headers", "Content-Type")
+	testutil.AssertHeaderContains(t, rec, "access-control-allow-headers", "Authorization")
+}
+
+// --- Multi-level subdomain wildcard ---
+
+func TestWildcardRejectsMultiLevelSubdomain(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"https://*.example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// Default maxSubdomainDepth=1 rejects multi-level subdomains.
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "https://a.b.c.example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+}
+
+// --- Vary: Origin on non-CORS requests ---
+
+func TestVaryOriginOnNonCORSRequestSpecificOrigins(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"http://a.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// No Origin header, but specific origins configured.
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "vary", "Origin")
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+}
+
+func TestNoVaryOriginOnNonCORSRequestWildcard(t *testing.T) {
+	mw := New()
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// No Origin header, wildcard configured.
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "vary")
+}
+
+func TestVaryOriginOnNonCORSRequestWithWildcardOrigins(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"https://*.example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	// No Origin header, wildcard-subdomain (not wildcard-all) configured.
+	rec, err := testutil.RunChain(t, chain, "GET", "/")
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "vary", "Origin")
+}
+
+// --- Wildcard dot-count depth validation ---
+
+func TestWildcardSingleLevelMatches(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"https://*.example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "https://api.example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertHeader(t, rec, "access-control-allow-origin", "https://api.example.com")
+}
+
+func TestWildcardTwoLevelRejected(t *testing.T) {
+	mw := New(Config{AllowOrigins: []string{"https://*.example.com"}})
+	chain := []celeris.HandlerFunc{mw, okHandler}
+
+	rec, err := testutil.RunChain(t, chain, "GET", "/",
+		celeristest.WithHeader("origin", "https://a.b.example.com"))
+	testutil.AssertNoError(t, err)
+	testutil.AssertNoHeader(t, rec, "access-control-allow-origin")
+}
+
+func TestWildcardDepthUnit(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern wildcardPattern
+		origin  string
+		want    bool
+	}{
+		{"single level match", wildcardPattern{"https://", ".example.com", 1}, "https://api.example.com", true},
+		{"two level rejected", wildcardPattern{"https://", ".example.com", 1}, "https://a.b.example.com", false},
+		{"three level rejected", wildcardPattern{"https://", ".example.com", 1}, "https://a.b.c.example.com", false},
+		{"depth zero unlimited", wildcardPattern{"https://", ".example.com", 0}, "https://a.b.c.example.com", true},
+		{"empty middle rejected", wildcardPattern{"https://", ".example.com", 1}, "https://.example.com", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.pattern.match(tc.origin)
+			if got != tc.want {
+				t.Errorf("match(%q) = %v, want %v", tc.origin, got, tc.want)
+			}
+		})
+	}
 }

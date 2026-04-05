@@ -1,10 +1,10 @@
 // Package bodylimit provides request body size limiting middleware for
 // celeris.
 //
-// The middleware enforces a maximum request body size. Requests whose
-// Content-Length header exceeds the limit are rejected immediately with
-// 413 Request Entity Too Large. Requests without Content-Length are
-// rejected once the actual body bytes read exceed the limit.
+// The middleware enforces a maximum request body size using a two-phase
+// approach: first checking Content-Length (fast path), then verifying
+// actual body bytes (catches lying or absent Content-Length). Requests
+// exceeding the limit are rejected with 413 Request Entity Too Large.
 //
 // Basic usage with the default 4 MB limit:
 //
@@ -16,16 +16,20 @@
 //	    Limit: "10MB",
 //	}))
 //
-// Numeric byte limit:
+// [Config].Limit accepts SI and IEC units: B, KB, MB, GB, TB, PB, EB,
+// KiB, MiB, GiB, TiB, PiB, EiB. Fractional values are supported.
+// When set, Limit takes precedence over MaxBytes.
 //
-//	server.Use(bodylimit.New(bodylimit.Config{
-//	    MaxBytes: 10 * 1024 * 1024, // 10 MB
-//	}))
+// IMPORTANT: Celeris buffers the full request body before middleware
+// runs. The framework's maxRequestBodySize (100 MB) is the hard ceiling.
+// This middleware adds an application-level check on already-buffered
+// data. Enable [Config].ContentLengthRequired to reject requests
+// without Content-Length (411 Length Required).
 //
-// [Config].Limit accepts human-readable size strings with units B, KB, MB,
-// GB, and TB (e.g., "1.5GB"). When set, it takes precedence over MaxBytes.
+// Bodyless methods (GET, HEAD, DELETE, OPTIONS, TRACE, CONNECT) are
+// auto-skipped. Use [Config].Skip or [Config].SkipPaths for additional
+// exclusions. Set [Config].ErrorHandler to customize error responses.
 //
-// [ErrBodyTooLarge] is the exported sentinel error (413) returned when the
-// limit is exceeded, usable with errors.Is for error handling in upstream
-// middleware.
+// [ErrBodyTooLarge] and [ErrLengthRequired] are exported sentinel errors
+// usable with errors.Is for upstream error handling.
 package bodylimit

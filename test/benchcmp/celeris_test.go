@@ -10,13 +10,17 @@ import (
 
 	"github.com/goceleris/celeris"
 	"github.com/goceleris/celeris/celeristest"
+
 	"github.com/goceleris/middlewares/basicauth"
 	"github.com/goceleris/middlewares/bodylimit"
 	"github.com/goceleris/middlewares/cors"
+	"github.com/goceleris/middlewares/csrf"
+	"github.com/goceleris/middlewares/keyauth"
 	"github.com/goceleris/middlewares/logger"
 	"github.com/goceleris/middlewares/ratelimit"
 	"github.com/goceleris/middlewares/recovery"
 	"github.com/goceleris/middlewares/requestid"
+	"github.com/goceleris/middlewares/secure"
 	"github.com/goceleris/middlewares/timeout"
 )
 
@@ -144,6 +148,47 @@ func BenchmarkBodyLimit_Celeris(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		ctx, _ := celeristest.NewContext("POST", "/bench", opts...)
+		ctx.Next()
+		celeristest.ReleaseContext(ctx)
+	}
+}
+
+func BenchmarkSecure_Celeris(b *testing.B) {
+	mw := secure.New()
+	opts := []celeristest.Option{celeristest.WithHandlers(mw, noop)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		ctx, _ := celeristest.NewContext("GET", "/bench", opts...)
+		ctx.Next()
+		celeristest.ReleaseContext(ctx)
+	}
+}
+
+func BenchmarkKeyAuth_Celeris(b *testing.B) {
+	mw := keyauth.New(keyauth.Config{
+		Validator: keyauth.StaticKeys("test-api-key"),
+	})
+	opts := []celeristest.Option{
+		celeristest.WithHeader("x-api-key", "test-api-key"),
+		celeristest.WithHandlers(mw, noop),
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		ctx, _ := celeristest.NewContext("GET", "/bench", opts...)
+		ctx.Next()
+		celeristest.ReleaseContext(ctx)
+	}
+}
+
+func BenchmarkCSRF_Celeris(b *testing.B) {
+	mw := csrf.New()
+	opts := []celeristest.Option{celeristest.WithHandlers(mw, noop)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		ctx, _ := celeristest.NewContext("GET", "/bench", opts...)
 		ctx.Next()
 		celeristest.ReleaseContext(ctx)
 	}

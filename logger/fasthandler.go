@@ -19,10 +19,11 @@ import (
 //	log := slog.New(logger.NewFastHandler(os.Stderr, nil))
 //	mw := logger.New(logger.Config{Output: log})
 type FastHandler struct {
-	w      io.Writer
-	level  slog.Level
-	prefix []byte // pre-formatted group/attr prefix for WithAttrs/WithGroup
-	color  bool
+	w          io.Writer
+	level      slog.Level
+	prefix     []byte // pre-formatted group/attr prefix for WithAttrs/WithGroup
+	color      bool
+	timeFormat string // custom Go time layout; empty = RFC3339-millis
 }
 
 // FastHandlerOptions configures a FastHandler.
@@ -32,6 +33,9 @@ type FastHandlerOptions struct {
 	// Color enables ANSI color codes in output.
 	// Level names are colored: red=ERROR, yellow=WARN, green=INFO, cyan=DEBUG.
 	Color bool
+	// TimeFormat sets a custom Go time layout (e.g. time.RFC3339).
+	// When empty, the built-in RFC3339-millis formatter is used.
+	TimeFormat string
 }
 
 var fastBufPool = sync.Pool{New: func() any {
@@ -108,6 +112,7 @@ func NewFastHandler(w io.Writer, opts *FastHandlerOptions) *FastHandler {
 	if opts != nil {
 		h.level = opts.Level
 		h.color = opts.Color
+		h.timeFormat = opts.TimeFormat
 	}
 	return h
 }
@@ -124,7 +129,11 @@ func (h *FastHandler) Handle(_ context.Context, r slog.Record) error {
 
 	// time=2006-01-02T15:04:05.000Z07:00
 	buf = append(buf, "time="...)
-	buf = appendTime(buf, r.Time)
+	if h.timeFormat != "" {
+		buf = append(buf, r.Time.Format(h.timeFormat)...)
+	} else {
+		buf = appendTime(buf, r.Time)
+	}
 
 	// level=INFO
 	buf = append(buf, " level="...)
@@ -159,9 +168,17 @@ func (h *FastHandler) Handle(_ context.Context, r slog.Record) error {
 
 	buf = append(buf, '\n')
 
-	_, err := h.w.Write(buf)
+	// Copy buf before returning to pool: Write may retain the slice
+	// (e.g., bufio.Writer), and the pool would reclaim the backing array.
+	_, err := h.w.Write(append([]byte(nil), buf...))
 
-	*bp = buf
+	// Cap pooled buffer to prevent unbounded growth.
+	if cap(buf) > 4096 {
+		fresh := make([]byte, 0, 512)
+		*bp = fresh
+	} else {
+		*bp = buf
+	}
 	fastBufPool.Put(bp)
 
 	return err
@@ -176,11 +193,15 @@ func (h *FastHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	if len(h.prefix) > 0 {
 		buf = append(buf, h.prefix...)
 	}
+	appendFn := appendAttr
+	if h.color {
+		appendFn = colorAppendAttr
+	}
 	for _, a := range attrs {
 		buf = append(buf, ' ')
-		buf = appendAttr(buf, a)
+		buf = appendFn(buf, a)
 	}
-	return &FastHandler{w: h.w, level: h.level, prefix: buf, color: h.color}
+	return &FastHandler{w: h.w, level: h.level, prefix: buf, color: h.color, timeFormat: h.timeFormat}
 }
 
 // WithGroup returns a new handler with the given group name prepended
@@ -191,15 +212,16 @@ func (h *FastHandler) WithGroup(name string) slog.Handler {
 	}
 	prefix := make([]byte, len(h.prefix))
 	copy(prefix, h.prefix)
-	return &groupHandler{parent: h, group: name, prefix: prefix, color: h.color}
+	return &groupHandler{parent: h, group: name, prefix: prefix, color: h.color, timeFormat: h.timeFormat}
 }
 
 // groupHandler prepends a group name to attribute keys.
 type groupHandler struct {
-	parent *FastHandler
-	group  string
-	prefix []byte
-	color  bool
+	parent     *FastHandler
+	group      string
+	prefix     []byte
+	color      bool
+	timeFormat string
 }
 
 func (g *groupHandler) Enabled(ctx context.Context, level slog.Level) bool {
@@ -211,7 +233,11 @@ func (g *groupHandler) Handle(_ context.Context, r slog.Record) error {
 	buf := (*bp)[:0]
 
 	buf = append(buf, "time="...)
-	buf = appendTime(buf, r.Time)
+	if g.timeFormat != "" {
+		buf = append(buf, r.Time.Format(g.timeFormat)...)
+	} else {
+		buf = appendTime(buf, r.Time)
+	}
 
 	buf = append(buf, " level="...)
 	idx := levelIndex(r.Level)
@@ -230,18 +256,27 @@ func (g *groupHandler) Handle(_ context.Context, r slog.Record) error {
 		buf = append(buf, g.prefix...)
 	}
 
+	appendFn := appendAttr
+	if g.color {
+		appendFn = colorAppendAttr
+	}
 	r.Attrs(func(a slog.Attr) bool {
 		buf = append(buf, ' ')
 		buf = append(buf, g.group...)
 		buf = append(buf, '.')
-		buf = appendAttr(buf, a)
+		buf = appendFn(buf, a)
 		return true
 	})
 
 	buf = append(buf, '\n')
-	_, err := g.parent.w.Write(buf)
+	_, err := g.parent.w.Write(append([]byte(nil), buf...))
 
-	*bp = buf
+	if cap(buf) > 4096 {
+		fresh := make([]byte, 0, 512)
+		*bp = fresh
+	} else {
+		*bp = buf
+	}
 	fastBufPool.Put(bp)
 	return err
 }
@@ -252,13 +287,17 @@ func (g *groupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 	prefix := make([]byte, len(g.prefix))
 	copy(prefix, g.prefix)
+	appendFn := appendAttr
+	if g.color {
+		appendFn = colorAppendAttr
+	}
 	for _, a := range attrs {
 		prefix = append(prefix, ' ')
 		prefix = append(prefix, g.group...)
 		prefix = append(prefix, '.')
-		prefix = appendAttr(prefix, a)
+		prefix = appendFn(prefix, a)
 	}
-	return &groupHandler{parent: g.parent, group: g.group, prefix: prefix, color: g.color}
+	return &groupHandler{parent: g.parent, group: g.group, prefix: prefix, color: g.color, timeFormat: g.timeFormat}
 }
 
 func (g *groupHandler) WithGroup(name string) slog.Handler {
@@ -267,7 +306,7 @@ func (g *groupHandler) WithGroup(name string) slog.Handler {
 	}
 	prefix := make([]byte, len(g.prefix))
 	copy(prefix, g.prefix)
-	return &groupHandler{parent: g.parent, group: g.group + "." + name, prefix: prefix, color: g.color}
+	return &groupHandler{parent: g.parent, group: g.group + "." + name, prefix: prefix, color: g.color, timeFormat: g.timeFormat}
 }
 
 // appendAttr formats a single slog.Attr into buf.
@@ -367,7 +406,7 @@ func appendTextValue(buf []byte, s string) []byte {
 	needsQuote := false
 	for i := range len(s) {
 		c := s[i]
-		if c <= ' ' || c == '"' || c == '=' || c == '\\' {
+		if c <= ' ' || c == 0x7f || c == '"' || c == '=' || c == '\\' {
 			needsQuote = true
 			break
 		}
@@ -390,9 +429,9 @@ func appendTextValue(buf []byte, s string) []byte {
 		case '\t':
 			buf = append(buf, '\\', 't')
 		default:
-			if c < 0x20 {
-				// Escape other control characters as \xHH to prevent
-				// terminal escape injection and log corruption.
+			if c < 0x20 || c == 0x7f {
+				// Escape control characters (including DEL) as \xHH to
+				// prevent terminal escape injection and log corruption.
 				buf = append(buf, '\\', 'x')
 				buf = append(buf, "0123456789abcdef"[c>>4])
 				buf = append(buf, "0123456789abcdef"[c&0x0f])
@@ -447,20 +486,21 @@ func appendTime(buf []byte, t time.Time) []byte {
 }
 
 // appendDuration formats a duration as a human-readable string (e.g. "1.234ms").
+// Negative values fall back to Duration.String() to avoid overflow when
+// negating math.MinInt64.
 func appendDuration(buf []byte, d time.Duration) []byte {
-	abs := d
-	if abs < 0 {
-		abs = -abs
+	if d < 0 {
+		return append(buf, d.String()...)
 	}
-	if abs < time.Microsecond {
+	if d < time.Microsecond {
 		buf = strconv.AppendFloat(buf, float64(d), 'f', 1, 64)
 		return append(buf, "ns"...)
 	}
-	if abs < time.Millisecond {
+	if d < time.Millisecond {
 		buf = strconv.AppendFloat(buf, float64(d)/float64(time.Microsecond), 'f', 1, 64)
 		return append(buf, "µs"...)
 	}
-	if abs < time.Second {
+	if d < time.Second {
 		buf = strconv.AppendFloat(buf, float64(d)/float64(time.Millisecond), 'f', 1, 64)
 		return append(buf, "ms"...)
 	}

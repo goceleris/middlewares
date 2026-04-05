@@ -28,3 +28,10 @@ func ExampleNew_dynamicOrigin() {
 		},
 	})
 }
+
+func ExampleNew_customize() {
+	// Start from a zero Config and customize.
+	_ = cors.New(cors.Config{
+		AllowOrigins: []string{"https://example.com"},
+	})
+}

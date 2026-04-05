@@ -35,4 +35,12 @@ linters:
       - path: _test\.go
         linters:
           - revive
+        text: "unused-parameter"
+      - path: _test\.go
+        linters:
+          - revive
         text: "dot-imports"
+      - path: ^(metrics|debug)/
+        linters:
+          - revive
+        text: "var-naming.*package names"

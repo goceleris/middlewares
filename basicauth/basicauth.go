@@ -1,13 +1,17 @@
 package basicauth
 
-import "github.com/goceleris/celeris"
+import (
+	"strings"
+
+	"github.com/goceleris/celeris"
+)
 
 // ErrUnauthorized is returned when authentication fails.
 var ErrUnauthorized = celeris.NewHTTPError(401, "Unauthorized")
 
 // New creates a basic auth middleware with the given config.
 func New(config ...Config) celeris.HandlerFunc {
-	cfg := DefaultConfig
+	cfg := defaultConfig
 	if len(config) > 0 {
 		cfg = config[0]
 	}
@@ -19,14 +23,18 @@ func New(config ...Config) celeris.HandlerFunc {
 		skipMap[p] = struct{}{}
 	}
 
-	realmHeader := `Basic realm="` + cfg.Realm + `"`
+	escapedRealm := strings.ReplaceAll(cfg.Realm, `\`, `\\`)
+	escapedRealm = strings.ReplaceAll(escapedRealm, `"`, `\"`)
+	realmHeader := `Basic realm="` + escapedRealm + `"`
 	validator := cfg.Validator
 	validatorCtx := cfg.ValidatorWithContext
 	errorHandler := cfg.ErrorHandler
 
 	if errorHandler == nil {
-		errorHandler = func(c *celeris.Context) error {
+		errorHandler = func(c *celeris.Context, _ error) error {
 			c.SetHeader("www-authenticate", realmHeader)
+			c.SetHeader("cache-control", "no-store")
+			c.SetHeader("vary", "authorization")
 			return ErrUnauthorized
 		}
 	}
@@ -41,16 +49,18 @@ func New(config ...Config) celeris.HandlerFunc {
 		}
 
 		user, pass, ok := c.BasicAuth()
-		var valid bool
-		if ok {
-			if validatorCtx != nil {
-				valid = validatorCtx(c, user, pass)
-			} else {
-				valid = validator(user, pass)
-			}
+		if !ok {
+			return errorHandler(c, ErrUnauthorized)
 		}
-		if !ok || !valid {
-			return errorHandler(c)
+
+		var valid bool
+		if validatorCtx != nil {
+			valid = validatorCtx(c, user, pass)
+		} else {
+			valid = validator(user, pass)
+		}
+		if !valid {
+			return errorHandler(c, ErrUnauthorized)
 		}
 
 		c.Set(UsernameKey, user)

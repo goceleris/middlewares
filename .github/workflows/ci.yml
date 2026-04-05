@@ -19,6 +19,21 @@ jobs:
         with:
           version: v2.9
 
+  lint-submodules:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [metrics, otel]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.9
+          working-directory: ${{ matrix.module }}
+
   detect-changes:
     runs-on: ubuntu-latest
     outputs:
@@ -35,10 +50,12 @@ jobs:
             exit 0
           fi
           CHANGED=$(git diff --name-only origin/main...HEAD | grep '\.go$' | xargs -I{} dirname {} | sort -u)
-          if echo "$CHANGED" | grep -qE '^(internal/|go\.mod|go\.sum)'; then
+          # Filter out sub-module directories (tested separately)
+          ROOT_CHANGED=$(echo "$CHANGED" | grep -Ev '^(metrics|otel)(/|$)')
+          if echo "$ROOT_CHANGED" | grep -qE '^(internal/|go\.mod|go\.sum)'; then
             echo "packages=./..." >> "$GITHUB_OUTPUT"
           else
-            PKGS=$(echo "$CHANGED" | grep -v '^internal/' | grep -v '^\.' | sed 's|$|/...|' | sed 's|^|./|' | paste -sd' ' -)
+            PKGS=$(echo "$ROOT_CHANGED" | grep -v '^internal/' | grep -v '^\.' | grep -v '^test/' | sed 's|$|/...|' | sed 's|^|./|' | paste -sd' ' -)
             if [ -z "$PKGS" ]; then
               echo "packages=" >> "$GITHUB_OUTPUT"
             else
@@ -50,31 +67,55 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.packages != ''
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        celeris-version: [v1.2.2]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
-      - run: go test -race -count=1 -timeout=120s ${{ needs.detect-changes.outputs.packages }}
+      - name: Test (root module only, sub-modules tested separately)
+        run: |
+          PKGS="${{ needs.detect-changes.outputs.packages }}"
+          if [ "$PKGS" = "./..." ]; then
+            PKGS=$(go list ./... | paste -sd' ' -)
+          fi
+          go test -race -count=1 -timeout=120s $PKGS
 
   bench:
     needs: detect-changes
     if: needs.detect-changes.outputs.packages != ''
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        celeris-version: [v1.2.2]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
       - name: Run benchmarks (affected packages)
-        run: go test -bench=. -benchmem -count=5 -run=^$ -timeout=300s ${{ needs.detect-changes.outputs.packages }} | tee bench-current.txt
+        run: |
+          PKGS="${{ needs.detect-changes.outputs.packages }}"
+          if [ "$PKGS" = "./..." ]; then
+            PKGS=$(go list ./... | paste -sd' ' -)
+          fi
+          go test -bench=. -benchmem -count=5 -run=^$ -timeout=300s $PKGS | tee bench-current.txt
       - uses: actions/upload-artifact@v4
         with:
           name: bench-pr
           path: bench-current.txt
+
+  test-submodules:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [metrics, otel]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - name: Test ${{ matrix.module }}
+        run: cd ${{ matrix.module }} && go test -race -count=1 -timeout=120s ./...
+      - name: Bench ${{ matrix.module }}
+        run: cd ${{ matrix.module }} && go test -bench=. -benchmem -count=5 -run=^$ -timeout=300s ./... | tee bench-${{ matrix.module }}.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.module }}
+          path: ${{ matrix.module }}/bench-${{ matrix.module }}.txt

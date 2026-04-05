@@ -55,3 +55,29 @@ func BenchmarkLoggerFastHandlerColor(b *testing.B) {
 		celeristest.ReleaseContext(ctx)
 	}
 }
+
+func BenchmarkLoggerAllFields(b *testing.B) {
+	log := slog.New(NewFastHandler(io.Discard, nil))
+	mw := New(Config{
+		Output:         log,
+		LogHost:        true,
+		LogUserAgent:   true,
+		LogReferer:     true,
+		LogRoute:       true,
+		LogPID:         true,
+		LogQueryParams: true,
+		LogBytesIn:     true,
+		LogScheme:      true,
+	})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		ctx, _ := celeristest.NewContext("GET", "/bench?q=hello",
+			celeristest.WithHeader("user-agent", "Bench/1.0"),
+			celeristest.WithHeader("referer", "https://example.com"),
+			celeristest.WithHeader("content-length", "42"),
+		)
+		_ = mw(ctx)
+		celeristest.ReleaseContext(ctx)
+	}
+}
